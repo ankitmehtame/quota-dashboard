@@ -5,31 +5,14 @@ on:
   pull_request:
   workflow_dispatch:
   schedule:
-    # GitHub cron uses UTC. 19:00 UTC on the previous day is 03:00 SGT.
-    # Run on the possible UTC dates, then gate to the actual Singapore 1st.
-    - cron: "0 19 28-31 * *"
+    # GitHub cron uses UTC; this is approximately 03:00 SGT.
+    - cron: "0 19 1 * *"
 
 permissions:
   contents: read
 
 jobs:
-  schedule-gate:
-    runs-on: ubuntu-latest
-    outputs:
-      should-run: ${{ steps.check-date.outputs.should-run }}
-    steps:
-      - id: check-date
-        shell: bash
-        run: |
-          if [[ "${{ github.event_name }}" != "schedule" || "$(TZ=Asia/Singapore date +%d)" == "01" ]]; then
-            echo "should-run=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "should-run=false" >> "$GITHUB_OUTPUT"
-          fi
-
   build:
-    needs: schedule-gate
-    if: needs.schedule-gate.outputs.should-run == 'true'
     runs-on: ubuntu-latest
 
     steps:
