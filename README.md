@@ -11,9 +11,12 @@ cd src
 npm start
 ```
 
-The server requires Node.js 20 or newer. Install and configure `ccusage` separately
+The server requires Node.js 20 or newer. `npm start` compiles the TypeScript source
+to `src/dist/` before starting the server. Install and configure `ccusage` separately
 if you want local usage statistics; the dashboard reports an error when the command
 is unavailable.
+
+For development and verification, run `npm run build` or `npm test` from `src/`.
 
 Open `http://127.0.0.1:4173`. To expose it on your local network, run:
 
@@ -21,7 +24,8 @@ Open `http://127.0.0.1:4173`. To expose it on your local network, run:
 HOST=0.0.0.0 npm start
 ```
 
-Application code lives in `src/`.
+Application TypeScript source lives in `src/`; generated runtime JavaScript is written
+to `src/dist/` and is ignored by git.
 
 ## Configuration
 

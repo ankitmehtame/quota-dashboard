@@ -1,7 +1,54 @@
-export const PROVIDER_IDS = ["codex", "openrouter", "togetherai", "opencode-go"];
-export const USAGE_SOURCE_IDS = ["codex", "opencode", "hermes"];
+export const PROVIDER_IDS = ["codex", "openrouter", "togetherai", "opencode-go"] as const;
+export type ProviderId = typeof PROVIDER_IDS[number];
+export const USAGE_SOURCE_IDS = ["codex", "opencode", "hermes"] as const;
+export type UsageSourceId = typeof USAGE_SOURCE_IDS[number];
 
-export const PROVIDER_DEFINITIONS = {
+export type QuotaWindow = {
+  name: string;
+  usedPercent: number | null;
+  usedValue: number | null;
+  limitValue: number | null;
+  windowStart: string | null;
+  windowEnd: string | null;
+  resetAt: string | null;
+  windowSeconds: number | null;
+  valueLabel: string | null;
+  balanceLabel: string | null;
+  spentLabel: string | null;
+  source: string;
+};
+
+export type ProviderResult = {
+  configured: boolean;
+  status: string;
+  error: string | null;
+  fetchedAt: string;
+  windows: QuotaWindow[];
+  planType?: string | null;
+  subscriptionActiveUntil?: string | null;
+};
+
+export type ProviderConfig = { enabled: boolean };
+export type UsageSourceConfig = { enabled: boolean };
+export type AppConfig = {
+  providers: Record<ProviderId, ProviderConfig>;
+  usageSources: Record<UsageSourceId, UsageSourceConfig>;
+};
+
+export type DateRange = { from: string; to: string; timeZone: string };
+
+type ConfigInput = {
+  providers?: Partial<Record<ProviderId, Partial<ProviderConfig>>>;
+  usageSources?: Partial<Record<UsageSourceId, Partial<UsageSourceConfig>>>;
+};
+
+export const PROVIDER_DEFINITIONS: Record<ProviderId, {
+  name: string;
+  shortName: string;
+  accent: string;
+  description: string;
+  capabilities: Record<string, boolean>;
+}> = {
   codex: {
     name: "Codex / ChatGPT",
     shortName: "Codex",
@@ -68,7 +115,7 @@ export const PROVIDER_DEFINITIONS = {
   },
 };
 
-export const DEFAULT_CONFIG = {
+export const DEFAULT_CONFIG: AppConfig = {
   providers: {
     codex: { enabled: true },
     openrouter: { enabled: true },
@@ -82,16 +129,16 @@ export const DEFAULT_CONFIG = {
   },
 };
 
-export function clampPercent(value) {
+export function clampPercent(value: number): number | null {
   return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : null;
 }
 
-export function numberOrNull(value) {
+export function numberOrNull(value: unknown): number | null {
   const number = typeof value === "number" ? value : Number(value);
   return Number.isFinite(number) ? number : null;
 }
 
-export function formatMoney(value) {
+export function formatMoney(value: number): string | null {
   if (!Number.isFinite(value)) return null;
   return new Intl.NumberFormat("en-US", {
     style: "currency",
@@ -100,10 +147,10 @@ export function formatMoney(value) {
   }).format(value);
 }
 
-export function usageWindow(input) {
+export function usageWindow(input: Partial<QuotaWindow> & { name: string }): QuotaWindow {
   return {
     name: input.name,
-    usedPercent: clampPercent(input.usedPercent),
+    usedPercent: clampPercent(input.usedPercent ?? NaN),
     usedValue: numberOrNull(input.usedValue),
     limitValue: numberOrNull(input.limitValue),
     windowStart: input.windowStart ?? null,
@@ -117,7 +164,7 @@ export function usageWindow(input) {
   };
 }
 
-export function providerStatus({ id, config, result = null }) {
+export function providerStatus({ id, config, result = null }: { id: ProviderId; config?: ProviderConfig; result?: Partial<ProviderResult> | null }) {
   const definition = PROVIDER_DEFINITIONS[id];
   return {
     id,
@@ -134,22 +181,23 @@ export function providerStatus({ id, config, result = null }) {
   };
 }
 
-export function normalizeConfig(raw) {
+export function normalizeConfig(raw: unknown): AppConfig {
   const config = structuredClone(DEFAULT_CONFIG);
+  const input = raw && typeof raw === "object" ? raw as ConfigInput : {};
   for (const id of PROVIDER_IDS) {
-    if (raw?.providers?.[id] && typeof raw.providers[id].enabled === "boolean") {
-      config.providers[id].enabled = raw.providers[id].enabled;
+    if (input.providers?.[id] && typeof input.providers[id].enabled === "boolean") {
+      config.providers[id].enabled = input.providers[id].enabled;
     }
   }
   for (const id of USAGE_SOURCE_IDS) {
-    if (raw?.usageSources?.[id] && typeof raw.usageSources[id].enabled === "boolean") {
-      config.usageSources[id].enabled = raw.usageSources[id].enabled;
+    if (input.usageSources?.[id] && typeof input.usageSources[id].enabled === "boolean") {
+      config.usageSources[id].enabled = input.usageSources[id].enabled;
     }
   }
   return config;
 }
 
-export function localDateRange(days = 30, timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone, rangeType = "relative") {
+export function localDateRange(days = 30, timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone, rangeType = "relative"): DateRange {
   const safeDays = Math.min(365, Math.max(1, Math.trunc(Number(days)) || 30));
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone,

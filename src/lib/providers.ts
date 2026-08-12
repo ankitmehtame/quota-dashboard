@@ -2,11 +2,21 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { clampPercent, formatMoney, numberOrNull, usageWindow } from "./core.js";
+import { type ProviderId, clampPercent, formatMoney, numberOrNull, usageWindow, type ProviderResult, type QuotaWindow } from "./core.js";
+
+type JsonObject = Record<string, any>;
+
+function objectValue(value: unknown): JsonObject {
+  return value && typeof value === "object" ? value as JsonObject : {};
+}
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error && typeof error === "object" && "message" in error && typeof error.message === "string" ? error.message : fallback;
+}
 
 const authPath = process.env.OPENCODE_AUTH_PATH || join(homedir(), ".local", "share", "opencode", "auth.json");
 
-async function readJson(path) {
+async function readJson(path: string): Promise<unknown> {
   try {
     return JSON.parse(await readFile(path, "utf8"));
   } catch {
@@ -14,19 +24,20 @@ async function readJson(path) {
   }
 }
 
-function authValue(auth, aliases) {
+function authValue(auth: unknown, aliases: string[]): string | null {
   for (const alias of aliases) {
-    const entry = auth?.[alias];
+    const entry = objectValue(auth)[alias];
     if (typeof entry === "string" && entry) return entry;
     if (entry && typeof entry === "object") {
-      const value = entry.key || entry.token || entry.apiKey;
+      const object = objectValue(entry);
+      const value = object.key || object.token || object.apiKey;
       if (typeof value === "string" && value) return value;
     }
   }
   return null;
 }
 
-function result(configured, windows = [], error = null) {
+function result(configured: boolean, windows: QuotaWindow[] = [], error: string | null = null): ProviderResult {
   return {
     configured,
     status: error ? "error" : "ok",
@@ -36,14 +47,14 @@ function result(configured, windows = [], error = null) {
   };
 }
 
-async function fetchOpenRouter() {
+async function fetchOpenRouter(): Promise<ProviderResult> {
   const auth = await readJson(authPath);
   const key = process.env.OPENROUTER_API_KEY?.trim() || authValue(auth, ["openrouter"]);
   if (!key) return result(false, [], "OpenRouter API key is not configured");
   try {
     const response = await fetch("https://openrouter.ai/api/v1/key", { headers: { Authorization: `Bearer ${key}`, Accept: "application/json" }, signal: AbortSignal.timeout(15_000) });
     if (!response.ok) return result(true, [], `OpenRouter returned HTTP ${response.status}`);
-    const data = (await response.json())?.data ?? {};
+    const data = objectValue(objectValue(await response.json()).data);
     const usage = numberOrNull(data.usage);
     const rawLimit = numberOrNull(data.limit);
     // OpenRouter uses zero/null for an unlimited key. It is not a usable cap.
@@ -55,7 +66,7 @@ async function fetchOpenRouter() {
     try {
       const creditsResponse = await fetch("https://openrouter.ai/api/v1/credits", { headers: { Authorization: `Bearer ${key}`, Accept: "application/json" }, signal: AbortSignal.timeout(15_000) });
       if (creditsResponse.ok) {
-        const credits = (await creditsResponse.json())?.data ?? {};
+        const credits = objectValue(objectValue(await creditsResponse.json()).data);
         const totalCredits = numberOrNull(credits.total_credits);
         const totalUsage = numberOrNull(credits.total_usage);
         if (totalCredits !== null && totalUsage !== null) balance = Math.max(0, totalCredits - totalUsage);
@@ -80,11 +91,11 @@ async function fetchOpenRouter() {
       spentLabel: usage !== null ? `${formatMoney(usage)} spent (all time)` : null,
     })]);
   } catch (error) {
-    return result(true, [], error?.message || "OpenRouter request failed");
+    return result(true, [], errorMessage(error, "OpenRouter request failed"));
   }
 }
 
-async function fetchTogether() {
+async function fetchTogether(): Promise<ProviderResult> {
   const auth = await readJson(authPath);
   const key = process.env.TOGETHER_API_KEY?.trim() || authValue(auth, ["togetherai", "together"]);
   if (!key) return result(false, [], "Together AI API key is not configured");
@@ -92,14 +103,16 @@ async function fetchTogether() {
   try {
     const whoami = await fetch("https://api.together.ai/v1/whoami", { headers, signal: AbortSignal.timeout(15_000) });
     if (!whoami.ok) return result(true, [], `Together AI whoami returned HTTP ${whoami.status}`);
-    const identity = await whoami.json();
+    const identity = objectValue(await whoami.json());
     const organization = process.env.TOGETHER_ORGANIZATION_ID?.trim() || identity?.organization_id || identity?.organization?.id;
     if (!organization) return result(true, [], "Together AI response did not include an organization");
     const balance = await fetch(`https://api.together.ai/api/billing/organizations/${encodeURIComponent(organization)}/ongoing-balance`, { headers, signal: AbortSignal.timeout(15_000) });
     if (!balance.ok) return result(true, [], `Together AI balance returned HTTP ${balance.status}`);
-    const payload = await balance.json();
-    const remainingCents = numberOrNull(payload?.ongoingBalance?.value_cents ?? payload?.totalOngoingBalanceCents);
-    const spentCents = numberOrNull(payload?.ongoingBillingCycleUsage?.value_cents);
+    const payload = objectValue(await balance.json());
+    const ongoingBalance = objectValue(payload.ongoingBalance);
+    const ongoingUsage = objectValue(payload.ongoingBillingCycleUsage);
+    const remainingCents = numberOrNull(ongoingBalance.value_cents ?? payload.totalOngoingBalanceCents);
+    const spentCents = numberOrNull(ongoingUsage.value_cents);
     const remaining = remainingCents === null ? null : remainingCents / 100;
     const spent = spentCents === null ? null : spentCents / 100;
     const valueLabel = remaining !== null && spent !== null ? `${formatMoney(remaining)} left · ${formatMoney(spent)} spent` : remaining !== null ? `${formatMoney(remaining)} left` : null;
@@ -111,33 +124,33 @@ async function fetchTogether() {
       source: "provider",
     })]);
   } catch (error) {
-    return result(true, [], error?.message || "Together AI request failed");
+    return result(true, [], errorMessage(error, "Together AI request failed"));
   }
 }
 
-function parseNumber(body, field) {
+function parseNumber(body: string, field: string): number | null {
   const match = body.match(new RegExp(`["']?${field}["']?\\s*:\\s*["']?(-?\\d+(?:\\.\\d+)?)`));
   const value = match ? Number(match[1]) : null;
   return Number.isFinite(value) ? value : null;
 }
 
-function parseOpenCodeGo(body, now = Date.now()) {
+function parseOpenCodeGo(body: string, now = Date.now()): QuotaWindow[] {
   const normalized = body.replaceAll("&quot;", '"').replaceAll("\\u0022", '"').replaceAll('\\"', '"');
   const patterns = { "5h": ["rollingUsage", 18_000], weekly: ["weeklyUsage", 604_800], monthly: ["monthlyUsage", 2_592_000] };
   const windows = [];
   for (const [name, [field, seconds]] of Object.entries(patterns)) {
-    const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const escaped = String(field).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const match = normalized.match(new RegExp(`["']?${escaped}["']?\\s*:\\s*(?:\\$R\\[\\d+\\]\\s*=\\s*)?\\{([^{}]*)\\}`, "s"));
     if (!match) continue;
     const percent = parseNumber(match[1], "usagePercent");
     const resetInSec = parseNumber(match[1], "resetInSec");
     if (percent === null || resetInSec === null) continue;
-    windows.push(usageWindow({ name, usedPercent: clampPercent(percent), resetAt: new Date(now + Math.max(0, resetInSec) * 1000).toISOString(), windowSeconds: seconds }));
+    windows.push(usageWindow({ name, usedPercent: clampPercent(percent ?? NaN), resetAt: new Date(now + Math.max(0, resetInSec) * 1000).toISOString(), windowSeconds: Number(seconds) }));
   }
   return windows;
 }
 
-async function fetchOpenCodeGo() {
+async function fetchOpenCodeGo(): Promise<ProviderResult> {
   const workspaceId = process.env.OPENCODE_GO_WORKSPACE_ID?.trim();
   const authCookie = process.env.OPENCODE_GO_AUTH_COOKIE?.trim();
   if (!workspaceId || !authCookie) return result(false, [], "OpenCode Go workspace ID and auth cookie are required");
@@ -148,15 +161,16 @@ async function fetchOpenCodeGo() {
     const windows = parseOpenCodeGo(await response.text());
     return windows.length ? result(true, windows) : result(true, [], "OpenCode Go usage data could not be parsed");
   } catch (error) {
-    return result(true, [], error?.message || "OpenCode Go request failed");
+    return result(true, [], errorMessage(error, "OpenCode Go request failed"));
   }
 }
 
-async function fetchCodex() {
+async function fetchCodex(): Promise<ProviderResult> {
   const path = process.env.CODEX_AUTH_PATH || join(homedir(), ".codex", "auth.json");
   const auth = await readJson(path);
-  const accessToken = auth?.tokens?.access_token;
-  const accountId = auth?.tokens?.account_id;
+    const tokens = objectValue(objectValue(auth).tokens);
+    const accessToken = tokens.access_token;
+    const accountId = tokens.account_id;
   if (!accessToken || !accountId) return result(false, [], "Codex ChatGPT OAuth credentials are not configured");
   try {
     const response = await fetch("https://chatgpt.com/backend-api/wham/usage", {
@@ -169,36 +183,38 @@ async function fetchCodex() {
       signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok) return result(true, [], `Codex quota returned HTTP ${response.status}`);
-    const payload = await response.json();
+    const payload = objectValue(await response.json());
     const windows = parseCodexQuota(payload);
     if (!windows.length) return result(true, [], "Codex quota response did not include a rate-limit window");
-    return { ...result(true, windows), planType: payload?.plan_type ?? null, subscriptionActiveUntil: payload?.subscription_active_until ?? null };
+    return { ...result(true, windows), planType: payload.plan_type ?? null, subscriptionActiveUntil: payload.subscription_active_until ?? null };
   } catch (error) {
-    return result(true, [], error?.message || "Codex quota request failed");
+    return result(true, [], errorMessage(error, "Codex quota request failed"));
   }
 }
 
-export function parseCodexQuota(payload) {
-  const rateLimit = payload?.rate_limit ?? payload?.rateLimit;
+export function parseCodexQuota(payload: unknown): QuotaWindow[] {
+  const data = objectValue(payload);
+  const rateLimit = objectValue(data.rate_limit ?? data.rateLimit);
   if (!rateLimit || typeof rateLimit !== "object") return [];
   const windows = [];
-  for (const [name, value] of [["primary", rateLimit.primary_window], ["secondary", rateLimit.secondary_window]]) {
-    if (!value || typeof value !== "object") continue;
+  for (const [name, rawValue] of [["primary", rateLimit.primary_window], ["secondary", rateLimit.secondary_window]] as const) {
+    const value = objectValue(rawValue);
+    if (!Object.keys(value).length) continue;
     const resetAt = numberOrNull(value.reset_at);
     windows.push(usageWindow({
       name,
       usedPercent: numberOrNull(value.used_percent),
       resetAt: resetAt === null ? null : new Date(resetAt * 1000).toISOString(),
-      windowSeconds: value.limit_window_seconds,
+      windowSeconds: numberOrNull(value.limit_window_seconds),
       valueLabel: null,
     }));
   }
   return windows;
 }
 
-export const PROVIDER_FETCHERS = { codex: fetchCodex, openrouter: fetchOpenRouter, togetherai: fetchTogether, "opencode-go": fetchOpenCodeGo };
+export const PROVIDER_FETCHERS: Record<ProviderId, () => Promise<ProviderResult>> = { codex: fetchCodex, openrouter: fetchOpenRouter, togetherai: fetchTogether, "opencode-go": fetchOpenCodeGo };
 
-export async function isProviderConfigured(id) {
+export async function isProviderConfigured(id: ProviderId): Promise<boolean> {
   if (id === "openrouter" || id === "togetherai") {
     const auth = await readJson(authPath);
     return Boolean(id === "openrouter"
@@ -208,7 +224,8 @@ export async function isProviderConfigured(id) {
   if (id === "opencode-go") return Boolean(process.env.OPENCODE_GO_WORKSPACE_ID?.trim() && process.env.OPENCODE_GO_AUTH_COOKIE?.trim());
   if (id === "codex") {
     const auth = await readJson(process.env.CODEX_AUTH_PATH || join(homedir(), ".codex", "auth.json"));
-    return Boolean(auth?.tokens?.access_token && auth?.tokens?.account_id);
+    const tokens = objectValue(objectValue(auth).tokens);
+    return Boolean(tokens.access_token && tokens.account_id);
   }
   return false;
 }

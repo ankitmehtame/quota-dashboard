@@ -5,8 +5,13 @@
   "description": "PWA dashboard for AI provider usage and quotas",
   "type": "module",
   "scripts": {
-    "start": "node server.js",
-    "test": "node --test lib/*.test.js"
+    "build": "rm -rf dist && tsc -p tsconfig.server.json && tsc -p tsconfig.browser.json && tsc -p tsconfig.worker.json && cp public/index.html public/styles.css public/manifest.webmanifest public/icon.svg dist/public/",
+    "start": "npm run build && node dist/server.js",
+    "test": "npm run build && node --test dist/lib/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
   },
   "engines": {
     "node": ">=20"
