@@ -25,7 +25,7 @@ export type UsageSummary = {
   totalTokens: number;
 };
 
-type JsonObject = Record<string, any>;
+type JsonObject = Record<string, unknown>;
 
 function objectValue(value: unknown): JsonObject {
   return value && typeof value === "object" ? value as JsonObject : {};
@@ -77,23 +77,23 @@ export function parseCcusage(document: unknown): UsageRecord[] {
   const records: UsageRecord[] = [];
   for (const parentRow of dailyRows(document)) {
     for (const row of usageRows(parentRow)) {
-    const date = row.date ?? row.period ?? parentRow.period;
-    if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
-    for (const model of modelRows(row)) {
-      const modelName = typeof model.modelName === "string" && model.modelName.trim() ? model.modelName.trim() : "unknown";
-      records.push({
-        date,
-        provider: String(model.provider ?? model.source ?? row.provider ?? row.source ?? rowProvider(row)).trim().toLowerCase(),
-        model: modelName,
-        inputTokens: nonNegative(model.inputTokens),
-        cachedInputTokens: nonNegative(model.cacheReadTokens),
-        cacheCreationTokens: nonNegative(model.cacheCreationTokens),
-        outputTokens: nonNegative(model.outputTokens),
-        reasoningTokens: nonNegative(model.reasoningTokens),
-        costUsd: nonNegative(model.cost),
-      });
+      const date = row.date ?? row.period ?? parentRow.period;
+      if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
+      for (const model of modelRows(row)) {
+        const modelName = typeof model.modelName === "string" && model.modelName.trim() ? model.modelName.trim() : "unknown";
+        records.push({
+          date,
+          provider: String(model.provider ?? model.source ?? row.provider ?? row.source ?? rowProvider(row)).trim().toLowerCase(),
+          model: modelName,
+          inputTokens: nonNegative(model.inputTokens),
+          cachedInputTokens: nonNegative(model.cacheReadTokens),
+          cacheCreationTokens: nonNegative(model.cacheCreationTokens),
+          outputTokens: nonNegative(model.outputTokens),
+          reasoningTokens: nonNegative(model.reasoningTokens),
+          costUsd: nonNegative(model.cost),
+        });
+      }
     }
-  }
   }
   return records;
 }

@@ -4,7 +4,7 @@ import { join } from "node:path";
 
 import { type ProviderId, clampPercent, formatMoney, numberOrNull, usageWindow, type ProviderResult, type QuotaWindow } from "./core.js";
 
-type JsonObject = Record<string, any>;
+type JsonObject = Record<string, unknown>;
 
 function objectValue(value: unknown): JsonObject {
   return value && typeof value === "object" ? value as JsonObject : {};
@@ -104,7 +104,9 @@ async function fetchTogether(): Promise<ProviderResult> {
     const whoami = await fetch("https://api.together.ai/v1/whoami", { headers, signal: AbortSignal.timeout(15_000) });
     if (!whoami.ok) return result(true, [], `Together AI whoami returned HTTP ${whoami.status}`);
     const identity = objectValue(await whoami.json());
-    const organization = process.env.TOGETHER_ORGANIZATION_ID?.trim() || identity?.organization_id || identity?.organization?.id;
+    const configuredOrganization = process.env.TOGETHER_ORGANIZATION_ID?.trim();
+    const discoveredOrganization = identity.organization_id ?? objectValue(identity.organization).id;
+    const organization = configuredOrganization || (typeof discoveredOrganization === "string" ? discoveredOrganization : null);
     if (!organization) return result(true, [], "Together AI response did not include an organization");
     const balance = await fetch(`https://api.together.ai/api/billing/organizations/${encodeURIComponent(organization)}/ongoing-balance`, { headers, signal: AbortSignal.timeout(15_000) });
     if (!balance.ok) return result(true, [], `Together AI balance returned HTTP ${balance.status}`);
@@ -168,9 +170,9 @@ async function fetchOpenCodeGo(): Promise<ProviderResult> {
 async function fetchCodex(): Promise<ProviderResult> {
   const path = process.env.CODEX_AUTH_PATH || join(homedir(), ".codex", "auth.json");
   const auth = await readJson(path);
-    const tokens = objectValue(objectValue(auth).tokens);
-    const accessToken = tokens.access_token;
-    const accountId = tokens.account_id;
+  const tokens = objectValue(objectValue(auth).tokens);
+  const accessToken = typeof tokens.access_token === "string" ? tokens.access_token : null;
+  const accountId = typeof tokens.account_id === "string" ? tokens.account_id : null;
   if (!accessToken || !accountId) return result(false, [], "Codex ChatGPT OAuth credentials are not configured");
   try {
     const response = await fetch("https://chatgpt.com/backend-api/wham/usage", {
@@ -186,7 +188,11 @@ async function fetchCodex(): Promise<ProviderResult> {
     const payload = objectValue(await response.json());
     const windows = parseCodexQuota(payload);
     if (!windows.length) return result(true, [], "Codex quota response did not include a rate-limit window");
-    return { ...result(true, windows), planType: payload.plan_type ?? null, subscriptionActiveUntil: payload.subscription_active_until ?? null };
+    return {
+      ...result(true, windows),
+      planType: typeof payload.plan_type === "string" ? payload.plan_type : null,
+      subscriptionActiveUntil: typeof payload.subscription_active_until === "string" ? payload.subscription_active_until : null,
+    };
   } catch (error) {
     return result(true, [], errorMessage(error, "Codex quota request failed"));
   }
