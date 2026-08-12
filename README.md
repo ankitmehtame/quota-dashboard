@@ -29,6 +29,21 @@ to `src/dist/` and is ignored by git. GitHub Actions uploads the contents of `sr
 as the `quota-dashboard-node` artifact. Extract it on a Node.js 20+ host and run
 `node server.js` from the extracted directory.
 
+## Releases
+
+GitHub Releases are created automatically for version tags matching `v*`, after
+the build, tests, and runtime smoke test pass. Tags whose commits are on `main`
+create regular releases; tags from other branches create pre-releases. Each
+release includes a compressed Node.js runtime archive. For example:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Extract the release archive on a Node.js 20+ host and run `node server.js` from
+the extracted directory.
+
 ## Configuration
 
 Provider enablement is stored in `~/.config/quota-dashboard/config.json` with mode `0600`. No machine-specific absolute paths or identifiers are stored in the application. Provider credentials and machine-specific overrides remain server-side and can be supplied through environment variables:
