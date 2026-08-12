@@ -1,0 +1,12 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "module": "ES2022",
+    "moduleResolution": "Bundler",
+    "lib": ["ES2022", "DOM"],
+    "rootDir": "public",
+    "outDir": "dist/public",
+    "sourceMap": true
+  },
+  "include": ["public/app.ts"]
+}

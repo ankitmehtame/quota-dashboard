@@ -6,6 +6,7 @@ src/node_modules/
 npm-debug.log*
 # Coverage and build artifacts
 coverage/
+src/dist/
 # Local environment and secrets
 .env
 .env.*

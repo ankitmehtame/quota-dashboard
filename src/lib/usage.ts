@@ -5,16 +5,47 @@ const execFileAsync = promisify(execFile);
 const TIMEOUT_MS = 30_000;
 const MAX_BUFFER = 32 * 1024 * 1024;
 
-function nonNegative(value) {
+export type UsageRecord = {
+  date: string;
+  provider: string;
+  model: string;
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheCreationTokens: number;
+  outputTokens: number;
+  reasoningTokens: number;
+  costUsd: number;
+};
+
+export type UsageSummary = {
+  daily: Array<{ date: string; costUsd: number; totalTokens: number; byProvider: Record<string, { costUsd: number; totalTokens: number }>; byModel: Array<{ provider: string; models: Array<{ model: string; costUsd: number; totalTokens: number }> }> }>;
+  byModel: Array<{ provider: string; model: string; costUsd: number; totalTokens: number }>;
+  byProvider: Array<{ provider: string; costUsd: number; totalTokens: number }>;
+  totalCostUsd: number;
+  totalTokens: number;
+};
+
+type JsonObject = Record<string, any>;
+
+function objectValue(value: unknown): JsonObject {
+  return value && typeof value === "object" ? value as JsonObject : {};
+}
+
+function errorMessage(error: unknown, fallback: string): string {
+  return error && typeof error === "object" && "message" in error && typeof error.message === "string" ? error.message : fallback;
+}
+
+function nonNegative(value: unknown): number {
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 ? number : 0;
 }
 
-function dailyRows(document) {
-  return Array.isArray(document?.daily) ? document.daily.filter((row) => row && typeof row === "object") : [];
+function dailyRows(document: unknown): Array<Record<string, unknown>> {
+  const daily = objectValue(document).daily;
+  return Array.isArray(daily) ? daily.filter((row): row is Record<string, unknown> => Boolean(row && typeof row === "object")) : [];
 }
 
-function modelRows(row) {
+function modelRows(row: Record<string, any>): Array<Record<string, any>> {
   if (Array.isArray(row.modelBreakdowns)) return row.modelBreakdowns.filter((model) => model && typeof model === "object");
   return [{
     modelName: "unknown",
@@ -26,14 +57,15 @@ function modelRows(row) {
   }];
 }
 
-function usageRows(row) {
+function usageRows(row: Record<string, any>): Array<Record<string, any>> {
   if (Array.isArray(row.agents) && row.agents.length > 0) return row.agents;
   return [row];
 }
 
-function rowProvider(row) {
-  const agents = Array.isArray(row.metadata?.agents)
-    ? row.metadata.agents.filter((agent) => typeof agent === "string" && agent.trim()).map((agent) => agent.trim().toLowerCase())
+function rowProvider(row: Record<string, any>): string {
+  const metadata = objectValue(row.metadata);
+  const agents = Array.isArray(metadata.agents)
+    ? metadata.agents.filter((agent: unknown): agent is string => typeof agent === "string" && Boolean(agent.trim())).map((agent: string) => agent.trim().toLowerCase())
     : [];
   if (agents.length === 1) return agents[0];
   if (agents.length > 1) return "shared";
@@ -41,8 +73,8 @@ function rowProvider(row) {
   return "unknown";
 }
 
-export function parseCcusage(document) {
-  const records = [];
+export function parseCcusage(document: unknown): UsageRecord[] {
+  const records: UsageRecord[] = [];
   for (const parentRow of dailyRows(document)) {
     for (const row of usageRows(parentRow)) {
     const date = row.date ?? row.period ?? parentRow.period;
@@ -66,11 +98,11 @@ export function parseCcusage(document) {
   return records;
 }
 
-function emptySummary(status = "disabled", error = null, source = null) {
+function emptySummary(status = "disabled", error: string | null = null, source: string | null = null): UsageSummary & { status: string; error: string | null; source: string | null } {
   return { status, error, source, daily: [], byModel: [], byProvider: [], totalCostUsd: 0, totalTokens: 0 };
 }
 
-function summarize(records) {
+function summarize(records: UsageRecord[]): UsageSummary {
   const daily = new Map();
   const byModel = new Map();
   const byProvider = new Map();
@@ -92,12 +124,12 @@ function summarize(records) {
     dayProvider.costUsd += record.costUsd;
     dayProvider.totalTokens += totalTokens;
     day.byProvider[record.provider] = dayProvider;
-    let modelGroup = day.byModel.find((entry) => entry.provider === record.provider);
+    let modelGroup = day.byModel.find((entry: { provider: string; models: Array<{ model: string; costUsd: number; totalTokens: number }> }) => entry.provider === record.provider);
     if (!modelGroup) {
       modelGroup = { provider: record.provider, models: [] };
       day.byModel.push(modelGroup);
     }
-    let modelDetail = modelGroup.models.find((entry) => entry.model === record.model);
+    let modelDetail = modelGroup.models.find((entry: { model: string; costUsd: number; totalTokens: number }) => entry.model === record.model);
     if (!modelDetail) {
       modelDetail = { model: record.model, costUsd: 0, totalTokens: 0 };
       modelGroup.models.push(modelDetail);
@@ -114,7 +146,7 @@ function summarize(records) {
   };
 }
 
-export async function readCcusageUsage({ from, to, timeZone }) {
+export async function readCcusageUsage({ from, to, timeZone }: { from: string; to: string; timeZone: string }) {
   const binary = process.env.CCUSAGE_BIN?.trim() || "ccusage";
   try {
     const { stdout } = await execFileAsync(binary, ["daily", "--json", "--by-agent", "--since", from, "--until", to, "--timezone", timeZone], {
@@ -125,12 +157,12 @@ export async function readCcusageUsage({ from, to, timeZone }) {
     const records = parseCcusage(JSON.parse(stdout));
     return { status: "ok", error: null, source: binary, records, ...summarize(records) };
   } catch (error) {
-    const detail = error?.code === "ENOENT" ? `${binary} was not found` : error?.message || "ccusage failed";
+    const detail = error && typeof error === "object" && "code" in error && error.code === "ENOENT" ? `${binary} was not found` : errorMessage(error, "ccusage failed");
     return { ...emptySummary("error", detail, binary), records: [] };
   }
 }
 
-export async function readUsageSources(enabledProviders, range) {
+export async function readUsageSources(enabledProviders: string[], range: { from: string; to: string; timeZone: string }) {
   const result = await readCcusageUsage(range);
   if (result.status !== "ok") {
     return { ...result, sources: enabledProviders.map((provider) => ({ provider, status: result.status, error: result.error })) };
@@ -152,4 +184,4 @@ function binarySource() {
   return process.env.CCUSAGE_BIN?.trim() || "ccusage";
 }
 
-export const readCodexUsage = (range) => readCcusageUsage(range);
+export const readCodexUsage = (range: { from: string; to: string; timeZone: string }) => readCcusageUsage(range);
