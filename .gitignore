@@ -1,0 +1,19 @@
+# Dependencies
+src/node_modules/
+
+# Runtime and debug output
+*.log
+npm-debug.log*
+# Coverage and build artifacts
+coverage/
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+config.json
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,10 @@
+{
+  "name": "Quota / usage",
+  "short_name": "Quota",
+  "description": "AI provider usage and quota dashboard",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#101413",
+  "theme_color": "#101413",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}

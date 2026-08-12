@@ -1,0 +1,14 @@
+{
+  "name": "quota-dashboard",
+  "version": "0.1.0",
+  "private": true,
+  "description": "PWA dashboard for AI provider usage and quotas",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test lib/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
