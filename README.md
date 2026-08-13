@@ -61,7 +61,7 @@ Provider enablement is stored in `~/.config/quota-dashboard/config.json` with mo
 - `CONFIG_PATH` (defaults to `~/.config/quota-dashboard/config.json`)
 - `HOST` and `PORT` (server bind address and port)
 
-Local usage is read exclusively with one shared `ccusage daily --json` command. The response is separated into Codex, OpenCode, and Hermes groups using its provider/source fields; those groups are independently toggleable in the Providers dialog. The dashboard does not read provider-local databases directly. Codex/ChatGPT quota is fetched directly from `https://chatgpt.com/backend-api/wham/usage` using the Codex OAuth access token and account ID in `~/.codex/auth.json`; CLIProxyAPI is not required. OpenCode Go supports rolling, weekly, and monthly windows when its dashboard returns them.
+Local usage is read exclusively with one shared `ccusage daily --json` command. The response is separated into Codex, OpenCode, and Hermes groups using its provider/source fields; those groups are independently toggleable in the Providers dialog. The dashboard does not read provider-local databases directly. Codex/ChatGPT quota is fetched directly from `https://chatgpt.com/backend-api/wham/usage` using the Codex OAuth access token and account ID in `~/.codex/auth.json`. OpenCode Go supports rolling, weekly, and monthly windows when its dashboard returns them.
 
 ## Future clients
 
