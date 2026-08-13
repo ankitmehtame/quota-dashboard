@@ -1,4 +1,4 @@
-export const PROVIDER_IDS = ["codex", "openrouter", "togetherai", "opencode-go"] as const;
+export const PROVIDER_IDS = ["codex", "openrouter", "opencode-go"] as const;
 export type ProviderId = typeof PROVIDER_IDS[number];
 export const USAGE_SOURCE_IDS = ["codex", "opencode", "hermes"] as const;
 export type UsageSourceId = typeof USAGE_SOURCE_IDS[number];
@@ -81,22 +81,6 @@ export const PROVIDER_DEFINITIONS: Record<ProviderId, {
       tokenCounts: false,
     },
   },
-  togetherai: {
-    name: "Together AI",
-    shortName: "Together",
-    accent: "orange",
-    description: "Organization prepaid balance",
-    capabilities: {
-      quota: true,
-      usage: false,
-      usedPercent: false,
-      remainingValue: true,
-      resetAt: false,
-      historicalUsage: false,
-      cost: true,
-      tokenCounts: false,
-    },
-  },
   "opencode-go": {
     name: "OpenCode Go",
     shortName: "Go",
@@ -119,7 +103,6 @@ export const DEFAULT_CONFIG: AppConfig = {
   providers: {
     codex: { enabled: true },
     openrouter: { enabled: true },
-    togetherai: { enabled: true },
     "opencode-go": { enabled: false },
   },
   usageSources: {

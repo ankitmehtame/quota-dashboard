@@ -8,7 +8,7 @@ type AppState = { days: number; range: string; dashboard: Dashboard | null };
 const state: AppState = { days: 1, range: "today", dashboard: null };
 const $ = (selector: string): any => document.querySelector(selector);
 const element = (target: EventTarget | null): HTMLElement => target as HTMLElement;
-const providerOrder = ["codex", "openrouter", "togetherai", "opencode-go"];
+const providerOrder = ["codex", "openrouter", "opencode-go"];
 const usageSourceOrder = ["codex", "opencode", "hermes"];
 const usageSourceNames: Record<string, string> = { codex: "Codex", opencode: "OpenCode", hermes: "Hermes" };
 
