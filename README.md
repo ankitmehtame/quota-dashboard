@@ -26,7 +26,10 @@ HOST=0.0.0.0 npm start
 
 Application TypeScript source lives in `src/`; generated runtime JavaScript is written
 to `src/dist/` and is ignored by git. GitHub Actions uploads the contents of `src/dist/`
-as the `quota-dashboard-node` artifact. Extract it on a Node.js 20+ host and run
+as the `quota-dashboard-node` artifact. Each build also writes a deterministic Git-derived
+version to `src/dist/version.json`, which is shown in the dashboard footer. Tagged commits
+use their `vX.Y.Z` tag; other commits use a version such as `0.1.0-dev.3+gba87213`.
+Extract it on a Node.js 20+ host and run
 `node server.js` from the extracted directory.
 
 ## Releases
