@@ -3,7 +3,7 @@ type Provider = { id: string; name: string; shortName: string; accent: string; d
 type UsageModel = { model: string; costUsd: number; totalTokens?: number };
 type UsageDay = { date: string; costUsd: number; totalTokens: number; byProvider?: Record<string, { costUsd: number; totalTokens: number }>; byModel?: Array<{ provider: string; models: UsageModel[] }> };
 type Usage = { totalCostUsd: number; from?: string; to?: string; providers?: string[]; daily?: UsageDay[]; byModel?: UsageModel[]; error?: string | null };
-type Dashboard = { providers: Record<string, Provider>; quotas: Record<string, { windows?: QuotaWindow[]; planType?: string; fetchedAt?: string; error?: string | null }>; usage: Usage; serverNow: string; cache?: { fetchedAt?: string } };
+type Dashboard = { version: string; providers: Record<string, Provider>; quotas: Record<string, { windows?: QuotaWindow[]; planType?: string; fetchedAt?: string; error?: string | null }>; usage: Usage; serverNow: string; cache?: { fetchedAt?: string } };
 type AppState = { days: number; range: string; dashboard: Dashboard | null };
 const state: AppState = { days: 1, range: "today", dashboard: null };
 const $ = (selector: string): any => document.querySelector(selector);
@@ -100,6 +100,8 @@ function renderStatus(data: Dashboard): void {
   $("#status-copy").textContent = errors.length ? `${errors.length} source${errors.length > 1 ? "s" : ""} need attention` : `${enabled.length} source${enabled.length === 1 ? "" : "s"} active · local time and provider reports combined`;
   $("#updated-at").textContent = `updated ${relativeTime(data.serverNow)}`;
   $("#last-refresh").textContent = `Last refresh: ${formatRefreshTime(data.cache?.fetchedAt || data.serverNow)}`;
+  $("#app-version").textContent = `Build ${data.version}`;
+  $("#app-version").setAttribute("title", `Build ${data.version}`);
 }
 
 function renderClock(): void {

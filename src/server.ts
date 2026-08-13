@@ -15,8 +15,22 @@ const port = Number(process.env.PORT || 4173);
 const configPath = process.env.CONFIG_PATH || join(homedir(), ".config", "quota-dashboard", "config.json");
 const quotaCache = new Map<ProviderId, { cachedAt: number; value: ProviderResult }>();
 const dashboardCache = new Map<string, { cachedAt: number; fetchedAt: string; value: DashboardValue }>();
+const buildInfo = await loadBuildInfo();
+
+type BuildInfo = { version: string; commit: string | null };
+
+async function loadBuildInfo(): Promise<BuildInfo> {
+  try {
+    const value = JSON.parse(await readFile(join(root, "version.json"), "utf8")) as Partial<BuildInfo>;
+    if (typeof value.version === "string") return { version: value.version, commit: typeof value.commit === "string" ? value.commit : null };
+  } catch {
+    // Development servers without a completed build still have a usable fallback.
+  }
+  return { version: "0.0.0-dev.0", commit: null };
+}
 
 type DashboardValue = {
+  version: string;
   apiVersion: number;
   serverNow: string;
   timezone: string;
@@ -61,7 +75,7 @@ async function dashboard(url: URL, config: AppConfig) {
   const usageSources = USAGE_SOURCE_IDS.filter((id) => config.usageSources[id].enabled);
   const usage = usageSources.length ? await readUsageSources(usageSources, range) : { status: "disabled", daily: [], byModel: [], byProvider: [], totalCostUsd: 0, totalTokens: 0, error: null, source: null, sources: [] };
   const statuses = Object.fromEntries(await Promise.all(PROVIDER_IDS.map(async (id) => [id, providerStatus({ id, config: config.providers[id], result: quotas[id] ?? { configured: await isProviderConfigured(id) } })])));
-  const value = { apiVersion: 1, serverNow: new Date().toISOString(), timezone: range.timeZone, providers: statuses, quotas, usage: { ...usage, from: range.from, to: range.to, providers: usageSources } };
+  const value = { version: buildInfo.version, apiVersion: 1, serverNow: new Date().toISOString(), timezone: range.timeZone, providers: statuses, quotas, usage: { ...usage, from: range.from, to: range.to, providers: usageSources } };
   dashboardCache.set(cacheKey, { cachedAt: Date.now(), fetchedAt: value.serverNow, value });
   return { ...value, cache: { fetchedAt: value.serverNow, expiresAt: new Date(Date.now() + 300_000).toISOString() } };
 }
@@ -82,18 +96,18 @@ async function handleApi(request: import("node:http").IncomingMessage, response:
   const config = await loadConfig();
   if (request.method === "GET" && url.pathname === "/api/v1/providers") {
     const statuses = Object.fromEntries(await Promise.all(PROVIDER_IDS.map(async (id) => [id, providerStatus({ id, config: config.providers[id], result: { configured: await isProviderConfigured(id) } })])));
-    return json(response, 200, { apiVersion: 1, providers: statuses, usageSources: config.usageSources });
+    return json(response, 200, { version: buildInfo.version, apiVersion: 1, providers: statuses, usageSources: config.usageSources });
   }
   if (request.method === "GET" && url.pathname === "/api/v1/dashboard") return json(response, 200, await dashboard(url, config));
   if (request.method === "GET" && url.pathname === "/api/v1/quotas") {
     const enabled = PROVIDER_IDS.filter((id) => config.providers[id].enabled);
     const entries = await Promise.all(enabled.map(async (id) => [id, await getQuota(id, url.searchParams.get("refresh") === "1")]));
-    return json(response, 200, { apiVersion: 1, serverNow: new Date().toISOString(), quotas: Object.fromEntries(entries) });
+    return json(response, 200, { version: buildInfo.version, apiVersion: 1, serverNow: new Date().toISOString(), quotas: Object.fromEntries(entries) });
   }
   if (request.method === "GET" && url.pathname === "/api/v1/widget-summary") {
     const enabled = PROVIDER_IDS.filter((id) => config.providers[id].enabled);
     const entries = await Promise.all(enabled.map(async (id) => [id, await getQuota(id)]));
-    return json(response, 200, { apiVersion: 1, serverNow: new Date().toISOString(), providers: Object.fromEntries(entries) });
+    return json(response, 200, { version: buildInfo.version, apiVersion: 1, serverNow: new Date().toISOString(), providers: Object.fromEntries(entries) });
   }
   const providerMatch = url.pathname.match(/^\/api\/v1\/providers\/([^/]+)\/(enabled|test)$/);
   if (providerMatch && PROVIDER_IDS.includes(providerMatch[1] as ProviderId)) {
