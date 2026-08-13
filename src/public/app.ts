@@ -47,19 +47,24 @@ function formatRefreshTime(iso: string | null | undefined): string {
   return iso ? new Intl.DateTimeFormat([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(iso)) : "unknown";
 }
 
+function formatPercent(value: number): string {
+  return value.toFixed(1).replace(/\.0$/, "");
+}
+
 function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][string]): string {
   const window = quota?.windows?.[0];
   const percent = window?.usedPercent;
-  const value = percent === null || percent === undefined
-    ? (window?.balanceLabel ? `<span class="quota-balance-primary">${window.balanceLabel}</span><span class="quota-balance-secondary">${window.spentLabel || ""}</span>` : window?.valueLabel || "Not available")
-    : `${Math.round(percent)}%`;
+  const value = window?.balanceLabel ? `<span class="quota-balance-primary">${window.balanceLabel}</span><span class="quota-balance-secondary">${window.spentLabel || ""}</span>` : window?.valueLabel || "Not available";
   const status = provider.status === "disabled" ? "off" : provider.status === "error" ? "error" : provider.configured ? "connected" : "setup needed";
   const label = percent == null && window?.valueLabel ? "" : window?.valueLabel || (provider.id === "codex" ? "" : provider.configured ? "No balance reported" : "Configure credentials on server");
   const plan = quota?.planType ? `<div class="quota-plan">${quota.planType} plan</div>` : "";
   const nowPosition = quotaNowPosition(window);
-  const nowExpected = nowPosition === null ? null : Math.round(nowPosition * 100) / 100;
+  const nowExpected = nowPosition === null ? null : Math.floor(nowPosition * 10) / 10;
+  const percentageValue = percent == null
+    ? value
+    : `<span class="quota-used-percent">${formatPercent(percent)}% <small>used</small></span>${nowExpected === null ? "" : `<span class="quota-expected-percent">/ ${formatPercent(nowExpected)}% elapsed</span>`}`;
   const refreshedAt = quota?.fetchedAt || state.dashboard?.cache?.fetchedAt;
-  return `<article class="quota-card" style="--accent: var(--${provider.accent})"><div class="provider-head"><div><div class="provider-name">${provider.shortName}</div><div class="provider-sub">${provider.description}</div></div><span class="provider-badge">${status}</span></div>${plan}<div class="quota-main"> <div class="quota-percent ${percent == null && !window?.valueLabel ? "unavailable" : "quota-balance"}">${value}<span class="quota-label">${percent == null ? "" : "used"}</span></div>${percent != null ? `<div class="bar"><span style="width:${Math.min(percent, 100)}%"></span>${nowPosition !== null ? `<button class="quota-now-marker" style="left:${nowPosition}%" type="button" aria-label="Current quota window position"><span class="quota-now-tooltip"><strong>Now</strong><span>${nowExpected}% of window elapsed</span><span>Snapshot: ${formatRefreshTime(refreshedAt)}</span></span></button>` : ""}</div>` : ""}<div class="quota-foot">${label ? `<span>${label}</span>` : ""}<span>${window?.resetAt ? timeUntil(window.resetAt) : ""}</span></div>${quota?.error ? `<div class="quota-error">${quota.error}</div>` : ""}</div></article>`;
+  return `<article class="quota-card" style="--accent: var(--${provider.accent})"><div class="provider-head"><div><div class="provider-name">${provider.shortName}</div><div class="provider-sub">${provider.description}</div></div><span class="provider-badge">${status}</span></div>${plan}<div class="quota-main"> <div class="quota-percent ${percent == null && !window?.valueLabel ? "unavailable" : percent == null ? "quota-balance" : "quota-percentage"}">${percentageValue}</div>${percent != null ? `<div class="bar"><span style="width:${Math.min(percent, 100)}%"></span>${nowPosition !== null ? `<button class="quota-now-marker" style="left:${nowPosition}%" type="button" aria-label="Current quota window position"><span class="quota-now-tooltip"><strong>Now</strong><span>${nowExpected}% of window elapsed</span><span>Snapshot: ${formatRefreshTime(refreshedAt)}</span></span></button>` : ""}</div>` : ""}<div class="quota-foot">${label ? `<span>${label}</span>` : ""}<span>${window?.resetAt ? timeUntil(window.resetAt) : ""}</span></div>${quota?.error ? `<div class="quota-error">${quota.error}</div>` : ""}</div></article>`;
 }
 
 function renderQuotas(data: Dashboard): void {
