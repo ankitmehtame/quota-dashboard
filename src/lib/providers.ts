@@ -95,41 +95,6 @@ async function fetchOpenRouter(): Promise<ProviderResult> {
   }
 }
 
-async function fetchTogether(): Promise<ProviderResult> {
-  const auth = await readJson(authPath);
-  const key = process.env.TOGETHER_API_KEY?.trim() || authValue(auth, ["togetherai", "together"]);
-  if (!key) return result(false, [], "Together AI API key is not configured");
-  const headers = { Authorization: `Bearer ${key}`, Accept: "application/json", "User-Agent": "QuotaDashboard/1.0" };
-  try {
-    const whoami = await fetch("https://api.together.ai/v1/whoami", { headers, signal: AbortSignal.timeout(15_000) });
-    if (!whoami.ok) return result(true, [], `Together AI whoami returned HTTP ${whoami.status}`);
-    const identity = objectValue(await whoami.json());
-    const configuredOrganization = process.env.TOGETHER_ORGANIZATION_ID?.trim();
-    const discoveredOrganization = identity.organization_id ?? objectValue(identity.organization).id;
-    const organization = configuredOrganization || (typeof discoveredOrganization === "string" ? discoveredOrganization : null);
-    if (!organization) return result(true, [], "Together AI response did not include an organization");
-    const balance = await fetch(`https://api.together.ai/api/billing/organizations/${encodeURIComponent(organization)}/ongoing-balance`, { headers, signal: AbortSignal.timeout(15_000) });
-    if (!balance.ok) return result(true, [], `Together AI balance returned HTTP ${balance.status}`);
-    const payload = objectValue(await balance.json());
-    const ongoingBalance = objectValue(payload.ongoingBalance);
-    const ongoingUsage = objectValue(payload.ongoingBillingCycleUsage);
-    const remainingCents = numberOrNull(ongoingBalance.value_cents ?? payload.totalOngoingBalanceCents);
-    const spentCents = numberOrNull(ongoingUsage.value_cents);
-    const remaining = remainingCents === null ? null : remainingCents / 100;
-    const spent = spentCents === null ? null : spentCents / 100;
-    const valueLabel = remaining !== null && spent !== null ? `${formatMoney(remaining)} left · ${formatMoney(spent)} spent` : remaining !== null ? `${formatMoney(remaining)} left` : null;
-    return result(true, [usageWindow({
-      name: "credits",
-      valueLabel,
-      balanceLabel: remaining !== null ? `${formatMoney(remaining)} balance` : null,
-      spentLabel: spent !== null ? `${formatMoney(spent)} spent (this billing cycle)` : null,
-      source: "provider",
-    })]);
-  } catch (error) {
-    return result(true, [], errorMessage(error, "Together AI request failed"));
-  }
-}
-
 function parseNumber(body: string, field: string): number | null {
   const match = body.match(new RegExp(`["']?${field}["']?\\s*:\\s*["']?(-?\\d+(?:\\.\\d+)?)`));
   const value = match ? Number(match[1]) : null;
@@ -218,14 +183,12 @@ export function parseCodexQuota(payload: unknown): QuotaWindow[] {
   return windows;
 }
 
-export const PROVIDER_FETCHERS: Record<ProviderId, () => Promise<ProviderResult>> = { codex: fetchCodex, openrouter: fetchOpenRouter, togetherai: fetchTogether, "opencode-go": fetchOpenCodeGo };
+export const PROVIDER_FETCHERS: Record<ProviderId, () => Promise<ProviderResult>> = { codex: fetchCodex, openrouter: fetchOpenRouter, "opencode-go": fetchOpenCodeGo };
 
 export async function isProviderConfigured(id: ProviderId): Promise<boolean> {
-  if (id === "openrouter" || id === "togetherai") {
+  if (id === "openrouter") {
     const auth = await readJson(authPath);
-    return Boolean(id === "openrouter"
-      ? process.env.OPENROUTER_API_KEY?.trim() || authValue(auth, ["openrouter"])
-      : process.env.TOGETHER_API_KEY?.trim() || authValue(auth, ["togetherai", "together"]));
+    return Boolean(process.env.OPENROUTER_API_KEY?.trim() || authValue(auth, ["openrouter"]));
   }
   if (id === "opencode-go") return Boolean(process.env.OPENCODE_GO_WORKSPACE_ID?.trim() && process.env.OPENCODE_GO_AUTH_COOKIE?.trim());
   if (id === "codex") {
