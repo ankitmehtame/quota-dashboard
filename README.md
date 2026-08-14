@@ -11,7 +11,7 @@ cd src
 npm start
 ```
 
-The server requires Node.js 20 or newer. `npm start` compiles the TypeScript source
+The server requires Node.js 22 or newer. `npm start` compiles the TypeScript source
 to `src/dist/` before starting the server. Install and configure `ccusage` separately
 if you want local usage statistics; the dashboard reports an error when the command
 is unavailable.
@@ -29,7 +29,7 @@ to `src/dist/` and is ignored by git. GitHub Actions uploads the contents of `sr
 as the `quota-dashboard-node` artifact. Each build also writes a deterministic Git-derived
 version to `src/dist/version.json`, which is shown in the dashboard footer. Tagged commits
 use their `vX.Y.Z` tag; other commits use a version such as `0.1.0-dev.3+gba87213`.
-Extract it on a Node.js 20+ host and run
+Extract it on a Node.js 22+ host and run
 `node server.js` from the extracted directory.
 
 ## Releases
@@ -44,7 +44,7 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-Extract the release archive on a Node.js 20+ host and run `node server.js` from
+Extract the release archive on a Node.js 22+ host and run `node server.js` from
 the extracted directory.
 
 ## Configuration
