@@ -124,7 +124,7 @@ function renderUsage(usage: Usage): void {
   const usageTooltip = (day: UsageDay, hoveredProvider: string, segments: Array<{ provider: string; costUsd: number; totalTokens: number }>): string => {
     const sortedSegments = [...segments].sort((a, b) => b.costUsd - a.costUsd);
     const harnesses = sortedSegments.map((segment) => `<span class="harness-row ${segment.provider === hoveredProvider ? "hovered" : ""}"><i class="tooltip-harness-dot ${colors[segment.provider] || "mint"}"></i><span class="harness-name">${segment.provider}</span><span class="harness-detail"> · ${money(segment.costUsd)} · ${segment.totalTokens.toLocaleString()} tokens</span></span>`).join("");
-    return `<span class="chart-tooltip"><strong>${money(day.costUsd)} total</strong><span>${day.date}</span><div class="tooltip-separator"></div>${harnesses}</span>`;
+    return `<span class="chart-tooltip"><strong>${money(day.costUsd)} total · ${day.totalTokens.toLocaleString()} tokens</strong><span>${day.date}</span><div class="tooltip-separator"></div>${harnesses}</span>`;
   };
   const renderSegment = (day: UsageDay, segment: { provider: string; costUsd: number; totalTokens: number }, segments: Array<{ provider: string; costUsd: number; totalTokens: number }>, height: number, offset = 0) => { const color = colors[segment.provider] || "mint"; return `<div class="chart-segment ${color}" style="height:${height}%;bottom:${offset}%">${usageTooltip(day, segment.provider, segments)}</div>`; };
   const todayOnly = usage.from === usage.to;
