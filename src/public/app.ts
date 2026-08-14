@@ -139,6 +139,7 @@ function openDayDetails(day: UsageDay | undefined): void {
   if (!day) return;
   $("#usage-chart").classList.add("suppress-tooltips");
   $("#day-details-title").textContent = day.date;
+  $("#day-details-summary").innerHTML = `<span><strong>${money(day.costUsd)}</strong> total</span><span><strong>${day.totalTokens.toLocaleString()}</strong> tokens</span>`;
   $("#day-details-content").innerHTML = (day.byModel || []).map((group) => `<section class="detail-group"><h3>${group.provider}</h3>${group.models.map((model) => `<div class="detail-model"><span>${model.model}</span><span>${money(model.costUsd)} · ${(model.totalTokens || 0).toLocaleString()} tokens</span></div>`).join("")}</section>`).join("") || `<p class="quota-empty">No model details available.</p>`;
   $("#day-details-dialog").showModal();
 }
