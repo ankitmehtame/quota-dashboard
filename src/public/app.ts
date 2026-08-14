@@ -55,6 +55,10 @@ function money(value: number | null | undefined): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(value ?? 0);
 }
 
+function formatTokens(value: number | null | undefined): string {
+  return (value || 0).toLocaleString();
+}
+
 function relativeTime(iso: string | null | undefined): string {
   if (!iso) return "not fetched";
   const minutes = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60_000));
@@ -123,8 +127,8 @@ function renderUsage(usage: Usage): void {
   const max = Math.max(...daily.map((day) => day.costUsd), 0);
   const usageTooltip = (day: UsageDay, hoveredProvider: string, segments: Array<{ provider: string; costUsd: number; totalTokens: number }>): string => {
     const sortedSegments = [...segments].sort((a, b) => b.costUsd - a.costUsd);
-    const harnesses = sortedSegments.map((segment) => `<span class="harness-row ${segment.provider === hoveredProvider ? "hovered" : ""}"><i class="tooltip-harness-dot ${colors[segment.provider] || "mint"}"></i><span class="harness-name">${segment.provider}</span><span class="harness-detail"> · ${money(segment.costUsd)} · ${segment.totalTokens.toLocaleString()} tokens</span></span>`).join("");
-    return `<span class="chart-tooltip"><strong>${money(day.costUsd)} total · ${day.totalTokens.toLocaleString()} tokens</strong><span>${day.date}</span><div class="tooltip-separator"></div>${harnesses}</span>`;
+    const harnesses = sortedSegments.map((segment) => `<span class="harness-row ${segment.provider === hoveredProvider ? "hovered" : ""}"><i class="tooltip-harness-dot ${colors[segment.provider] || "mint"}"></i><span class="harness-name">${segment.provider}</span><span class="harness-detail"> · ${money(segment.costUsd)} · ${formatTokens(segment.totalTokens)} tokens</span></span>`).join("");
+    return `<span class="chart-tooltip"><strong>${money(day.costUsd)} total · ${formatTokens(day.totalTokens)} tokens</strong><span>${day.date}</span><div class="tooltip-separator"></div>${harnesses}</span>`;
   };
   const renderSegment = (day: UsageDay, segment: { provider: string; costUsd: number; totalTokens: number }, segments: Array<{ provider: string; costUsd: number; totalTokens: number }>, height: number, offset = 0) => { const color = colors[segment.provider] || "mint"; return `<div class="chart-segment ${color}" style="height:${height}%;bottom:${offset}%">${usageTooltip(day, segment.provider, segments)}</div>`; };
   const todayOnly = usage.from === usage.to;
@@ -139,8 +143,8 @@ function openDayDetails(day: UsageDay | undefined): void {
   if (!day) return;
   $("#usage-chart").classList.add("suppress-tooltips");
   $("#day-details-title").textContent = day.date;
-  $("#day-details-summary").innerHTML = `<span><strong>${money(day.costUsd)}</strong> total</span><span><strong>${day.totalTokens.toLocaleString()}</strong> tokens</span>`;
-  $("#day-details-content").innerHTML = (day.byModel || []).map((group) => `<section class="detail-group"><h3>${group.provider}</h3>${group.models.map((model) => `<div class="detail-model"><span>${model.model}</span><span>${money(model.costUsd)} · ${(model.totalTokens || 0).toLocaleString()} tokens</span></div>`).join("")}</section>`).join("") || `<p class="quota-empty">No model details available.</p>`;
+  $("#day-details-summary").innerHTML = `<span><strong>${money(day.costUsd)}</strong> total</span><span><strong>${formatTokens(day.totalTokens)}</strong> tokens</span>`;
+  $("#day-details-content").innerHTML = (day.byModel || []).map((group) => `<section class="detail-group"><h3>${group.provider}</h3>${group.models.map((model) => `<div class="detail-model"><span>${model.model}</span><span>${money(model.costUsd)} · ${formatTokens(model.totalTokens)} tokens</span></div>`).join("")}</section>`).join("") || `<p class="quota-empty">No model details available.</p>`;
   $("#day-details-dialog").showModal();
 }
 
@@ -207,6 +211,9 @@ renderClock(); setInterval(renderClock, 30_000); setInterval(() => { if (state.d
 loadDashboard().catch((error) => { const message = error instanceof Error ? error.message : "Dashboard request failed"; $("#status-copy").textContent = message; showToast(message); });
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 
-window.addEventListener("resize", () => {
+function repositionActiveChartTooltip(): void {
   if (activeChartTooltip) positionChartTooltip(activeChartTooltip.anchor, activeChartTooltip.tooltip);
-});
+}
+
+window.addEventListener("resize", repositionActiveChartTooltip);
+window.addEventListener("scroll", repositionActiveChartTooltip, { passive: true });
