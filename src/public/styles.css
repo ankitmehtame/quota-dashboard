@@ -75,3 +75,19 @@ dialog { color: var(--text); background: var(--surface-raised); border: 1px soli
 .chart-legend .legend-key { align-self: center; margin: 0 0 1px 6px; vertical-align: middle; }
 .tooltip-harness-dot { display: inline-block; width: 7px; height: 7px; border-radius: 1px; margin-right: 6px; }.tooltip-harness-dot.mint { background: var(--mint); }.tooltip-harness-dot.violet { background: var(--violet); }.tooltip-harness-dot.orange { background: var(--orange); }.tooltip-harness-dot.blue { background: var(--blue); }
 @media (max-width: 560px) { .topbar { height: 65px; }.live-dot { display: none; }.hero { display: block; padding: 48px 0 46px; }.now-panel { border-left: 0; border-top: 1px solid var(--line); padding: 18px 0 0; margin-top: 38px; }.now-panel strong { font-size: 28px; display: inline-block; margin-right: 8px; }.now-panel small { display: inline-block; }.quota-grid { grid-template-columns: 1fr; }.quota-card { min-height: 165px; }.usage-section { margin-top: 51px; }.section-heading { align-items: start; gap: 15px; }.usage-heading { display: block; }.segmented { margin-top: 17px; width: fit-content; }.chart-card, .models-card { padding: 17px; }.chart-legend { display: none !important; }.status-strip { align-items: start; }.status-updated { display: none; }footer { flex-wrap: wrap; }.footer-version { width: 100%; margin: 4px 0 0; }.desktop-only { display: none; } }
+/* Keep chart details readable without letting the viewport clip them. */
+.chart-tooltip {
+  min-width: min(145px, calc(100vw - 16px));
+  max-width: calc(100vw - 16px);
+}
+.chart-tooltip strong,
+.chart-tooltip span {
+  white-space: normal;
+}
+.chart-tooltip .harness-row .harness-name {
+  flex-shrink: 0;
+}
+.chart-tooltip .harness-row .harness-detail {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}

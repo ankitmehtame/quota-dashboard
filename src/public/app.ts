@@ -11,6 +11,44 @@ const element = (target: EventTarget | null): HTMLElement => target as HTMLEleme
 const providerOrder = ["codex", "openrouter", "opencode-go"];
 const usageSourceOrder = ["codex", "opencode", "hermes"];
 const usageSourceNames: Record<string, string> = { codex: "Codex", opencode: "OpenCode", hermes: "Hermes" };
+let activeChartTooltip: { anchor: HTMLElement; tooltip: HTMLElement } | null = null;
+
+function positionChartTooltip(anchor: HTMLElement, tooltip: HTMLElement): void {
+  const margin = 8;
+  const gap = 10;
+  tooltip.style.position = "fixed";
+  tooltip.style.visibility = "hidden";
+
+  const anchorRect = anchor.getBoundingClientRect();
+  const tooltipRect = tooltip.getBoundingClientRect();
+  const maxLeft = Math.max(margin, window.innerWidth - tooltipRect.width - margin);
+  const centeredLeft = anchorRect.left + (anchorRect.width - tooltipRect.width) / 2;
+  const left = Math.min(Math.max(centeredLeft, margin), maxLeft);
+  const aboveTop = anchorRect.top - tooltipRect.height - gap;
+  const belowTop = anchorRect.bottom + gap;
+  const maxTop = Math.max(margin, window.innerHeight - tooltipRect.height - margin);
+  const top = aboveTop >= margin ? aboveTop : belowTop <= maxTop ? belowTop : maxTop;
+
+  tooltip.style.left = `${Math.round(left)}px`;
+  tooltip.style.top = `${Math.round(top)}px`;
+  tooltip.style.bottom = "auto";
+  tooltip.style.transform = "none";
+  tooltip.style.visibility = "visible";
+}
+
+function bindChartTooltips(chart: HTMLElement): void {
+  chart.querySelectorAll<HTMLElement>(".chart-segment").forEach((segment) => {
+    const tooltip = segment.querySelector<HTMLElement>(".chart-tooltip");
+    if (!tooltip) return;
+    segment.addEventListener("pointerenter", () => {
+      activeChartTooltip = { anchor: segment, tooltip };
+      positionChartTooltip(segment, tooltip);
+    });
+    segment.addEventListener("pointerleave", () => {
+      if (activeChartTooltip?.tooltip === tooltip) activeChartTooltip = null;
+    });
+  });
+}
 
 function money(value: number | null | undefined): string {
   if (!Number.isFinite(value)) return "—";
@@ -91,6 +129,8 @@ function renderUsage(usage: Usage): void {
   const renderSegment = (day: UsageDay, segment: { provider: string; costUsd: number; totalTokens: number }, segments: Array<{ provider: string; costUsd: number; totalTokens: number }>, height: number, offset = 0) => { const color = colors[segment.provider] || "mint"; return `<div class="chart-segment ${color}" style="height:${height}%;bottom:${offset}%">${usageTooltip(day, segment.provider, segments)}</div>`; };
   const todayOnly = usage.from === usage.to;
   chart.innerHTML = daily.length ? daily.map((day, dayIndex) => { const segments = providers.map((provider) => ({ provider, costUsd: day.byProvider?.[provider]?.costUsd || 0, totalTokens: day.byProvider?.[provider]?.totalTokens || 0 })).filter((segment) => segment.costUsd > 0 || segment.totalTokens > 0); const fallback = segments.length ? segments : [{ provider: "other", costUsd: day.costUsd, totalTokens: day.totalTokens }]; const displayedTotal = fallback.reduce((total, segment) => total + segment.costUsd, 0); if (todayOnly) return fallback.map((segment) => `<div class="chart-column today-harness" data-day-index="${dayIndex}" tabindex="0" aria-label="${day.date} ${segment.provider}: ${money(segment.costUsd)}"><div class="chart-stack"><div class="chart-segment ${colors[segment.provider] || "mint"}" style="height:${max ? Math.max(2, (segment.costUsd / max) * 100) : 2}%;bottom:0">${usageTooltip(day, segment.provider, fallback)}</div></div></div>`).join(""); const isCurrentDay = day.date === usage.to; let offset = 0; const markup = fallback.map((segment) => { const height = isCurrentDay ? (displayedTotal > 0 ? (segment.costUsd / displayedTotal) * 100 : 0) : (max ? Math.max(2, (segment.costUsd / max) * 100) : 2); const html = renderSegment(day, segment, fallback, height, offset); offset += height; return html; }).join(""); const stackHeight = max ? Math.max(2, (displayedTotal / max) * 100) : 2; return `<div class="chart-column ${isCurrentDay && !todayOnly ? "current-day" : ""}" data-day-index="${dayIndex}" tabindex="0" aria-label="${day.date}: ${money(displayedTotal)}"><div class="chart-stack" style="${isCurrentDay && !todayOnly ? `height:${stackHeight}% !important` : ""}">${markup}</div></div>`; }).join("") : `<div class="chart-empty">${usage.error || "No usage data in this range"}</div>`;
+  activeChartTooltip = null;
+  bindChartTooltips(chart);
   (chart.querySelectorAll("[data-day-index]") as NodeListOf<HTMLElement>).forEach((bar) => bar.addEventListener("click", () => openDayDetails(daily[Number(bar.dataset.dayIndex)])));
   $("#models-list").innerHTML = usage.byModel?.length ? usage.byModel.slice(0, 5).map((model, index) => `<div class="model-row"><span class="model-rank">0${index + 1}</span><span class="model-name" title="${model.model}">${model.model}</span><span class="model-value">${money(model.costUsd)}</span></div>`).join("") : `<div class="quota-empty">No model breakdown available.</div>`;
 }
@@ -165,3 +205,7 @@ document.addEventListener("pointerdown", (event) => { if (!element(event.target)
 renderClock(); setInterval(renderClock, 30_000); setInterval(() => { if (state.dashboard) renderQuotas(state.dashboard); }, 60_000);
 loadDashboard().catch((error) => { const message = error instanceof Error ? error.message : "Dashboard request failed"; $("#status-copy").textContent = message; showToast(message); });
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
+
+window.addEventListener("resize", () => {
+  if (activeChartTooltip) positionChartTooltip(activeChartTooltip.anchor, activeChartTooltip.tooltip);
+});
