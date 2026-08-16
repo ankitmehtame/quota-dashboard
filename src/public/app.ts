@@ -1,6 +1,6 @@
 type QuotaWindow = { usedPercent?: number | null; resetAt?: string | null; windowSeconds?: number | null; valueLabel?: string | null; balanceLabel?: string | null; spentLabel?: string | null };
 type Provider = { id: string; name: string; shortName: string; accent: string; description: string; enabled: boolean; configured: boolean; status: string };
-type UsageModel = { model: string; costUsd: number; totalTokens?: number };
+type UsageModel = { provider: string; model: string; costUsd: number; totalTokens?: number };
 type UsageDay = { date: string; costUsd: number; totalTokens: number; byProvider?: Record<string, { costUsd: number; totalTokens: number }>; byModel?: Array<{ provider: string; models: UsageModel[] }> };
 type Usage = { totalCostUsd: number; from?: string; to?: string; providers?: string[]; daily?: UsageDay[]; byModel?: UsageModel[]; error?: string | null };
 type Dashboard = { version: string; providers: Record<string, Provider>; quotas: Record<string, { windows?: QuotaWindow[]; planType?: string; fetchedAt?: string; error?: string | null }>; usage: Usage; serverNow: string; cache?: { fetchedAt?: string } };
@@ -136,7 +136,7 @@ function renderUsage(usage: Usage): void {
   activeChartTooltip = null;
   bindChartTooltips(chart);
   (chart.querySelectorAll("[data-day-index]") as NodeListOf<HTMLElement>).forEach((bar) => bar.addEventListener("click", () => openDayDetails(daily[Number(bar.dataset.dayIndex)])));
-  $("#models-list").innerHTML = usage.byModel?.length ? usage.byModel.slice(0, 5).map((model, index) => `<div class="model-row"><span class="model-rank">0${index + 1}</span><span class="model-name" title="${model.model}">${model.model}</span><span class="model-value">${money(model.costUsd)}</span></div>`).join("") : `<div class="quota-empty">No model breakdown available.</div>`;
+  $("#models-list").innerHTML = usage.byModel?.length ? usage.byModel.slice(0, 5).map((model, index) => `<div class="model-row"><span class="model-rank">0${index + 1}</span><span class="model-name" title="${model.model}">${model.model}<small class="model-provider">${sourceNames[model.provider] || model.provider}</small></span><span class="model-value">${money(model.costUsd)}</span></div>`).join("") : `<div class="quota-empty">No model breakdown available.</div>`;
 }
 
 function openDayDetails(day: UsageDay | undefined): void {
