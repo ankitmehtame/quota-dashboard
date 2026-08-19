@@ -33,3 +33,8 @@ test("parses Ollama session and weekly usage with anchored resets", () => {
 test("ignores malformed Ollama usage windows", () => {
   assert.deepEqual(parseOllamaUsage({ limits: { session: { usage: "unknown" } } }), []);
 });
+
+test("rounds Ollama percentages for API consumers", () => {
+  const windows = parseOllamaUsage({ limits: { session: { usage: 0.00123456 } } });
+  assert.equal(windows[0].usedPercent, 0.12);
+});

@@ -108,7 +108,7 @@ function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][st
       ? value
       : `<span class="quota-used-percent">${formatPercent(percent)}% <small>used</small></span>${nowExpected === null ? "" : `<span class="quota-expected-percent">/ ${formatPercent(nowExpected)}% elapsed</span>`}`;
     const label = windows.length > 1
-      ? window?.name || "Usage"
+      ? window?.valueLabel || ""
       : percent == null && window?.valueLabel
         ? ""
         : window?.valueLabel || (provider.id === "codex" ? "" : provider.configured ? "No balance reported" : "Configure credentials on server");
