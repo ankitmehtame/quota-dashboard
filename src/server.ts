@@ -1,5 +1,6 @@
 import { createServer } from "node:http";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +9,22 @@ import { type AppConfig, type ProviderId, type UsageSourceId, DEFAULT_CONFIG, PR
 import type { ProviderResult } from "./lib/core.js";
 import { isProviderConfigured, PROVIDER_FETCHERS } from "./lib/providers.js";
 import { readUsageSources } from "./lib/usage.js";
+
+function loadEnvironmentFile(path: string): void {
+  try {
+    const contents = readFileSync(path, "utf8");
+    for (const line of contents.split(/\r?\n/)) {
+      const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+      if (!match || process.env[match[1]] !== undefined) continue;
+      const value = match[2].replace(/^(['"])(.*)\1$/, "$2").replace(/\s+#.*$/, "");
+      process.env[match[1]] = value;
+    }
+  } catch {
+    // Environment files are optional; deployment environments may inject variables directly.
+  }
+}
+
+loadEnvironmentFile(join(homedir(), ".config", "quota-dashboard", ".env"));
 
 const root = dirname(fileURLToPath(import.meta.url));
 const publicRoot = join(root, "public");

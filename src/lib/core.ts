@@ -1,4 +1,4 @@
-export const PROVIDER_IDS = ["codex", "openrouter", "opencode-go"] as const;
+export const PROVIDER_IDS = ["codex", "openrouter", "opencode-go", "ollama"] as const;
 export type ProviderId = typeof PROVIDER_IDS[number];
 export const USAGE_SOURCE_IDS = ["codex", "opencode", "hermes"] as const;
 export type UsageSourceId = typeof USAGE_SOURCE_IDS[number];
@@ -97,6 +97,22 @@ export const PROVIDER_DEFINITIONS: Record<ProviderId, {
       tokenCounts: false,
     },
   },
+  ollama: {
+    name: "Ollama Cloud",
+    shortName: "Ollama",
+    accent: "orange",
+    description: "Cloud session and weekly usage",
+    capabilities: {
+      quota: true,
+      usage: false,
+      usedPercent: true,
+      remainingValue: false,
+      resetAt: true,
+      historicalUsage: false,
+      cost: false,
+      tokenCounts: false,
+    },
+  },
 };
 
 export const DEFAULT_CONFIG: AppConfig = {
@@ -104,6 +120,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     codex: { enabled: true },
     openrouter: { enabled: true },
     "opencode-go": { enabled: false },
+    ollama: { enabled: true },
   },
   usageSources: {
     codex: { enabled: true },

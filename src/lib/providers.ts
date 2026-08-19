@@ -47,6 +47,47 @@ function result(configured: boolean, windows: QuotaWindow[] = [], error: string 
   };
 }
 
+const OLLAMA_WEEK_SECONDS = 7 * 24 * 60 * 60;
+const OLLAMA_SESSION_SECONDS = 4 * 60 * 60;
+const OLLAMA_WEEK_ANCHOR = Date.parse("1970-01-05T00:00:00Z");
+
+function nextOllamaReset(now: number, windowSeconds: number): string {
+  const elapsed = Math.floor((now - OLLAMA_WEEK_ANCHOR) / (windowSeconds * 1000));
+  return new Date(OLLAMA_WEEK_ANCHOR + (elapsed + 1) * windowSeconds * 1000).toISOString();
+}
+
+export function parseOllamaUsage(payload: unknown, now = Date.now()): QuotaWindow[] {
+  const limits = objectValue(objectValue(payload).limits);
+  const windows: QuotaWindow[] = [];
+  for (const [name, seconds] of [["session", OLLAMA_SESSION_SECONDS], ["weekly", OLLAMA_WEEK_SECONDS]] as const) {
+    const usage = numberOrNull(objectValue(limits[name]).usage);
+    if (usage === null) continue;
+    windows.push(usageWindow({
+      name,
+      usedPercent: usage * 100,
+      resetAt: nextOllamaReset(now, seconds),
+      windowSeconds: seconds,
+    }));
+  }
+  return windows;
+}
+
+async function fetchOllama(): Promise<ProviderResult> {
+  const key = process.env.OLLAMA_API_KEY?.trim();
+  if (!key) return result(false, [], "Ollama Cloud API key is not configured");
+  try {
+    const response = await fetch("https://ollama.com/api/usage", {
+      headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) return result(true, [], `Ollama returned HTTP ${response.status}`);
+    const windows = parseOllamaUsage(await response.json());
+    return windows.length ? result(true, windows) : result(true, [], "Ollama usage response did not include a limit window");
+  } catch (error) {
+    return result(true, [], errorMessage(error, "Ollama request failed"));
+  }
+}
+
 async function fetchOpenRouter(): Promise<ProviderResult> {
   const auth = await readJson(authPath);
   const key = process.env.OPENROUTER_API_KEY?.trim() || authValue(auth, ["openrouter"]);
@@ -183,7 +224,7 @@ export function parseCodexQuota(payload: unknown): QuotaWindow[] {
   return windows;
 }
 
-export const PROVIDER_FETCHERS: Record<ProviderId, () => Promise<ProviderResult>> = { codex: fetchCodex, openrouter: fetchOpenRouter, "opencode-go": fetchOpenCodeGo };
+export const PROVIDER_FETCHERS: Record<ProviderId, () => Promise<ProviderResult>> = { codex: fetchCodex, openrouter: fetchOpenRouter, "opencode-go": fetchOpenCodeGo, ollama: fetchOllama };
 
 export async function isProviderConfigured(id: ProviderId): Promise<boolean> {
   if (id === "openrouter") {
@@ -191,6 +232,7 @@ export async function isProviderConfigured(id: ProviderId): Promise<boolean> {
     return Boolean(process.env.OPENROUTER_API_KEY?.trim() || authValue(auth, ["openrouter"]));
   }
   if (id === "opencode-go") return Boolean(process.env.OPENCODE_GO_WORKSPACE_ID?.trim() && process.env.OPENCODE_GO_AUTH_COOKIE?.trim());
+  if (id === "ollama") return Boolean(process.env.OLLAMA_API_KEY?.trim());
   if (id === "codex") {
     const auth = await readJson(process.env.CODEX_AUTH_PATH || join(homedir(), ".codex", "auth.json"));
     const tokens = objectValue(objectValue(auth).tokens);
