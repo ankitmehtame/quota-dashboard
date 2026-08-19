@@ -53,6 +53,7 @@ Provider enablement is stored in `~/.config/quota-dashboard/config.json` with mo
 
 - `CCUSAGE_BIN` (defaults to `ccusage`)
 - `OPENROUTER_API_KEY`
+- `OLLAMA_API_KEY` (reserved for Ollama Cloud API requests)
 - `OPENCODE_GO_WORKSPACE_ID`
 - `OPENCODE_GO_AUTH_COOKIE`
 - `OPENCODE_AUTH_PATH` (defaults to `~/.local/share/opencode/auth.json`)
@@ -60,6 +61,11 @@ Provider enablement is stored in `~/.config/quota-dashboard/config.json` with mo
 - `CODEX_AUTH_PATH` (defaults to `~/.codex/auth.json`)
 - `CONFIG_PATH` (defaults to `~/.config/quota-dashboard/config.json`)
 - `HOST` and `PORT` (server bind address and port)
+
+Ollama Cloud reads `OLLAMA_API_KEY` from the environment or from
+`~/.config/quota-dashboard/.env`. Its session and weekly usage are fetched from
+`https://ollama.com/api/usage`; session windows reset every four hours from the
+Monday 00:00 UTC weekly anchor, and weekly windows reset each Monday at 00:00 UTC.
 
 Local usage is read exclusively with one shared `ccusage daily --json` command. The response is separated into Codex, OpenCode, and Hermes groups using its provider/source fields; those groups are independently toggleable in the Providers dialog. The dashboard does not read provider-local databases directly. Codex/ChatGPT quota is fetched directly from `https://chatgpt.com/backend-api/wham/usage` using the Codex OAuth access token and account ID in `~/.codex/auth.json`. OpenCode Go supports rolling, weekly, and monthly windows when its dashboard returns them.
 
