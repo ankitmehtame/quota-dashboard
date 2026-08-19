@@ -48,7 +48,7 @@ function result(configured: boolean, windows: QuotaWindow[] = [], error: string 
 }
 
 const OLLAMA_WEEK_SECONDS = 7 * 24 * 60 * 60;
-const OLLAMA_SESSION_SECONDS = 4 * 60 * 60;
+const OLLAMA_SESSION_START_HOURS = [0, 4, 9, 14, 19];
 const OLLAMA_WEEK_ANCHOR = Date.parse("1970-01-05T00:00:00Z");
 
 function nextOllamaReset(now: number, windowSeconds: number): string {
@@ -56,10 +56,30 @@ function nextOllamaReset(now: number, windowSeconds: number): string {
   return new Date(OLLAMA_WEEK_ANCHOR + (elapsed + 1) * windowSeconds * 1000).toISOString();
 }
 
+function nextOllamaSessionWindow(now: number): { resetAt: string; windowSeconds: number } {
+  const current = new Date(now);
+  const dayStart = Date.UTC(current.getUTCFullYear(), current.getUTCMonth(), current.getUTCDate());
+  const resetTimes = OLLAMA_SESSION_START_HOURS.map((hour) => dayStart + hour * 60 * 60 * 1000);
+  const nextIndex = resetTimes.findIndex((resetAt) => resetAt > now);
+  const resetAt = nextIndex === -1 ? dayStart + 24 * 60 * 60 * 1000 : resetTimes[nextIndex];
+  const startAt = nextIndex === -1 ? resetTimes[resetTimes.length - 1] : nextIndex === 0 ? dayStart : resetTimes[nextIndex - 1];
+  return { resetAt: new Date(resetAt).toISOString(), windowSeconds: (resetAt - startAt) / 1000 };
+}
+
 export function parseOllamaUsage(payload: unknown, now = Date.now()): QuotaWindow[] {
   const limits = objectValue(objectValue(payload).limits);
   const windows: QuotaWindow[] = [];
-  for (const [name, seconds] of [["session", OLLAMA_SESSION_SECONDS], ["weekly", OLLAMA_WEEK_SECONDS]] as const) {
+  const sessionUsage = numberOrNull(objectValue(limits.session).usage);
+  if (sessionUsage !== null) {
+    const sessionWindow = nextOllamaSessionWindow(now);
+    windows.push(usageWindow({
+      name: "session",
+      usedPercent: Math.round(sessionUsage * 10000) / 100,
+      resetAt: sessionWindow.resetAt,
+      windowSeconds: sessionWindow.windowSeconds,
+    }));
+  }
+  for (const [name, seconds] of [["weekly", OLLAMA_WEEK_SECONDS]] as const) {
     const usage = numberOrNull(objectValue(limits[name]).usage);
     if (usage === null) continue;
     windows.push(usageWindow({
