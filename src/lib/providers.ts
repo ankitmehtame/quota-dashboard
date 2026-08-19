@@ -64,7 +64,7 @@ export function parseOllamaUsage(payload: unknown, now = Date.now()): QuotaWindo
     if (usage === null) continue;
     windows.push(usageWindow({
       name,
-      usedPercent: usage * 100,
+      usedPercent: Math.round(usage * 10000) / 100,
       resetAt: nextOllamaReset(now, seconds),
       windowSeconds: seconds,
     }));
