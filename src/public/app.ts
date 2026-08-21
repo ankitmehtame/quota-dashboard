@@ -6,7 +6,10 @@ type UsageDay = { date: string; costUsd: number; totalTokens: number; byProvider
 type Usage = { totalCostUsd: number; from?: string; to?: string; providers?: string[]; daily?: UsageDay[]; byModel?: UsageModel[]; error?: string | null };
 type Dashboard = { version: string; providers: Record<string, Provider>; quotas: Record<string, { windows?: QuotaWindow[]; planType?: string; fetchedAt?: string; error?: string | null }>; usage: Usage; serverNow: string; cache?: { fetchedAt?: string } };
 type AppState = { days: number; range: string; dashboard: Dashboard | null };
-const state: AppState = { days: 1, range: "today", dashboard: null };
+const timeFormatStorageKey = "quota-dashboard.time-format";
+const storedTimeFormat = localStorage.getItem(timeFormatStorageKey);
+const defaultHour12 = new Intl.DateTimeFormat([], { hour: "numeric" }).resolvedOptions().hour12 ?? true;
+const state: AppState & { hour12: boolean } = { days: 1, range: "today", dashboard: null, hour12: storedTimeFormat === "12" || (storedTimeFormat !== "24" && defaultHour12) };
 const $ = (selector: string): any => document.querySelector(selector);
 const element = (target: EventTarget | null): HTMLElement => target as HTMLElement;
 const providerOrder = ["codex", "openrouter", "opencode-go", "ollama"];
@@ -73,7 +76,7 @@ function timeUntil(iso: string | null | undefined): string {
   const hours = Math.floor((minutes % 1440) / 60);
   const remainder = minutes % 60;
   const duration = days > 0 ? `${days}d ${hours}h ${remainder}m` : hours > 0 ? `${hours}h ${remainder}m` : `${remainder}m`;
-  const date = new Intl.DateTimeFormat([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(iso));
+  const date = new Intl.DateTimeFormat([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: state.hour12 }).format(new Date(iso));
   return `resets in ${duration} · ${date}`;
 }
 
@@ -87,7 +90,7 @@ function quotaNowPosition(window: QuotaWindow | undefined): number | null {
 }
 
 function formatRefreshTime(iso: string | null | undefined): string {
-  return iso ? new Intl.DateTimeFormat([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(iso)) : "unknown";
+  return iso ? new Intl.DateTimeFormat([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: state.hour12 }).format(new Date(iso)) : "unknown";
 }
 
 function formatPercent(value: number): string {
@@ -169,7 +172,7 @@ function renderStatus(data: Dashboard): void {
 
 function renderClock(): void {
   const now = new Date();
-  $("#now-time").textContent = new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit" }).format(now);
+  $("#now-time").textContent = new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit", hour12: state.hour12 }).format(now);
   $("#now-date").textContent = new Intl.DateTimeFormat([], { weekday: "short", month: "short", day: "numeric", year: "numeric" }).format(now);
 }
 
@@ -198,8 +201,8 @@ async function loadSettings(): Promise<void> {
   const quotaSettings = providerOrder.map((id) => { const provider = data.providers[id]; return `<label class="setting-row"><div class="setting-copy"><div class="provider-name">${provider.name}</div><div class="provider-sub">${provider.description}${provider.configured ? " · configured" : " · credentials not detected"}</div></div><input class="switch" type="checkbox" data-kind="provider" data-provider="${id}" ${provider.enabled ? "checked" : ""} aria-label="Enable ${provider.name}" /></label>`; }).join("");
   const usageNames: Record<string, string> = usageSourceNames;
   const usageSettings = usageSourceOrder.map((id) => `<label class="setting-row"><div class="setting-copy"><div class="provider-name">${usageNames[id]} usage</div><div class="provider-sub">Provider group from shared ccusage output</div></div><input class="switch" type="checkbox" data-kind="usage" data-provider="${id}" ${data.usageSources?.[id]?.enabled ? "checked" : ""} aria-label="Enable ${usageNames[id]} usage" /></label>`).join("");
-  $("#provider-settings").innerHTML = `<p class="settings-group">QUOTA PROVIDERS</p>${quotaSettings}<p class="settings-group">LOCAL USAGE SOURCES</p>${usageSettings}`;
-  document.querySelectorAll<HTMLInputElement>(".switch").forEach((input) => input.addEventListener("change", async (event) => { const target = event.target as HTMLInputElement; const id = target.dataset.provider || ""; const kind = target.dataset.kind || ""; const path = kind === "usage" ? `/api/v1/usage-sources/${id}/enabled` : `/api/v1/providers/${id}/enabled`; await fetch(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: target.checked }) }); showToast(`${kind === "usage" ? usageNames[id] + " usage" : data.providers[id].name} ${target.checked ? "enabled" : "disabled"}`); await loadDashboard(true); }));
+  $("#provider-settings").innerHTML = `<p class="settings-group">DISPLAY</p><label class="setting-row"><div class="setting-copy"><div class="provider-name">12-hour clock</div><div class="provider-sub">Show times with AM and PM</div></div><input class="switch" type="checkbox" data-kind="time-format" ${state.hour12 ? "checked" : ""} aria-label="Use 12-hour clock" /></label><p class="settings-group">QUOTA PROVIDERS</p>${quotaSettings}<p class="settings-group">LOCAL USAGE SOURCES</p>${usageSettings}`;
+  document.querySelectorAll<HTMLInputElement>(".switch").forEach((input) => input.addEventListener("change", async (event) => { const target = event.target as HTMLInputElement; const id = target.dataset.provider || ""; const kind = target.dataset.kind || ""; if (kind === "time-format") { state.hour12 = target.checked; localStorage.setItem(timeFormatStorageKey, state.hour12 ? "12" : "24"); renderClock(); if (state.dashboard) { renderQuotas(state.dashboard); renderStatus(state.dashboard); } showToast(`${state.hour12 ? "12-hour" : "24-hour"} clock enabled`); return; } const path = kind === "usage" ? `/api/v1/usage-sources/${id}/enabled` : `/api/v1/providers/${id}/enabled`; await fetch(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: target.checked }) }); showToast(`${kind === "usage" ? usageNames[id] + " usage" : data.providers[id].name} ${target.checked ? "enabled" : "disabled"}`); await loadDashboard(true); }));
 }
 
 function showToast(message: string): void { const toast = $("#toast"); toast.textContent = message; toast.classList.add("show"); setTimeout(() => toast.classList.remove("show"), 2200); }
