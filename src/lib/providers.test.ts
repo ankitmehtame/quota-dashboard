@@ -21,7 +21,7 @@ test("parses Codex ChatGPT weekly quota", () => {
   assert.equal(windows[0].windowSeconds, 604800);
 });
 
-test("parses Ollama session and weekly usage with daily session resets", () => {
+test("parses Ollama session and weekly usage with epoch-anchored resets", () => {
   const now = Date.parse("2026-08-19T10:30:00Z");
   const windows = parseOllamaUsage({ limits: { session: { usage: 0.003 }, weekly: { usage: 0.001 } } }, now);
   assert.deepEqual(windows.map((window) => ({ name: window.name, usedPercent: window.usedPercent, resetAt: window.resetAt })), [
@@ -30,9 +30,15 @@ test("parses Ollama session and weekly usage with daily session resets", () => {
   ]);
 });
 
-test("uses the next day for the final Ollama session", () => {
+test("uses the next five-hour Ollama session window", () => {
   const windows = parseOllamaUsage({ limits: { session: { usage: 0.003 } } }, Date.parse("2026-08-19T19:30:00Z"));
   assert.equal(windows[0].resetAt, "2026-08-20T00:00:00.000Z");
+  assert.equal(windows[0].windowSeconds, 18_000);
+});
+
+test("anchors Ollama session windows to the global epoch", () => {
+  const windows = parseOllamaUsage({ limits: { session: { usage: 0.003 } } }, Date.parse("1970-01-02T08:30:00Z"));
+  assert.equal(windows[0].resetAt, "1970-01-02T11:00:00.000Z");
   assert.equal(windows[0].windowSeconds, 18_000);
 });
 
