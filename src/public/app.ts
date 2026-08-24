@@ -106,8 +106,13 @@ function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][st
   const windows = quota?.windows?.length ? quota.windows : [undefined];
   const status = provider.status === "disabled" ? "off" : provider.status === "error" ? "error" : provider.configured ? "connected" : "setup needed";
   const renewalDate = formatRenewalDate(quota?.subscriptionActiveUntil);
-  const plan = quota?.planType ? `<div class="quota-plan">${quota.planType} plan${renewalDate ? `<span class="quota-renewal"> · Renews ${renewalDate}</span>` : ""}</div>` : "";
-  const resetCredits = quota?.resetCredits?.length ? `<div class="quota-resets"><div class="quota-resets-title">Usage limit resets</div>${quota.resetCredits.map((credit) => `<div class="quota-reset"><span class="quota-reset-title">${credit.title}</span><span class="quota-reset-expiry">${credit.expiresAt ? `Expires ${formatRenewalDate(credit.expiresAt)}` : "Expiration not reported"}</span></div>`).join("")}</div>` : "";
+  const plan = quota?.planType || renewalDate
+    ? `<div class="quota-plan">${quota?.planType ? `${quota.planType} plan` : ""}${quota?.planType && renewalDate ? '<span class="quota-renewal"> · </span>' : ""}${renewalDate ? `<span class="quota-renewal">Renews ${renewalDate}</span>` : ""}</div>`
+    : "";
+  const resetCredits = quota?.resetCredits?.length ? `<div class="quota-resets"><div class="quota-resets-title">Usage limit resets</div>${quota.resetCredits.map((credit) => {
+    const expiry = formatRenewalDate(credit.expiresAt);
+    return `<div class="quota-reset"><span class="quota-reset-title">${credit.title}</span><span class="quota-reset-expiry">${expiry ? `Expires ${expiry}` : "Expiration not reported"}</span></div>`;
+  }).join("")}</div>` : "";
   const refreshedAt = quota?.fetchedAt || state.dashboard?.cache?.fetchedAt;
   const content = windows.map((window, index) => {
     const percent = window?.usedPercent;

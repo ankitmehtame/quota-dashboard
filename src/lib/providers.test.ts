@@ -29,6 +29,13 @@ test("parses available Codex rate-limit reset credits", () => {
   assert.deepEqual(credits, [{ id: "available", title: "Full reset", description: "One reset", expiresAt: "2026-09-21T05:34:22.867265Z" }]);
 });
 
+test("ignores malformed Codex reset credits payloads", () => {
+  assert.deepEqual(parseCodexResetCredits(null), []);
+  assert.deepEqual(parseCodexResetCredits({}), []);
+  assert.deepEqual(parseCodexResetCredits({ credits: null }), []);
+  assert.deepEqual(parseCodexResetCredits({ credits: [{ id: 123, status: "available" }, "invalid"] }), []);
+});
+
 test("parses Ollama session and weekly usage with epoch-anchored resets", () => {
   const now = Date.parse("2026-08-19T10:30:00Z");
   const windows = parseOllamaUsage({ limits: { session: { usage: 0.003 }, weekly: { usage: 0.001 } } }, now);
