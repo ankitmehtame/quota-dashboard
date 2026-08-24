@@ -16,6 +16,7 @@ let providerOrder = ["codex", "openrouter", "opencode-go", "ollama"];
 const usageSourceOrder = ["codex", "opencode", "hermes"];
 const usageSourceNames: Record<string, string> = { codex: "Codex", opencode: "OpenCode", hermes: "Hermes" };
 let activeChartTooltip: { anchor: HTMLElement; tooltip: HTMLElement } | null = null;
+let activeQuotaTooltip: { anchor: HTMLElement; tooltip: HTMLElement } | null = null;
 
 function positionChartTooltip(anchor: HTMLElement, tooltip: HTMLElement): void {
   const margin = 8;
@@ -51,6 +52,60 @@ function bindChartTooltips(chart: HTMLElement): void {
     segment.addEventListener("pointerleave", () => {
       if (activeChartTooltip?.tooltip === tooltip) activeChartTooltip = null;
     });
+  });
+}
+
+function positionQuotaTooltip(anchor: HTMLElement, tooltip: HTMLElement): void {
+  const margin = 8;
+  const gap = 10;
+  tooltip.classList.add("is-positioned");
+  tooltip.style.position = "fixed";
+  tooltip.style.visibility = "hidden";
+
+  const anchorRect = anchor.getBoundingClientRect();
+  const tooltipRect = tooltip.getBoundingClientRect();
+  const maxLeft = Math.max(margin, window.innerWidth - tooltipRect.width - margin);
+  const centeredLeft = anchorRect.left + (anchorRect.width - tooltipRect.width) / 2;
+  const left = Math.min(Math.max(centeredLeft, margin), maxLeft);
+  const aboveTop = anchorRect.top - tooltipRect.height - gap;
+  const belowTop = anchorRect.bottom + gap;
+  const maxTop = Math.max(margin, window.innerHeight - tooltipRect.height - margin);
+  const top = aboveTop >= margin ? aboveTop : belowTop <= maxTop ? belowTop : maxTop;
+
+  tooltip.style.left = `${Math.round(left)}px`;
+  tooltip.style.top = `${Math.round(top)}px`;
+  tooltip.style.bottom = "auto";
+  tooltip.style.transform = "none";
+  tooltip.style.visibility = "visible";
+}
+
+function clearQuotaTooltip(tooltip: HTMLElement): void {
+  tooltip.classList.remove("is-positioned");
+  tooltip.style.position = "";
+  tooltip.style.visibility = "";
+  tooltip.style.left = "";
+  tooltip.style.top = "";
+  tooltip.style.bottom = "";
+  tooltip.style.transform = "";
+}
+
+function bindQuotaTooltips(): void {
+  document.querySelectorAll<HTMLElement>(".quota-now-marker").forEach((marker) => {
+    const tooltip = marker.querySelector<HTMLElement>(".quota-now-tooltip");
+    if (!tooltip) return;
+    const show = () => {
+      activeQuotaTooltip = { anchor: marker, tooltip };
+      positionQuotaTooltip(marker, tooltip);
+    };
+    const hide = () => {
+      if (document.activeElement === marker) return;
+      if (activeQuotaTooltip?.tooltip === tooltip) activeQuotaTooltip = null;
+      clearQuotaTooltip(tooltip);
+    };
+    marker.addEventListener("pointerenter", show);
+    marker.addEventListener("pointerleave", hide);
+    marker.addEventListener("focus", show);
+    marker.addEventListener("blur", hide);
   });
 }
 
@@ -134,6 +189,8 @@ function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][st
 
 function renderQuotas(data: Dashboard): void {
   $("#quota-grid").innerHTML = providerOrder.filter((id) => data.providers[id]?.enabled).map((id) => quotaCard(id, data.providers[id], data.quotas[id])).join("") || `<div class="quota-card"><div class="quota-empty">No providers enabled. Open Manage providers to begin.</div></div>`;
+  activeQuotaTooltip = null;
+  bindQuotaTooltips();
 }
 
 function renderUsage(usage: Usage): void {
@@ -238,6 +295,7 @@ if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").cat
 
 function repositionActiveChartTooltip(): void {
   if (activeChartTooltip) positionChartTooltip(activeChartTooltip.anchor, activeChartTooltip.tooltip);
+  if (activeQuotaTooltip) positionQuotaTooltip(activeQuotaTooltip.anchor, activeQuotaTooltip.tooltip);
 }
 
 window.addEventListener("resize", repositionActiveChartTooltip);
