@@ -104,3 +104,11 @@ dialog { color: var(--text); background: var(--surface-raised); border: 1px soli
   min-width: 0;
   overflow-wrap: anywhere;
 }
+.quota-now-tooltip.is-positioned {
+  display: block !important;
+  width: min(165px, calc(100vw - 16px));
+  min-width: 0;
+  max-width: calc(100vw - 16px);
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
