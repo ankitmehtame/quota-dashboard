@@ -4,7 +4,7 @@ type ModelUsageItem = { model: string; costUsd: number; totalTokens?: number };
 type UsageModel = ModelUsageItem & { provider: string };
 type UsageDay = { date: string; costUsd: number; totalTokens: number; byProvider?: Record<string, { costUsd: number; totalTokens: number }>; byModel?: Array<{ provider: string; models: ModelUsageItem[] }> };
 type Usage = { totalCostUsd: number; from?: string; to?: string; providers?: string[]; daily?: UsageDay[]; byModel?: UsageModel[]; error?: string | null };
-type Dashboard = { version: string; providers: Record<string, Provider>; quotas: Record<string, { windows?: QuotaWindow[]; planType?: string; fetchedAt?: string; error?: string | null }>; usage: Usage; serverNow: string; cache?: { fetchedAt?: string } };
+type Dashboard = { version: string; providers: Record<string, Provider>; quotas: Record<string, { windows?: QuotaWindow[]; planType?: string; subscriptionActiveUntil?: string | null; resetCredits?: Array<{ id: string; title: string; description?: string | null; expiresAt?: string | null }>; fetchedAt?: string; error?: string | null }>; usage: Usage; serverNow: string; cache?: { fetchedAt?: string } };
 type AppState = { days: number; range: string; dashboard: Dashboard | null };
 const timeFormatStorageKey = "quota-dashboard.time-format";
 const storedTimeFormat = localStorage.getItem(timeFormatStorageKey);
@@ -93,6 +93,11 @@ function formatRefreshTime(iso: string | null | undefined): string {
   return iso ? new Intl.DateTimeFormat([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: state.hour12 }).format(new Date(iso)) : "unknown";
 }
 
+function formatRenewalDate(iso: string | null | undefined): string | null {
+  if (!iso || !Number.isFinite(Date.parse(iso))) return null;
+  return new Intl.DateTimeFormat([], { year: "numeric", month: "short", day: "numeric" }).format(new Date(iso));
+}
+
 function formatPercent(value: number): string {
   return value.toFixed(1).replace(/\.0$/, "");
 }
@@ -100,7 +105,9 @@ function formatPercent(value: number): string {
 function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][string]): string {
   const windows = quota?.windows?.length ? quota.windows : [undefined];
   const status = provider.status === "disabled" ? "off" : provider.status === "error" ? "error" : provider.configured ? "connected" : "setup needed";
-  const plan = quota?.planType ? `<div class="quota-plan">${quota.planType} plan</div>` : "";
+  const renewalDate = formatRenewalDate(quota?.subscriptionActiveUntil);
+  const plan = quota?.planType ? `<div class="quota-plan">${quota.planType} plan${renewalDate ? `<span class="quota-renewal"> · Renews ${renewalDate}</span>` : ""}</div>` : "";
+  const resetCredits = quota?.resetCredits?.length ? `<div class="quota-resets"><div class="quota-resets-title">Usage limit resets</div>${quota.resetCredits.map((credit) => `<div class="quota-reset"><span class="quota-reset-title">${credit.title}</span><span class="quota-reset-expiry">${credit.expiresAt ? `Expires ${formatRenewalDate(credit.expiresAt)}` : "Expiration not reported"}</span></div>`).join("")}</div>` : "";
   const refreshedAt = quota?.fetchedAt || state.dashboard?.cache?.fetchedAt;
   const content = windows.map((window, index) => {
     const percent = window?.usedPercent;
@@ -117,7 +124,7 @@ function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][st
         : window?.valueLabel || (provider.id === "codex" ? "" : provider.configured ? "No balance reported" : "Configure credentials on server");
     return `<div class="quota-window${index ? " quota-window-separated" : ""}">${windows.length > 1 ? `<div class="quota-window-name">${window?.name || "Usage"}</div>` : ""}<div class="quota-percent ${percent == null && !window?.valueLabel ? "unavailable" : percent == null ? "quota-balance" : "quota-percentage"}">${percentageValue}</div>${percent != null ? `<div class="bar"><span style="width:${Math.min(percent, 100)}%"></span>${nowPosition !== null ? `<button class="quota-now-marker" style="left:${nowPosition}%" type="button" aria-label="Current quota window position"><span class="quota-now-tooltip"><strong>Now</strong><span>${nowExpected}% of window elapsed</span><span>Snapshot: ${formatRefreshTime(refreshedAt)}</span></span></button>` : ""}</div>` : ""}<div class="quota-foot">${label ? `<span>${label}</span>` : ""}<span>${window?.resetAt ? timeUntil(window.resetAt) : ""}</span></div></div>`;
   }).join("");
-  return `<article class="quota-card" style="--accent: var(--${provider.accent})"><div class="provider-head"><div><div class="provider-name">${provider.shortName}</div><div class="provider-sub">${provider.description}</div></div><span class="provider-badge">${status}</span></div>${plan}<div class="quota-main">${content}${quota?.error ? `<div class="quota-error">${quota.error}</div>` : ""}</div></article>`;
+  return `<article class="quota-card" style="--accent: var(--${provider.accent})"><div class="provider-head"><div><div class="provider-name">${provider.shortName}</div><div class="provider-sub">${provider.description}</div></div><span class="provider-badge">${status}</span></div>${plan}<div class="quota-main">${content}${resetCredits}${quota?.error ? `<div class="quota-error">${quota.error}</div>` : ""}</div></article>`;
 }
 
 function renderQuotas(data: Dashboard): void {

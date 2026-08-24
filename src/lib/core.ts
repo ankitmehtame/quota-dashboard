@@ -18,6 +18,13 @@ export type QuotaWindow = {
   source: string;
 };
 
+export type RateLimitResetCredit = {
+  id: string;
+  title: string;
+  description: string | null;
+  expiresAt: string | null;
+};
+
 export type ProviderResult = {
   configured: boolean;
   status: string;
@@ -26,6 +33,7 @@ export type ProviderResult = {
   windows: QuotaWindow[];
   planType?: string | null;
   subscriptionActiveUntil?: string | null;
+  resetCredits?: RateLimitResetCredit[];
 };
 
 export type ProviderConfig = { enabled: boolean };

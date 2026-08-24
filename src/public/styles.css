@@ -68,6 +68,12 @@ dialog { color: var(--text); background: var(--surface-raised); border: 1px soli
 .quota-now-tooltip span { height: auto !important; width: auto !important; background: transparent !important; }
 .quota-now-marker:hover > .quota-now-tooltip, .quota-now-marker:focus > .quota-now-tooltip, .quota-now-marker:focus-visible > .quota-now-tooltip { display: block !important; }
 .quota-plan { color: var(--accent); font: 10px var(--mono); letter-spacing: .08em; margin-top: 20px; text-transform: uppercase; }
+.quota-renewal { color: var(--muted); font: 10px var(--mono); letter-spacing: 0; text-transform: none; }
+.quota-resets { border-top: 1px solid var(--line); margin-top: 19px; padding-top: 14px; }
+.quota-resets-title { color: var(--accent); font: 10px var(--mono); letter-spacing: .08em; margin-bottom: 9px; text-transform: uppercase; }
+.quota-reset { align-items: baseline; display: flex; justify-content: space-between; gap: 10px; }
+.quota-reset-title { font: 500 12px var(--display); }
+.quota-reset-expiry { color: var(--muted); font: 10px var(--mono); text-align: right; }
 .quota-balance { font-size: 20px; line-height: 1.3; letter-spacing: -.04em; }
 .quota-balance-primary, .quota-balance-secondary { display: block; }
 .quota-balance-secondary { color: var(--muted); font: 12px var(--mono); letter-spacing: 0; margin-top: 7px; }
