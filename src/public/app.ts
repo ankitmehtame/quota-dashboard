@@ -4,7 +4,7 @@ type ModelUsageItem = { model: string; costUsd: number; totalTokens?: number };
 type UsageModel = ModelUsageItem & { provider: string };
 type UsageDay = { date: string; costUsd: number; totalTokens: number; byProvider?: Record<string, { costUsd: number; totalTokens: number }>; byModel?: Array<{ provider: string; models: ModelUsageItem[] }> };
 type Usage = { totalCostUsd: number; from?: string; to?: string; providers?: string[]; daily?: UsageDay[]; byModel?: UsageModel[]; error?: string | null };
-type Dashboard = { version: string; providers: Record<string, Provider>; quotas: Record<string, { windows?: QuotaWindow[]; planType?: string; subscriptionActiveUntil?: string | null; resetCredits?: Array<{ id: string; title: string; description?: string | null; expiresAt?: string | null }>; fetchedAt?: string; error?: string | null }>; usage: Usage; serverNow: string; cache?: { fetchedAt?: string } };
+type Dashboard = { version: string; providerOrder: string[]; providers: Record<string, Provider>; quotas: Record<string, { windows?: QuotaWindow[]; planType?: string; subscriptionActiveUntil?: string | null; resetCredits?: Array<{ id: string; title: string; description?: string | null; expiresAt?: string | null }>; fetchedAt?: string; error?: string | null }>; usage: Usage; serverNow: string; cache?: { fetchedAt?: string } };
 type AppState = { days: number; range: string; dashboard: Dashboard | null };
 const timeFormatStorageKey = "quota-dashboard.time-format";
 const storedTimeFormat = localStorage.getItem(timeFormatStorageKey);
@@ -12,7 +12,7 @@ const defaultHour12 = new Intl.DateTimeFormat([], { hour: "numeric" }).resolvedO
 const state: AppState & { hour12: boolean } = { days: 1, range: "today", dashboard: null, hour12: storedTimeFormat === "12" || (storedTimeFormat !== "24" && defaultHour12) };
 const $ = (selector: string): any => document.querySelector(selector);
 const element = (target: EventTarget | null): HTMLElement => target as HTMLElement;
-const providerOrder = ["codex", "openrouter", "opencode-go", "ollama"];
+let providerOrder = ["codex", "openrouter", "opencode-go", "ollama"];
 const usageSourceOrder = ["codex", "opencode", "hermes"];
 const usageSourceNames: Record<string, string> = { codex: "Codex", opencode: "OpenCode", hermes: "Hermes" };
 let activeChartTooltip: { anchor: HTMLElement; tooltip: HTMLElement } | null = null;
@@ -200,7 +200,7 @@ async function loadDashboard(refresh = false): Promise<void> {
     if (!response.ok) throw new Error("Dashboard request failed");
     state.dashboard = await response.json();
     const dashboard = state.dashboard;
-    if (dashboard) { renderQuotas(dashboard); renderUsage(dashboard.usage); renderStatus(dashboard); }
+    if (dashboard) { providerOrder = dashboard.providerOrder; renderQuotas(dashboard); renderUsage(dashboard.usage); renderStatus(dashboard); }
   } finally {
     document.querySelector(".range-picker")?.classList.remove("loading");
   document.querySelectorAll<HTMLButtonElement>(".range-picker button").forEach((button) => { button.disabled = false; });
@@ -210,10 +210,12 @@ async function loadDashboard(refresh = false): Promise<void> {
 async function loadSettings(): Promise<void> {
   const response = await fetch("/api/v1/providers");
   const data = await response.json();
-  const quotaSettings = providerOrder.map((id) => { const provider = data.providers[id]; return `<label class="setting-row"><div class="setting-copy"><div class="provider-name">${provider.name}</div><div class="provider-sub">${provider.description}${provider.configured ? " · configured" : " · credentials not detected"}</div></div><input class="switch" type="checkbox" data-kind="provider" data-provider="${id}" ${provider.enabled ? "checked" : ""} aria-label="Enable ${provider.name}" /></label>`; }).join("");
+  providerOrder = data.providerOrder;
+  const quotaSettings = providerOrder.map((id, index) => { const provider = data.providers[id]; return `<div class="setting-row" data-provider-row="${id}"><div class="setting-copy"><div class="provider-name">${provider.name}</div><div class="provider-sub">${provider.description}${provider.configured ? " · configured" : " · credentials not detected"}</div></div><div class="order-actions"><button class="order-button" type="button" data-order-direction="up" data-provider="${id}" aria-label="Move ${provider.name} up" ${index === 0 ? "disabled" : ""}>↑</button><button class="order-button" type="button" data-order-direction="down" data-provider="${id}" aria-label="Move ${provider.name} down" ${index === providerOrder.length - 1 ? "disabled" : ""}>↓</button><input class="switch" type="checkbox" data-kind="provider" data-provider="${id}" ${provider.enabled ? "checked" : ""} aria-label="Enable ${provider.name}" /></div></div>`; }).join("");
   const usageNames: Record<string, string> = usageSourceNames;
   const usageSettings = usageSourceOrder.map((id) => `<label class="setting-row"><div class="setting-copy"><div class="provider-name">${usageNames[id]} usage</div><div class="provider-sub">Provider group from shared ccusage output</div></div><input class="switch" type="checkbox" data-kind="usage" data-provider="${id}" ${data.usageSources?.[id]?.enabled ? "checked" : ""} aria-label="Enable ${usageNames[id]} usage" /></label>`).join("");
   $("#provider-settings").innerHTML = `<p class="settings-group">DISPLAY</p><label class="setting-row"><div class="setting-copy"><div class="provider-name">12-hour clock</div><div class="provider-sub">Show times with AM and PM</div></div><input class="switch" type="checkbox" data-kind="time-format" ${state.hour12 ? "checked" : ""} aria-label="Use 12-hour clock" /></label><p class="settings-group">QUOTA PROVIDERS</p>${quotaSettings}<p class="settings-group">LOCAL USAGE SOURCES</p>${usageSettings}`;
+  document.querySelectorAll<HTMLButtonElement>(".order-button").forEach((button) => button.addEventListener("click", async () => { const id = button.dataset.provider || ""; const index = providerOrder.indexOf(id); const nextIndex = index + (button.dataset.orderDirection === "up" ? -1 : 1); if (index < 0 || nextIndex < 0 || nextIndex >= providerOrder.length) return; const nextOrder = [...providerOrder]; [nextOrder[index], nextOrder[nextIndex]] = [nextOrder[nextIndex], nextOrder[index]]; document.querySelectorAll<HTMLButtonElement>(".order-button").forEach((item) => { item.disabled = true; }); try { const save = await fetch("/api/v1/providers/order", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ order: nextOrder }) }); if (!save.ok) throw new Error("Provider order could not be saved"); providerOrder = nextOrder; if (state.dashboard) renderQuotas(state.dashboard); await loadSettings(); showToast("Provider order saved"); } catch (error) { showToast(error instanceof Error ? error.message : "Provider order could not be saved"); await loadSettings(); } }));
   document.querySelectorAll<HTMLInputElement>(".switch").forEach((input) => input.addEventListener("change", async (event) => { const target = event.target as HTMLInputElement; const id = target.dataset.provider || ""; const kind = target.dataset.kind || ""; if (kind === "time-format") { state.hour12 = target.checked; localStorage.setItem(timeFormatStorageKey, state.hour12 ? "12" : "24"); renderClock(); if (state.dashboard) { renderQuotas(state.dashboard); renderStatus(state.dashboard); } showToast(`${state.hour12 ? "12-hour" : "24-hour"} clock enabled`); return; } const path = kind === "usage" ? `/api/v1/usage-sources/${id}/enabled` : `/api/v1/providers/${id}/enabled`; await fetch(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: target.checked }) }); showToast(`${kind === "usage" ? usageNames[id] + " usage" : data.providers[id].name} ${target.checked ? "enabled" : "disabled"}`); await loadDashboard(true); }));
 }
 

@@ -40,6 +40,7 @@ export type ProviderConfig = { enabled: boolean };
 export type UsageSourceConfig = { enabled: boolean };
 export type AppConfig = {
   providers: Record<ProviderId, ProviderConfig>;
+  providerOrder: ProviderId[];
   usageSources: Record<UsageSourceId, UsageSourceConfig>;
 };
 
@@ -47,6 +48,7 @@ export type DateRange = { from: string; to: string; timeZone: string };
 
 type ConfigInput = {
   providers?: Partial<Record<ProviderId, Partial<ProviderConfig>>>;
+  providerOrder?: unknown;
   usageSources?: Partial<Record<UsageSourceId, Partial<UsageSourceConfig>>>;
 };
 
@@ -130,6 +132,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     "opencode-go": { enabled: false },
     ollama: { enabled: true },
   },
+  providerOrder: [...PROVIDER_IDS],
   usageSources: {
     codex: { enabled: true },
     opencode: { enabled: true },
@@ -189,9 +192,17 @@ export function providerStatus({ id, config, result = null }: { id: ProviderId; 
   };
 }
 
+export function normalizeProviderOrder(raw: unknown): ProviderId[] {
+  const requested = Array.isArray(raw)
+    ? raw.filter((id): id is ProviderId => typeof id === "string" && PROVIDER_IDS.includes(id as ProviderId))
+    : [];
+  return [...new Set(requested), ...PROVIDER_IDS.filter((id) => !requested.includes(id))];
+}
+
 export function normalizeConfig(raw: unknown): AppConfig {
   const config = structuredClone(DEFAULT_CONFIG);
   const input = raw && typeof raw === "object" ? raw as ConfigInput : {};
+  config.providerOrder = normalizeProviderOrder(input.providerOrder);
   for (const id of PROVIDER_IDS) {
     if (input.providers?.[id] && typeof input.providers[id].enabled === "boolean") {
       config.providers[id].enabled = input.providers[id].enabled;

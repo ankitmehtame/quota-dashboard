@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { dirname, extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { type AppConfig, type ProviderId, type UsageSourceId, DEFAULT_CONFIG, PROVIDER_IDS, USAGE_SOURCE_IDS, localDateRange, normalizeConfig, providerStatus } from "./lib/core.js";
+import { type AppConfig, type ProviderId, type UsageSourceId, DEFAULT_CONFIG, PROVIDER_IDS, USAGE_SOURCE_IDS, localDateRange, normalizeConfig, normalizeProviderOrder, providerStatus } from "./lib/core.js";
 import type { ProviderResult } from "./lib/core.js";
 import { isProviderConfigured, PROVIDER_FETCHERS } from "./lib/providers.js";
 import { readUsageSources } from "./lib/usage.js";
@@ -51,12 +51,13 @@ type DashboardValue = {
   apiVersion: number;
   serverNow: string;
   timezone: string;
+  providerOrder: ProviderId[];
   providers: Record<string, unknown>;
   quotas: Record<string, ProviderResult>;
   usage: Record<string, unknown>;
 };
 
-type RequestBody = { enabled?: unknown };
+type RequestBody = { enabled?: unknown; order?: unknown };
 
 async function loadConfig(): Promise<AppConfig> {
   try {
@@ -86,13 +87,13 @@ async function dashboard(url: URL, config: AppConfig) {
   const forceRefresh = url.searchParams.get("refresh") === "1";
   const cached = dashboardCache.get(cacheKey);
   if (!forceRefresh && cached && Date.now() - cached.cachedAt < 300_000) return { ...cached.value, cache: { fetchedAt: cached.fetchedAt, expiresAt: new Date(cached.cachedAt + 300_000).toISOString() } };
-  const enabled = PROVIDER_IDS.filter((id) => config.providers[id].enabled);
+  const enabled = config.providerOrder.filter((id) => config.providers[id].enabled);
   const quotaEntries = await Promise.all(enabled.map(async (id) => [id, await getQuota(id, true)]));
   const quotas = Object.fromEntries(quotaEntries);
   const usageSources = USAGE_SOURCE_IDS.filter((id) => config.usageSources[id].enabled);
   const usage = usageSources.length ? await readUsageSources(usageSources, range) : { status: "disabled", daily: [], byModel: [], byProvider: [], totalCostUsd: 0, totalTokens: 0, error: null, source: null, sources: [] };
-  const statuses = Object.fromEntries(await Promise.all(PROVIDER_IDS.map(async (id) => [id, providerStatus({ id, config: config.providers[id], result: quotas[id] ?? { configured: await isProviderConfigured(id) } })])));
-  const value = { version: buildInfo.version, apiVersion: 1, serverNow: new Date().toISOString(), timezone: range.timeZone, providers: statuses, quotas, usage: { ...usage, from: range.from, to: range.to, providers: usageSources } };
+  const statuses = Object.fromEntries(await Promise.all(config.providerOrder.map(async (id) => [id, providerStatus({ id, config: config.providers[id], result: quotas[id] ?? { configured: await isProviderConfigured(id) } })])));
+  const value = { version: buildInfo.version, apiVersion: 1, serverNow: new Date().toISOString(), timezone: range.timeZone, providerOrder: config.providerOrder, providers: statuses, quotas, usage: { ...usage, from: range.from, to: range.to, providers: usageSources } };
   dashboardCache.set(cacheKey, { cachedAt: Date.now(), fetchedAt: value.serverNow, value });
   return { ...value, cache: { fetchedAt: value.serverNow, expiresAt: new Date(Date.now() + 300_000).toISOString() } };
 }
@@ -112,17 +113,17 @@ async function body(request: import("node:http").IncomingMessage): Promise<Reque
 async function handleApi(request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse, url: URL): Promise<void> {
   const config = await loadConfig();
   if (request.method === "GET" && url.pathname === "/api/v1/providers") {
-    const statuses = Object.fromEntries(await Promise.all(PROVIDER_IDS.map(async (id) => [id, providerStatus({ id, config: config.providers[id], result: { configured: await isProviderConfigured(id) } })])));
-    return json(response, 200, { version: buildInfo.version, apiVersion: 1, providers: statuses, usageSources: config.usageSources });
+    const statuses = Object.fromEntries(await Promise.all(config.providerOrder.map(async (id) => [id, providerStatus({ id, config: config.providers[id], result: { configured: await isProviderConfigured(id) } })])));
+    return json(response, 200, { version: buildInfo.version, apiVersion: 1, providerOrder: config.providerOrder, providers: statuses, usageSources: config.usageSources });
   }
   if (request.method === "GET" && url.pathname === "/api/v1/dashboard") return json(response, 200, await dashboard(url, config));
   if (request.method === "GET" && url.pathname === "/api/v1/quotas") {
-    const enabled = PROVIDER_IDS.filter((id) => config.providers[id].enabled);
+    const enabled = config.providerOrder.filter((id) => config.providers[id].enabled);
     const entries = await Promise.all(enabled.map(async (id) => [id, await getQuota(id, url.searchParams.get("refresh") === "1")]));
     return json(response, 200, { version: buildInfo.version, apiVersion: 1, serverNow: new Date().toISOString(), quotas: Object.fromEntries(entries) });
   }
   if (request.method === "GET" && url.pathname === "/api/v1/widget-summary") {
-    const enabled = PROVIDER_IDS.filter((id) => config.providers[id].enabled);
+    const enabled = config.providerOrder.filter((id) => config.providers[id].enabled);
     const entries = await Promise.all(enabled.map(async (id) => [id, await getQuota(id)]));
     return json(response, 200, { version: buildInfo.version, apiVersion: 1, serverNow: new Date().toISOString(), providers: Object.fromEntries(entries) });
   }
@@ -142,6 +143,16 @@ async function handleApi(request: import("node:http").IncomingMessage, response:
       if (!config.providers[id].enabled) return json(response, 409, { error: "Provider is disabled" });
       return json(response, 200, { provider: providerStatus({ id, config: config.providers[id], result: await getQuota(id, true) }), quota: await getQuota(id) });
     }
+  }
+  if (request.method === "PUT" && url.pathname === "/api/v1/providers/order") {
+    const input = await body(request);
+    if (!Array.isArray(input.order) || input.order.length !== PROVIDER_IDS.length || new Set(input.order).size !== PROVIDER_IDS.length || input.order.some((id) => typeof id !== "string" || !PROVIDER_IDS.includes(id as ProviderId))) {
+      return json(response, 400, { error: "order must contain each provider exactly once" });
+    }
+    config.providerOrder = normalizeProviderOrder(input.order);
+    await saveConfig(config);
+    dashboardCache.clear();
+    return json(response, 200, { providerOrder: config.providerOrder });
   }
   const usageMatch = url.pathname.match(/^\/api\/v1\/usage-sources\/([^/]+)\/enabled$/);
   if (usageMatch && USAGE_SOURCE_IDS.includes(usageMatch[1] as UsageSourceId) && request.method === "PUT") {

@@ -49,7 +49,7 @@ the extracted directory.
 
 ## Configuration
 
-Provider enablement is stored in `~/.config/quota-dashboard/config.json` with mode `0600`. No machine-specific absolute paths or identifiers are stored in the application. Provider credentials and machine-specific overrides remain server-side and can be supplied through environment variables:
+Provider enablement and dashboard order are stored in `~/.config/quota-dashboard/config.json` with mode `0600`. No machine-specific absolute paths or identifiers are stored in the application. Provider credentials and machine-specific overrides remain server-side and can be supplied through environment variables:
 
 - `CCUSAGE_BIN` (defaults to `ccusage`)
 - `OPENROUTER_API_KEY`
