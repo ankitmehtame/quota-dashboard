@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
-import { type ProviderId, clampPercent, formatMoney, numberOrNull, usageWindow, type ProviderResult, type QuotaWindow } from "./core.js";
+import { type ProviderId, clampPercent, formatMoney, numberOrNull, usageWindow, type ProviderResult, type QuotaWindow, type RateLimitResetCredit } from "./core.js";
 
 type JsonObject = Record<string, unknown>;
 
@@ -182,27 +182,51 @@ async function fetchCodex(): Promise<ProviderResult> {
   const accountId = typeof tokens.account_id === "string" ? tokens.account_id : null;
   if (!accessToken || !accountId) return result(false, [], "Codex ChatGPT OAuth credentials are not configured");
   try {
+    const headers = {
+      Authorization: `Bearer ${accessToken}`,
+      "ChatGPT-Account-Id": accountId,
+      Originator: "Codex",
+      Accept: "application/json",
+    };
     const response = await fetch("https://chatgpt.com/backend-api/wham/usage", {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "ChatGPT-Account-Id": accountId,
-        Originator: "Codex",
-        Accept: "application/json",
-      },
+      headers,
       signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok) return result(true, [], `Codex quota returned HTTP ${response.status}`);
     const payload = objectValue(await response.json());
     const windows = parseCodexQuota(payload);
     if (!windows.length) return result(true, [], "Codex quota response did not include a rate-limit window");
+    let resetCredits: RateLimitResetCredit[] = [];
+    try {
+      const creditsResponse = await fetch("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", { headers, signal: AbortSignal.timeout(15_000) });
+      if (creditsResponse.ok) resetCredits = parseCodexResetCredits(await creditsResponse.json());
+    } catch {
+      // Reset credits are supplementary; quota windows remain useful if this request fails.
+    }
     return {
       ...result(true, windows),
       planType: typeof payload.plan_type === "string" ? payload.plan_type : null,
       subscriptionActiveUntil: typeof payload.subscription_active_until === "string" ? payload.subscription_active_until : null,
+      resetCredits,
     };
   } catch (error) {
     return result(true, [], errorMessage(error, "Codex quota request failed"));
   }
+}
+
+export function parseCodexResetCredits(payload: unknown): RateLimitResetCredit[] {
+  const credits = objectValue(payload).credits;
+  if (!Array.isArray(credits)) return [];
+  return credits.flatMap((rawCredit) => {
+    const credit = objectValue(rawCredit);
+    if (credit.status !== "available" || typeof credit.id !== "string" || typeof credit.title !== "string") return [];
+    return [{
+      id: credit.id,
+      title: credit.title,
+      description: typeof credit.description === "string" ? credit.description : null,
+      expiresAt: typeof credit.expires_at === "string" ? credit.expires_at : null,
+    }];
+  });
 }
 
 export function parseCodexQuota(payload: unknown): QuotaWindow[] {

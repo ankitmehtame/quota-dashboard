@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { parseCodexQuota, parseOllamaUsage, parseOpenCodeGo } from "./providers.js";
+import { parseCodexQuota, parseCodexResetCredits, parseOllamaUsage, parseOpenCodeGo } from "./providers.js";
 
 test("parses OpenCode Go rolling usage and reset time", () => {
   const now = Date.parse("2026-08-12T00:00:00Z");
@@ -19,6 +19,14 @@ test("parses Codex ChatGPT weekly quota", () => {
   const windows = parseCodexQuota({ plan_type: "plus", rate_limit: { primary_window: { used_percent: 97, limit_window_seconds: 604800, reset_at: 1787012669 } } });
   assert.equal(windows[0].usedPercent, 97);
   assert.equal(windows[0].windowSeconds, 604800);
+});
+
+test("parses available Codex rate-limit reset credits", () => {
+  const credits = parseCodexResetCredits({ credits: [
+    { id: "available", status: "available", title: "Full reset", description: "One reset", expires_at: "2026-09-21T05:34:22.867265Z" },
+    { id: "redeemed", status: "redeemed", title: "Full reset", expires_at: null },
+  ] });
+  assert.deepEqual(credits, [{ id: "available", title: "Full reset", description: "One reset", expiresAt: "2026-09-21T05:34:22.867265Z" }]);
 });
 
 test("parses Ollama session and weekly usage with epoch-anchored resets", () => {
