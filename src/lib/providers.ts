@@ -237,12 +237,13 @@ export function parseCodexQuota(payload: unknown): QuotaWindow[] {
   for (const [name, rawValue] of [["primary", rateLimit.primary_window], ["secondary", rateLimit.secondary_window]] as const) {
     const value = objectValue(rawValue);
     if (!Object.keys(value).length) continue;
+    const windowSeconds = numberOrNull(value.limit_window_seconds);
     const resetAt = numberOrNull(value.reset_at);
     windows.push(usageWindow({
-      name,
+      name: windowSeconds === 18_000 ? "5-hour" : windowSeconds === 604_800 ? "weekly" : name,
       usedPercent: numberOrNull(value.used_percent),
       resetAt: resetAt === null ? null : new Date(resetAt * 1000).toISOString(),
-      windowSeconds: numberOrNull(value.limit_window_seconds),
+      windowSeconds,
       valueLabel: null,
     }));
   }
