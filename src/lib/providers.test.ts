@@ -17,8 +17,20 @@ test("ignores malformed OpenCode Go windows", () => {
 
 test("parses Codex ChatGPT weekly quota", () => {
   const windows = parseCodexQuota({ plan_type: "plus", rate_limit: { primary_window: { used_percent: 97, limit_window_seconds: 604800, reset_at: 1787012669 } } });
+  assert.equal(windows[0].name, "weekly");
   assert.equal(windows[0].usedPercent, 97);
   assert.equal(windows[0].windowSeconds, 604800);
+});
+
+test("parses Codex ChatGPT five-hour and weekly quota windows", () => {
+  const windows = parseCodexQuota({ rate_limit: {
+    primary_window: { used_percent: 12, limit_window_seconds: 18_000, reset_at: 1787012669 },
+    secondary_window: { used_percent: 34, limit_window_seconds: 604_800, reset_at: 1787617469 },
+  } });
+  assert.deepEqual(windows.map((window) => ({ name: window.name, usedPercent: window.usedPercent, windowSeconds: window.windowSeconds })), [
+    { name: "5-hour", usedPercent: 12, windowSeconds: 18_000 },
+    { name: "weekly", usedPercent: 34, windowSeconds: 604_800 },
+  ]);
 });
 
 test("parses available Codex rate-limit reset credits", () => {
