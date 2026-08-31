@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
@@ -15,6 +15,10 @@ function errorMessage(error: unknown, fallback: string): string {
 }
 
 const authPath = process.env.OPENCODE_AUTH_PATH || join(homedir(), ".local", "share", "opencode", "auth.json");
+const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
+const CODEX_OAUTH_TOKEN_ENDPOINT = "https://auth.openai.com/oauth/token";
+const CODEX_USAGE_ENDPOINT = "https://chatgpt.com/backend-api/wham/usage";
+const CODEX_RESET_CREDITS_ENDPOINT = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits";
 
 async function readJson(path: string): Promise<unknown> {
   try {
@@ -174,31 +178,69 @@ async function fetchOpenCodeGo(): Promise<ProviderResult> {
   }
 }
 
-async function fetchCodex(): Promise<ProviderResult> {
+type CodexCredentials = { accessToken: string; accountId: string };
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
+function codexHeaders({ accessToken, accountId }: CodexCredentials): Record<string, string> {
+  return {
+    Authorization: `Bearer ${accessToken}`,
+    "ChatGPT-Account-Id": accountId,
+    Originator: "codex_cli_rs",
+    Accept: "application/json",
+    "User-Agent": "codex_cli_rs",
+  };
+}
+
+async function refreshCodexCredentials(path: string, auth: unknown, tokens: JsonObject, accountId: string): Promise<CodexCredentials> {
+  const refreshToken = nonEmptyString(tokens.refresh_token);
+  if (!refreshToken) throw new Error("Codex access token expired and no refresh token is available; run codex login again");
+  const response = await fetch(CODEX_OAUTH_TOKEN_ENDPOINT, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json", "User-Agent": "codex_cli_rs" },
+    body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refreshToken, client_id: CODEX_OAUTH_CLIENT_ID }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) {
+    const suffix = response.status === 400 || response.status === 401 ? "; run codex login again" : "";
+    throw new Error(`Codex OAuth refresh returned HTTP ${response.status}${suffix}`);
+  }
+  const refreshed = objectValue(await response.json());
+  const accessToken = nonEmptyString(refreshed.access_token);
+  if (!accessToken) throw new Error("Codex OAuth refresh response did not include an access token; run codex login again");
+  const updatedTokens: JsonObject = { ...tokens, access_token: accessToken };
+  const rotatedRefreshToken = nonEmptyString(refreshed.refresh_token);
+  if (rotatedRefreshToken) updatedTokens.refresh_token = rotatedRefreshToken;
+  const idToken = nonEmptyString(refreshed.id_token);
+  if (idToken) updatedTokens.id_token = idToken;
+  const updatedAuth = { ...objectValue(auth), tokens: updatedTokens, last_refresh: new Date().toISOString() };
+  await writeFile(path, `${JSON.stringify(updatedAuth, null, 2)}\n`, { mode: 0o600 });
+  return { accessToken, accountId };
+}
+
+export async function fetchCodex(): Promise<ProviderResult> {
   const path = process.env.CODEX_AUTH_PATH || join(homedir(), ".codex", "auth.json");
   const auth = await readJson(path);
   const tokens = objectValue(objectValue(auth).tokens);
-  const accessToken = typeof tokens.access_token === "string" ? tokens.access_token : null;
-  const accountId = typeof tokens.account_id === "string" ? tokens.account_id : null;
+  const accessToken = nonEmptyString(tokens.access_token);
+  const accountId = nonEmptyString(tokens.account_id);
   if (!accessToken || !accountId) return result(false, [], "Codex ChatGPT OAuth credentials are not configured");
   try {
-    const headers = {
-      Authorization: `Bearer ${accessToken}`,
-      "ChatGPT-Account-Id": accountId,
-      Originator: "Codex",
-      Accept: "application/json",
-    };
-    const response = await fetch("https://chatgpt.com/backend-api/wham/usage", {
-      headers,
-      signal: AbortSignal.timeout(15_000),
-    });
+    let credentials = { accessToken, accountId };
+    let response = await fetch(CODEX_USAGE_ENDPOINT, { headers: codexHeaders(credentials), signal: AbortSignal.timeout(15_000) });
+    if (response.status === 401) {
+      credentials = await refreshCodexCredentials(path, auth, tokens, accountId);
+      response = await fetch(CODEX_USAGE_ENDPOINT, { headers: codexHeaders(credentials), signal: AbortSignal.timeout(15_000) });
+    }
     if (!response.ok) return result(true, [], `Codex quota returned HTTP ${response.status}`);
     const payload = objectValue(await response.json());
     const windows = parseCodexQuota(payload);
     if (!windows.length) return result(true, [], "Codex quota response did not include a rate-limit window");
     let resetCredits: RateLimitResetCredit[] = [];
     try {
-      const creditsResponse = await fetch("https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", { headers, signal: AbortSignal.timeout(15_000) });
+      const creditsResponse = await fetch(CODEX_RESET_CREDITS_ENDPOINT, { headers: codexHeaders(credentials), signal: AbortSignal.timeout(15_000) });
       if (creditsResponse.ok) resetCredits = parseCodexResetCredits(await creditsResponse.json());
     } catch {
       // Reset credits are supplementary; quota windows remain useful if this request fails.

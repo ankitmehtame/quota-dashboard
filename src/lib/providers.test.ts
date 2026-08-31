@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { mock } from "node:test";
 
-import { parseCodexQuota, parseCodexResetCredits, parseOllamaUsage, parseOpenCodeGo } from "./providers.js";
+import { fetchCodex, parseCodexQuota, parseCodexResetCredits, parseOllamaUsage, parseOpenCodeGo } from "./providers.js";
 
 test("parses OpenCode Go rolling usage and reset time", () => {
   const now = Date.parse("2026-08-12T00:00:00Z");
@@ -46,6 +50,54 @@ test("ignores malformed Codex reset credits payloads", () => {
   assert.deepEqual(parseCodexResetCredits({}), []);
   assert.deepEqual(parseCodexResetCredits({ credits: null }), []);
   assert.deepEqual(parseCodexResetCredits({ credits: [{ id: 123, status: "available" }, "invalid"] }), []);
+});
+
+test("refreshes Codex credentials after an unauthorized quota response", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "quota-dashboard-codex-"));
+  const authPath = join(directory, "auth.json");
+  const originalAuthPath = process.env.CODEX_AUTH_PATH;
+  await writeFile(authPath, JSON.stringify({ auth_mode: "chatgpt", tokens: {
+    access_token: "expired-access",
+    refresh_token: "old-refresh",
+    id_token: "old-id",
+    account_id: "account-id",
+  } }));
+  process.env.CODEX_AUTH_PATH = authPath;
+  const requests: Array<{ url: string; headers: Record<string, string>; body: string }> = [];
+  mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    const headers = Object.fromEntries(new Headers(init?.headers).entries());
+    requests.push({ url: String(input), headers, body: typeof init?.body === "string" ? init.body : init?.body instanceof URLSearchParams ? init.body.toString() : "" });
+    if (String(input) === "https://chatgpt.com/backend-api/wham/usage" && requests.filter((request) => request.url === String(input)).length === 1) {
+      return new Response(null, { status: 401 });
+    }
+    if (String(input) === "https://auth.openai.com/oauth/token") {
+      return new Response(JSON.stringify({ access_token: "fresh-access", refresh_token: "rotated-refresh", id_token: "fresh-id" }), { status: 200 });
+    }
+    if (String(input) === "https://chatgpt.com/backend-api/wham/usage") {
+      return new Response(JSON.stringify({ rate_limit: { primary_window: { used_percent: 12, limit_window_seconds: 18_000, reset_at: 1787012669 } } }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ credits: [] }), { status: 200 });
+  });
+  try {
+    const result = await fetchCodex();
+    assert.equal(result.error, null);
+    assert.equal(result.windows[0].usedPercent, 12);
+    assert.equal(requests[0].headers.authorization, "Bearer expired-access");
+    assert.equal(requests[1].headers["content-type"], "application/x-www-form-urlencoded");
+    assert.match(requests[1].body, /grant_type=refresh_token/);
+    assert.match(requests[1].body, /client_id=app_EMoamEEZ73f0CkXaXp7hrann/);
+    assert.equal(requests[2].headers.authorization, "Bearer fresh-access");
+    assert.equal(requests[2].headers.originator, "codex_cli_rs");
+    const savedAuth = JSON.parse(await readFile(authPath, "utf8"));
+    assert.equal(savedAuth.tokens.access_token, "fresh-access");
+    assert.equal(savedAuth.tokens.refresh_token, "rotated-refresh");
+    assert.equal(savedAuth.tokens.id_token, "fresh-id");
+  } finally {
+    mock.restoreAll();
+    if (originalAuthPath === undefined) delete process.env.CODEX_AUTH_PATH;
+    else process.env.CODEX_AUTH_PATH = originalAuthPath;
+    await rm(directory, { recursive: true, force: true });
+  }
 });
 
 test("parses Ollama session and weekly usage with epoch-anchored resets", () => {
