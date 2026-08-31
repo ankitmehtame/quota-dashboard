@@ -68,7 +68,7 @@ Ollama Cloud reads `OLLAMA_API_KEY` from the environment or from
 global epoch (`1970-01-01T00:00:00Z`), and weekly windows reset each Monday at
 00:00 UTC.
 
-Local usage is read exclusively with one shared `ccusage daily --json` command. The response is separated into Codex, OpenCode, and Hermes groups using its provider/source fields; those groups are independently toggleable in the Providers dialog. The dashboard does not read provider-local databases directly. Codex/ChatGPT quota is fetched directly from `https://chatgpt.com/backend-api/wham/usage` using the Codex OAuth access token and account ID in `~/.codex/auth.json`. OpenCode Go supports rolling, weekly, and monthly windows when its dashboard returns them.
+Local usage is read exclusively with one shared `ccusage daily --json` command. The response is separated into Codex, OpenCode, and Hermes groups using its provider/source fields; those groups are independently toggleable in the Providers dialog. The dashboard does not read provider-local databases directly. Codex/ChatGPT quota is fetched directly from `https://chatgpt.com/backend-api/wham/usage` using the Codex OAuth credentials in `~/.codex/auth.json`; an expired access token is refreshed automatically when the endpoint returns `401`. OpenCode Go supports rolling, weekly, and monthly windows when its dashboard returns them.
 
 ## Future clients
 
