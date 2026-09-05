@@ -198,17 +198,17 @@ function renderUsage(usage: Usage): void {
   $("#usage-total").textContent = money(usage.totalCostUsd);
   $("#axis-start").textContent = usage.from || "—";
   const sourceNames: Record<string, string> = { ...usageSourceNames, shared: "Shared" };
-  const sourceColors: Record<string, string> = { codex: "mint", opencode: "violet", hermes: "orange", antigravity: "blue", shared: "blue" };
+  const sourceColors: Record<string, string> = { codex: "mint", opencode: "violet", hermes: "orange", antigravity: "blue", shared: "neutral" };
   const enabledSources = new Set(usage.providers || []);
   $(".chart-legend").innerHTML = [...enabledSources].map((provider) => `<span class="legend-key ${sourceColors[provider] || "mint"}"></span> ${sourceNames[provider] || provider}`).join("") || "No local usage sources enabled";
   const chart = $("#usage-chart");
   const daily = usage.daily || [];
-  const providers = [...enabledSources, ...(enabledSources.has("opencode") || enabledSources.has("hermes") ? ["shared"] : [])];
+  const providers = [...enabledSources, ...(enabledSources.has("opencode") || enabledSources.has("hermes") || enabledSources.has("antigravity") ? ["shared"] : [])];
   const colors = sourceColors;
   const max = Math.max(...daily.map((day) => day.costUsd), 0);
   const usageTooltip = (day: UsageDay, hoveredProvider: string, segments: Array<{ provider: string; costUsd: number; totalTokens: number }>): string => {
     const sortedSegments = [...segments].sort((a, b) => b.costUsd - a.costUsd);
-    const harnesses = sortedSegments.map((segment) => `<span class="harness-row ${segment.provider === hoveredProvider ? "hovered" : ""}"><i class="tooltip-harness-dot ${colors[segment.provider] || "mint"}"></i><span class="harness-name">${segment.provider}</span><span class="harness-detail"> · ${money(segment.costUsd)} · ${formatTokens(segment.totalTokens)} tokens</span></span>`).join("");
+    const harnesses = sortedSegments.map((segment) => `<span class="harness-row ${segment.provider === hoveredProvider ? "hovered" : ""}"><i class="tooltip-harness-dot ${colors[segment.provider] || "mint"}"></i><span class="harness-name">${sourceNames[segment.provider] || segment.provider}</span><span class="harness-detail"> · ${money(segment.costUsd)} · ${formatTokens(segment.totalTokens)} tokens</span></span>`).join("");
     return `<span class="chart-tooltip"><strong>${money(day.costUsd)} total · ${formatTokens(day.totalTokens)} tokens</strong><span>${day.date}</span><div class="tooltip-separator"></div>${harnesses}</span>`;
   };
   const renderSegment = (day: UsageDay, segment: { provider: string; costUsd: number; totalTokens: number }, segments: Array<{ provider: string; costUsd: number; totalTokens: number }>, height: number, offset = 0) => { const color = colors[segment.provider] || "mint"; return `<div class="chart-segment ${color}" style="height:${height}%;bottom:${offset}%">${usageTooltip(day, segment.provider, segments)}</div>`; };
