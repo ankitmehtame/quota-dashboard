@@ -168,7 +168,7 @@ export async function readUsageSources(enabledProviders: string[], range: { from
     return { ...result, sources: enabledProviders.map((provider) => ({ provider, status: result.status, error: result.error })) };
   }
   const selected = new Set(enabledProviders);
-  if (selected.has("opencode") || selected.has("hermes")) selected.add("shared");
+  if (selected.has("opencode") || selected.has("hermes") || selected.has("antigravity")) selected.add("shared");
   const selectedRecords = (result.records || []).filter((record) => selected.has(record.provider));
   const summary = summarize(selectedRecords);
   return {
