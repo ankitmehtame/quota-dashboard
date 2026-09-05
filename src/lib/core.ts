@@ -1,6 +1,6 @@
 export const PROVIDER_IDS = ["codex", "openrouter", "opencode-go", "ollama"] as const;
 export type ProviderId = typeof PROVIDER_IDS[number];
-export const USAGE_SOURCE_IDS = ["codex", "opencode", "hermes"] as const;
+export const USAGE_SOURCE_IDS = ["codex", "opencode", "hermes", "antigravity"] as const;
 export type UsageSourceId = typeof USAGE_SOURCE_IDS[number];
 
 export type QuotaWindow = {
@@ -137,6 +137,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     codex: { enabled: true },
     opencode: { enabled: true },
     hermes: { enabled: true },
+    antigravity: { enabled: true },
   },
 };
 

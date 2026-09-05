@@ -13,8 +13,8 @@ const state: AppState & { hour12: boolean } = { days: 1, range: "today", dashboa
 const $ = (selector: string): any => document.querySelector(selector);
 const element = (target: EventTarget | null): HTMLElement => target as HTMLElement;
 let providerOrder = ["codex", "openrouter", "opencode-go", "ollama"];
-const usageSourceOrder = ["codex", "opencode", "hermes"];
-const usageSourceNames: Record<string, string> = { codex: "Codex", opencode: "OpenCode", hermes: "Hermes" };
+const usageSourceOrder = ["codex", "opencode", "hermes", "antigravity"];
+const usageSourceNames: Record<string, string> = { codex: "Codex", opencode: "OpenCode", hermes: "Hermes", antigravity: "Antigravity" };
 let activeChartTooltip: { anchor: HTMLElement; tooltip: HTMLElement } | null = null;
 let activeQuotaTooltip: { anchor: HTMLElement; tooltip: HTMLElement } | null = null;
 
@@ -197,8 +197,8 @@ function renderQuotas(data: Dashboard): void {
 function renderUsage(usage: Usage): void {
   $("#usage-total").textContent = money(usage.totalCostUsd);
   $("#axis-start").textContent = usage.from || "—";
-  const sourceNames: Record<string, string> = { codex: "Codex", opencode: "OpenCode", hermes: "Hermes", shared: "Shared" };
-  const sourceColors: Record<string, string> = { codex: "mint", opencode: "violet", hermes: "orange", shared: "blue" };
+  const sourceNames: Record<string, string> = { ...usageSourceNames, shared: "Shared" };
+  const sourceColors: Record<string, string> = { codex: "mint", opencode: "violet", hermes: "orange", antigravity: "blue", shared: "blue" };
   const enabledSources = new Set(usage.providers || []);
   $(".chart-legend").innerHTML = [...enabledSources].map((provider) => `<span class="legend-key ${sourceColors[provider] || "mint"}"></span> ${sourceNames[provider] || provider}`).join("") || "No local usage sources enabled";
   const chart = $("#usage-chart");
