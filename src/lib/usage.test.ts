@@ -16,6 +16,11 @@ test("normalizes Hermes and OpenCode records using the same parser", () => {
   assert.equal(records[1].costUsd, 0.2);
 });
 
+test("normalizes Antigravity records from ccusage per-agent output", () => {
+  const records = parseCcusage({ daily: [{ period: "2026-09-04", agent: "all", agents: [{ agent: "antigravity", modelBreakdowns: [{ modelName: "gemini-3-pro", inputTokens: 8, cacheReadTokens: 3, outputTokens: 5, reasoningTokens: 2, cost: 0.4 }] }] }] });
+  assert.deepEqual(records, [{ date: "2026-09-04", provider: "antigravity", model: "gemini-3-pro", inputTokens: 8, cachedInputTokens: 3, cacheCreationTokens: 0, outputTokens: 5, reasoningTokens: 2, costUsd: 0.4 }]);
+});
+
 test("uses ccusage metadata agents when rows are aggregated", () => {
   const records = parseCcusage({ daily: [{ period: "2026-08-12", agent: "all", metadata: { agents: ["hermes", "opencode"] }, modelBreakdowns: [{ modelName: "model-a", cost: 1 }] }] });
   assert.equal(records[0].provider, "shared");
