@@ -38,7 +38,8 @@ Every push to `main` automatically creates the next minor version tag (`vX.Y.0`)
 and GitHub Release. The release is created after the build, tests, and runtime
 smoke test pass. Tags whose commits are on `main` create regular releases; tags
 from other branches create pre-releases. Each release includes a compressed
-Node.js runtime archive.
+Node.js runtime archive. Manual tag pushes are intended for branch pre-releases;
+normal releases should be produced by merging to `main`.
 
 Extract the release archive on a Node.js 22+ host and run `node server.js` from
 the extracted directory.
