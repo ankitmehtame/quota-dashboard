@@ -34,15 +34,11 @@ Extract it on a Node.js 22+ host and run
 
 ## Releases
 
-GitHub Releases are created automatically for version tags matching `v*`, after
-the build, tests, and runtime smoke test pass. Tags whose commits are on `main`
-create regular releases; tags from other branches create pre-releases. Each
-release includes a compressed Node.js runtime archive. For example:
-
-```sh
-git tag v0.1.0
-git push origin v0.1.0
-```
+Every push to `main` automatically creates the next minor version tag (`vX.Y.0`)
+and GitHub Release. The release is created after the build, tests, and runtime
+smoke test pass. Tags whose commits are on `main` create regular releases; tags
+from other branches create pre-releases. Each release includes a compressed
+Node.js runtime archive.
 
 Extract the release archive on a Node.js 22+ host and run `node server.js` from
 the extracted directory.

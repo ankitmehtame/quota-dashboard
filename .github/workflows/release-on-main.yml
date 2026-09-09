@@ -1,0 +1,140 @@
+name: Release Main
+
+on:
+  push:
+    branches:
+      - main
+
+# Ensure concurrent merges receive distinct version numbers.
+concurrency:
+  group: release-main
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Create next minor version tag
+        id: release_tag
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          latest_tag="$(git tag --list 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | sed -n '1p')"
+          latest_tag="${latest_tag:-v0.0.0}"
+
+          if [[ "$latest_tag" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
+            major="${BASH_REMATCH[1]}"
+            minor="${BASH_REMATCH[2]}"
+          else
+            echo "Latest tag is not a supported semantic version: $latest_tag" >&2
+            exit 1
+          fi
+
+          next_tag="v${major}.$((minor + 1)).0"
+
+          if git show-ref --tags --verify --quiet "refs/tags/$next_tag"; then
+            existing_commit="$(git rev-list -n 1 "$next_tag")"
+            if [[ "$existing_commit" == "$COMMIT_SHA" ]]; then
+              echo "tag=$next_tag" >> "$GITHUB_OUTPUT"
+              echo "Tag $next_tag already points to this commit; nothing to do."
+              exit 0
+            fi
+            echo "Tag $next_tag already exists on another commit." >&2
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag --annotate "$next_tag" "$COMMIT_SHA" --message "Release $next_tag"
+          git push origin "$next_tag"
+          echo "tag=$next_tag" >> "$GITHUB_OUTPUT"
+          echo "Created and pushed $next_tag"
+
+    outputs:
+      tag: ${{ steps.release_tag.outputs.tag }}
+
+  build:
+    needs: tag
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.tag.outputs.tag }}
+          fetch-depth: 0
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: src/package-lock.json
+
+      - name: Install dependencies
+        working-directory: src
+        run: npm ci
+
+      - name: Test
+        working-directory: src
+        run: npm test
+
+      - name: Build runtime artifact
+        working-directory: src
+        run: npm run build
+
+      - name: Smoke-test runtime artifact
+        working-directory: src/dist
+        run: |
+          node server.js > "$RUNNER_TEMP/quota-dashboard-server.log" 2>&1 &
+          server_pid=$!
+          trap 'kill "$server_pid"' EXIT
+
+          for attempt in {1..20}; do
+            if curl --fail --silent http://127.0.0.1:4173/ > /dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+
+          cat "$RUNNER_TEMP/quota-dashboard-server.log"
+          exit 1
+
+      - name: Package release archive
+        run: tar -czf "quota-dashboard-node-${{ needs.tag.outputs.tag }}.tar.gz" -C src/dist .
+
+      - name: Upload release archive
+        uses: actions/upload-artifact@v6
+        with:
+          name: quota-dashboard-release
+          path: quota-dashboard-node-${{ needs.tag.outputs.tag }}.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  release:
+    needs: [tag, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download release archive
+        uses: actions/download-artifact@v7
+        with:
+          name: quota-dashboard-release
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ needs.tag.outputs.tag }}
+          generate_release_notes: true
+          files: quota-dashboard-node-${{ needs.tag.outputs.tag }}.tar.gz
