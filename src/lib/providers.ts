@@ -61,11 +61,20 @@ function nextOllamaReset(now: number, windowSeconds: number, anchor: number): st
   return new Date(anchor + (elapsed + 1) * windowSeconds * 1000).toISOString();
 }
 
+function strictNumber(value: unknown): number | null {
+  if (typeof value === "number") return Number.isFinite(value) ? value : null;
+  if (typeof value === "string" && value.trim()) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : null;
+  }
+  return null;
+}
+
 function ollamaResetAt(value: JsonObject, now: number, windowSeconds: number, anchor: number): string {
   const reported = value.reset_at ?? value.resetAt ?? value.reset;
   if (typeof reported === "string" && Number.isFinite(Date.parse(reported))) return new Date(reported).toISOString();
-  const timestamp = numberOrNull(reported);
-  if (timestamp !== null) return new Date(timestamp < 10_000_000_000 ? timestamp * 1000 : timestamp).toISOString();
+  const timestamp = strictNumber(reported);
+  if (timestamp !== null && timestamp > 0) return new Date(timestamp < 10_000_000_000 ? timestamp * 1000 : timestamp).toISOString();
   return nextOllamaReset(now, windowSeconds, anchor);
 }
 
@@ -74,8 +83,8 @@ export function parseOllamaUsage(payload: unknown, now = Date.now()): QuotaWindo
   const windows: QuotaWindow[] = [];
   for (const [name, seconds, anchor] of [["session", OLLAMA_SESSION_SECONDS, OLLAMA_SESSION_ANCHOR], ["weekly", OLLAMA_WEEK_SECONDS, OLLAMA_WEEK_ANCHOR]] as const) {
     const limit = objectValue(limits[name]);
-    const rawPercent = numberOrNull(limit.used_percent);
-    const rawUsage = numberOrNull(limit.usage ?? limit.used);
+    const rawPercent = strictNumber(limit.used_percent ?? limit.used);
+    const rawUsage = strictNumber(limit.usage);
     if (rawPercent === null && rawUsage === null) continue;
     const usage = rawPercent !== null ? rawPercent / 100 : rawUsage! > 1 ? rawUsage! / 100 : rawUsage!;
     windows.push(usageWindow({
