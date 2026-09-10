@@ -141,6 +141,13 @@ test("parses Ollama percentage usage and provider reset timestamps", () => {
   ]);
 });
 
+test("parses the current Ollama monthly usage window", () => {
+  const windows = parseOllamaUsage({ limits: { monthly: { usage: 0.005, models: [] } } });
+  assert.deepEqual(windows.map((window) => ({ name: window.name, usedPercent: window.usedPercent, resetAt: window.resetAt, windowSeconds: window.windowSeconds })), [
+    { name: "monthly", usedPercent: 0.5, resetAt: null, windowSeconds: null },
+  ]);
+});
+
 test("falls back for invalid Ollama values and handles percentage edge cases", () => {
   const windows = parseOllamaUsage({ limits: {
     session: { used_percent: null, usage: 0.5, reset: null },

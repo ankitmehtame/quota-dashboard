@@ -70,7 +70,7 @@ function strictNumber(value: unknown): number | null {
   return null;
 }
 
-function ollamaResetAt(value: JsonObject, now: number, windowSeconds: number, anchor: number): string {
+function ollamaResetAt(value: JsonObject, now: number, windowSeconds: number | null, anchor: number | null): string | null {
   const reported = value.reset_at ?? value.resetAt ?? value.reset;
   if (typeof reported === "string" && Number.isFinite(Date.parse(reported))) {
     const date = new Date(reported);
@@ -81,13 +81,13 @@ function ollamaResetAt(value: JsonObject, now: number, windowSeconds: number, an
     const date = new Date(timestamp < 10_000_000_000 ? timestamp * 1000 : timestamp);
     if (Number.isFinite(date.getTime())) return date.toISOString();
   }
-  return nextOllamaReset(now, windowSeconds, anchor);
+  return windowSeconds !== null && anchor !== null ? nextOllamaReset(now, windowSeconds, anchor) : null;
 }
 
 export function parseOllamaUsage(payload: unknown, now = Date.now()): QuotaWindow[] {
   const limits = objectValue(objectValue(payload).limits);
   const windows: QuotaWindow[] = [];
-  for (const [name, seconds, anchor] of [["session", OLLAMA_SESSION_SECONDS, OLLAMA_SESSION_ANCHOR], ["weekly", OLLAMA_WEEK_SECONDS, OLLAMA_WEEK_ANCHOR]] as const) {
+  for (const [name, seconds, anchor] of [["session", OLLAMA_SESSION_SECONDS, OLLAMA_SESSION_ANCHOR], ["weekly", OLLAMA_WEEK_SECONDS, OLLAMA_WEEK_ANCHOR], ["monthly", null, null]] as const) {
     const limit = objectValue(limits[name]);
     const rawPercent = [limit.used_percent, limit.used].map(strictNumber).find((value): value is number => value !== null) ?? null;
     const rawUsage = strictNumber(limit.usage);
@@ -97,7 +97,7 @@ export function parseOllamaUsage(payload: unknown, now = Date.now()): QuotaWindo
       name,
       usedPercent: Math.round(usage * 10000) / 100,
       resetAt: ollamaResetAt(limit, now, seconds, anchor),
-      windowSeconds: seconds,
+      ...(seconds === null ? {} : { windowSeconds: seconds }),
     }));
   }
   return windows;
