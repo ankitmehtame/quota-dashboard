@@ -111,7 +111,7 @@ export const PROVIDER_DEFINITIONS: Record<ProviderId, {
     name: "Ollama Cloud",
     shortName: "Ollama",
     accent: "orange",
-    description: "Cloud session and weekly usage",
+    description: "Cloud usage windows",
     capabilities: {
       quota: true,
       usage: false,
