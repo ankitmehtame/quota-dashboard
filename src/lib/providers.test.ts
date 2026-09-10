@@ -151,11 +151,11 @@ test("falls back for invalid Ollama values and handles percentage edge cases", (
     { name: "weekly", usedPercent: 1, resetAt: "2026-08-24T00:00:00.000Z" },
   ]);
 });
+
 test("treats Ollama usage as a fraction even when it exceeds one", () => {
   const windows = parseOllamaUsage({ limits: { session: { usage: 1.25 } } });
   assert.equal(windows[0].usedPercent, 100);
 });
-
 test("falls back from invalid Ollama fields and reset timestamps", () => {
   const windows = parseOllamaUsage({ limits: {
     session: { used_percent: "unknown", used: 34, reset_at: 1e20 },
