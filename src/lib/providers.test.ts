@@ -133,10 +133,21 @@ test("rounds Ollama percentages for API consumers", () => {
 test("parses Ollama percentage usage and provider reset timestamps", () => {
   const windows = parseOllamaUsage({ limits: {
     session: { used_percent: 12.5, reset_at: "2026-08-19T15:00:00Z" },
-    weekly: { used: 34, resetAt: 1787529600 },
+    weekly: { used: 34, resetAt: 1787616000 },
   } }, Date.parse("2026-08-19T10:30:00Z"));
   assert.deepEqual(windows.map((window) => ({ name: window.name, usedPercent: window.usedPercent, resetAt: window.resetAt })), [
     { name: "session", usedPercent: 12.5, resetAt: "2026-08-19T15:00:00.000Z" },
-    { name: "weekly", usedPercent: 34, resetAt: "2026-08-24T00:00:00.000Z" },
+    { name: "weekly", usedPercent: 34, resetAt: "2026-08-25T00:00:00.000Z" },
+  ]);
+});
+
+test("falls back for invalid Ollama values and handles percentage edge cases", () => {
+  const windows = parseOllamaUsage({ limits: {
+    session: { used_percent: null, usage: 0.5, reset: null },
+    weekly: { used: 1, reset: false },
+  } }, Date.parse("2026-08-19T10:30:00Z"));
+  assert.deepEqual(windows.map((window) => ({ name: window.name, usedPercent: window.usedPercent, resetAt: window.resetAt })), [
+    { name: "session", usedPercent: 50, resetAt: "2026-08-19T14:00:00.000Z" },
+    { name: "weekly", usedPercent: 1, resetAt: "2026-08-24T00:00:00.000Z" },
   ]);
 });
