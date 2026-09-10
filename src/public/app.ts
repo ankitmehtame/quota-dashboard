@@ -181,7 +181,7 @@ function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][st
       ? window?.valueLabel || ""
       : percent == null && window?.valueLabel
         ? ""
-        : window?.valueLabel || (provider.id === "codex" ? "" : provider.configured ? "No balance reported" : "Configure credentials on server");
+        : window?.valueLabel || (provider.id === "codex" || provider.id === "ollama" ? "" : provider.configured ? "No balance reported" : "Configure credentials on server");
     const showWindowName = windows.length > 1 || provider.id === "codex" || provider.id === "ollama";
     return `<div class="quota-window${index ? " quota-window-separated" : ""}">${showWindowName ? `<div class="quota-window-name">${window?.name || "Usage"}</div>` : ""}<div class="quota-percent ${percent == null && !window?.valueLabel ? "unavailable" : percent == null ? "quota-balance" : "quota-percentage"}">${percentageValue}</div>${percent != null ? `<div class="bar"><span style="width:${Math.min(percent, 100)}%"></span>${nowPosition !== null ? `<button class="quota-now-marker" style="left:${nowPosition}%" type="button" aria-label="Current quota window position"><span class="quota-now-tooltip"><strong>Now</strong><span>${nowExpected}% of window elapsed</span><span>Snapshot: ${formatRefreshTime(refreshedAt)}</span></span></button>` : ""}</div>` : ""}<div class="quota-foot">${label ? `<span>${label}</span>` : ""}<span>${window?.resetAt ? timeUntil(window.resetAt) : ""}</span></div></div>`;
   }).join("");
