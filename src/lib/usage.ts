@@ -25,6 +25,23 @@ export type UsageSummary = {
   totalTokens: number;
 };
 
+export type RemoteUsageInput = {
+  hostId: string;
+  generatedAt: string | null;
+  timezone: string | null;
+  range: { from: string; to: string } | null;
+  status: string;
+  error: string | null;
+  stale: boolean;
+  data: unknown;
+};
+
+export type UsageHost = Omit<RemoteUsageInput, "data"> & {
+  local: boolean;
+  included: boolean;
+  complete: boolean;
+};
+
 type JsonObject = Record<string, unknown>;
 
 function objectValue(value: unknown): JsonObject {
@@ -58,7 +75,10 @@ function modelRows(row: Record<string, any>): Array<Record<string, any>> {
 }
 
 function usageRows(row: Record<string, any>): Array<Record<string, any>> {
-  if (Array.isArray(row.agents) && row.agents.length > 0) return row.agents;
+  if (Array.isArray(row.agents)) {
+    const agents = row.agents.filter((agent: unknown): agent is Record<string, any> => Boolean(agent && typeof agent === "object" && !Array.isArray(agent)));
+    if (agents.length > 0) return agents;
+  }
   return [row];
 }
 
@@ -102,20 +122,21 @@ function emptySummary(status = "disabled", error: string | null = null, source: 
   return { status, error, source, daily: [], byModel: [], byProvider: [], totalCostUsd: 0, totalTokens: 0 };
 }
 
-function summarize(records: UsageRecord[]): UsageSummary {
+export function summarizeUsage(records: UsageRecord[]): UsageSummary {
   const daily = new Map();
   const byModel = new Map();
   const byProvider = new Map();
   for (const record of records) {
     const totalTokens = record.inputTokens + record.cachedInputTokens + record.cacheCreationTokens + record.outputTokens + record.reasoningTokens;
-    const day = daily.get(record.date) ?? { date: record.date, costUsd: 0, totalTokens: 0, byProvider: {}, byModel: [] };
+    const day = daily.get(record.date) ?? { date: record.date, costUsd: 0, totalTokens: 0, byProvider: Object.create(null), byModel: [] };
     day.costUsd += record.costUsd;
     day.totalTokens += totalTokens;
     daily.set(record.date, day);
-    const model = byModel.get(`${record.provider}:${record.model}`) ?? { provider: record.provider, model: record.model, costUsd: 0, totalTokens: 0 };
+    const modelKey = JSON.stringify([record.provider, record.model]);
+    const model = byModel.get(modelKey) ?? { provider: record.provider, model: record.model, costUsd: 0, totalTokens: 0 };
     model.costUsd += record.costUsd;
     model.totalTokens += totalTokens;
-    byModel.set(`${record.provider}:${record.model}`, model);
+    byModel.set(modelKey, model);
     const provider = byProvider.get(record.provider) ?? { provider: record.provider, costUsd: 0, totalTokens: 0 };
     provider.costUsd += record.costUsd;
     provider.totalTokens += totalTokens;
@@ -138,7 +159,7 @@ function summarize(records: UsageRecord[]): UsageSummary {
     modelDetail.totalTokens += totalTokens;
   }
   return {
-    daily: [...daily.values()].sort((a, b) => a.date.localeCompare(b.date)),
+    daily: [...daily.values()].map((day) => ({ ...day, byProvider: { ...day.byProvider } })).sort((a, b) => a.date.localeCompare(b.date)),
     byModel: [...byModel.values()].sort((a, b) => b.costUsd - a.costUsd),
     byProvider: [...byProvider.values()].sort((a, b) => b.costUsd - a.costUsd),
     totalCostUsd: records.reduce((total, record) => total + record.costUsd, 0),
@@ -155,27 +176,71 @@ export async function readCcusageUsage({ from, to, timeZone }: { from: string; t
       windowsHide: true,
     });
     const records = parseCcusage(JSON.parse(stdout));
-    return { status: "ok", error: null, source: binary, records, ...summarize(records) };
+    return { status: "ok", error: null, source: binary, records, ...summarizeUsage(records) };
   } catch (error) {
     const detail = error && typeof error === "object" && "code" in error && error.code === "ENOENT" ? `${binary} was not found` : errorMessage(error, "ccusage failed");
     return { ...emptySummary("error", detail, binary), records: [] };
   }
 }
 
-export async function readUsageSources(enabledProviders: string[], range: { from: string; to: string; timeZone: string }) {
-  const result = await readCcusageUsage(range);
-  if (result.status !== "ok") {
-    return { ...result, sources: enabledProviders.map((provider) => ({ provider, status: result.status, error: result.error })) };
-  }
+function selectedProviders(enabledProviders: string[]): Set<string> {
   const selected = new Set(enabledProviders);
   if (selected.has("opencode") || selected.has("hermes") || selected.has("antigravity")) selected.add("shared");
-  const selectedRecords = (result.records || []).filter((record) => selected.has(record.provider));
-  const summary = summarize(selectedRecords);
+  return selected;
+}
+
+export function mergeUsageRecords(
+  enabledProviders: string[],
+  range: { from: string; to: string; timeZone: string },
+  localRecords: UsageRecord[],
+  remoteInputs: RemoteUsageInput[],
+): { records: UsageRecord[]; hosts: UsageHost[] } {
+  const selected = selectedProviders(enabledProviders);
+  const records = localRecords.filter((record) => selected.has(record.provider));
+  const hosts: UsageHost[] = [];
+  for (const remote of remoteInputs) {
+    const timezoneMatches = remote.timezone === range.timeZone;
+    const rangeComplete = Boolean(remote.range && remote.range.from <= range.from && remote.range.to >= range.to);
+    const remoteRecords = timezoneMatches
+      ? parseCcusage(remote.data).filter((record) => record.date >= range.from && record.date <= range.to && selected.has(record.provider))
+      : [];
+    records.push(...remoteRecords);
+    hosts.push({
+      hostId: remote.hostId,
+      generatedAt: remote.generatedAt,
+      timezone: remote.timezone,
+      range: remote.range,
+      status: timezoneMatches && rangeComplete ? remote.status : "error",
+      error: !timezoneMatches
+        ? `Timezone ${remote.timezone || "unknown"} does not match ${range.timeZone}`
+        : !rangeComplete
+          ? `Published range ${remote.range?.from || "unknown"} to ${remote.range?.to || "unknown"} does not cover ${range.from} to ${range.to}`
+          : remote.error,
+      stale: remote.stale,
+      local: false,
+      included: timezoneMatches,
+      complete: rangeComplete,
+    });
+  }
+  return { records, hosts };
+}
+
+export async function readUsageSources(
+  enabledProviders: string[],
+  range: { from: string; to: string; timeZone: string },
+  remoteInputs: RemoteUsageInput[] = [],
+) {
+  const result = await readCcusageUsage(range);
+  const { records, hosts } = mergeUsageRecords(enabledProviders, range, result.status === "ok" ? result.records || [] : [], remoteInputs);
+  const summary = summarizeUsage(records);
+  const remoteProblem = hosts.some((host) => !["ok", "online"].includes(host.status) || host.stale || !host.included || !host.complete);
+  const status = result.status === "ok" && !remoteProblem ? "ok" : records.length ? "partial" : "error";
   return {
-    status: "ok",
-    error: null,
+    status,
+    error: result.status === "ok" ? null : result.error,
     source: binarySource(),
-    sources: enabledProviders.map((provider) => ({ provider, status: "ok", error: null })),
+    sources: enabledProviders.map((provider) => ({ provider, status: result.status, error: result.error })),
+    hosts,
     ...summary,
   };
 }

@@ -56,6 +56,10 @@ jobs:
         working-directory: src
         run: npm run build
 
+      - name: Install runtime dependencies in artifact
+        working-directory: src/dist
+        run: npm ci --omit=dev --ignore-scripts
+
       - name: Smoke-test runtime artifact
         working-directory: src/dist
         run: |
