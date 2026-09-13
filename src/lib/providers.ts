@@ -97,7 +97,7 @@ function ollamaRequestCount(value: JsonObject): number | null {
     total += count;
     found = true;
   }
-  return found ? total : null;
+  return found || value.models.length === 0 ? total : null;
 }
 
 export function parseOllamaUsage(payload: unknown, now = Date.now()): QuotaWindow[] {
