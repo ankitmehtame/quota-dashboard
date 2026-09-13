@@ -1,0 +1,13 @@
+{
+  "name": "quota-dashboard-remote-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Standalone remote usage publisher for Quota Dashboard",
+  "type": "module",
+  "dependencies": {
+    "mqtt": "^5.14.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

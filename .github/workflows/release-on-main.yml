@@ -116,6 +116,12 @@ jobs:
         working-directory: src/dist
         run: npm ci --omit=dev --ignore-scripts
 
+      - name: Package remote agent archive
+        run: node scripts/package-remote-agent.mjs "${{ steps.release_tag.outputs.tag }}"
+
+      - name: Smoke-test remote agent archive
+        run: node scripts/smoke-test-remote-agent.mjs "quota-dashboard-remote-agent-${{ steps.release_tag.outputs.tag }}.tar.gz"
+
       - name: Package release archive
         run: tar -czf "quota-dashboard-node-${{ steps.release_tag.outputs.tag }}.tar.gz" -C src/dist .
 
@@ -124,4 +130,6 @@ jobs:
         with:
           tag_name: ${{ steps.release_tag.outputs.tag }}
           generate_release_notes: true
-          files: quota-dashboard-node-${{ steps.release_tag.outputs.tag }}.tar.gz
+          files: |
+            quota-dashboard-node-${{ steps.release_tag.outputs.tag }}.tar.gz
+            quota-dashboard-remote-agent-${{ steps.release_tag.outputs.tag }}.tar.gz

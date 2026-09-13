@@ -113,7 +113,8 @@ RestartSec=10
 WantedBy=default.target
 EOF
     systemctl --user daemon-reload
-    systemctl --user enable --now quota-dashboard-remote.service
+    systemctl --user enable quota-dashboard-remote.service
+    systemctl --user restart quota-dashboard-remote.service
     printf 'Installed and started quota-dashboard-remote.service.\n'
     printf 'Inspect it with: systemctl --user status quota-dashboard-remote.service\n'
     ;;
