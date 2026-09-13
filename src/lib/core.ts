@@ -15,6 +15,8 @@ export type QuotaWindow = {
   valueLabel: string | null;
   balanceLabel: string | null;
   spentLabel: string | null;
+  requestCount: number | null;
+  unit: string | null;
   source: string;
 };
 
@@ -163,8 +165,8 @@ export function usageWindow(input: Partial<QuotaWindow> & { name: string }): Quo
   return {
     name: input.name,
     usedPercent: clampPercent(input.usedPercent ?? NaN),
-    usedValue: numberOrNull(input.usedValue),
-    limitValue: numberOrNull(input.limitValue),
+    usedValue: input.usedValue == null ? null : numberOrNull(input.usedValue),
+    limitValue: input.limitValue == null ? null : numberOrNull(input.limitValue),
     windowStart: input.windowStart ?? null,
     windowEnd: input.windowEnd ?? null,
     resetAt: input.resetAt ?? null,
@@ -172,6 +174,8 @@ export function usageWindow(input: Partial<QuotaWindow> & { name: string }): Quo
     valueLabel: input.valueLabel ?? null,
     balanceLabel: input.balanceLabel ?? null,
     spentLabel: input.spentLabel ?? null,
+    requestCount: input.requestCount == null ? null : numberOrNull(input.requestCount),
+    unit: input.unit ?? null,
     source: input.source ?? "provider",
   };
 }
