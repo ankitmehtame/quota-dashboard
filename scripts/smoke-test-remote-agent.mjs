@@ -35,11 +35,13 @@ function runSetup(setup, options, input) {
 try {
   const { stdout: archiveListing } = await execFileAsync("tar", ["-tzf", path.resolve(rootDir, archivePath)]);
   const archiveEntries = archiveListing.trim().split("\n");
-  assert.ok(archiveEntries.includes("./package.json"));
-  assert.ok(archiveEntries.includes("./package-lock.json"));
-  assert.ok(archiveEntries.includes("./remote/index.js"));
-  assert.ok(archiveEntries.includes("./remote/setup.sh"));
-  assert.ok(archiveEntries.every((entry) => /^(?:\.\/$|\.\/package(?:-lock)?\.json$|\.\/remote\/(?:$|setup\.sh$|(?:index|publisher|ccusage|protocol)\.js$)|\.\/node_modules\/)/.test(entry)));
+  assert.ok(archiveEntries.includes("remote/package.json"));
+  assert.ok(archiveEntries.includes("remote/package-lock.json"));
+  assert.ok(archiveEntries.includes("remote/node_modules/"));
+  assert.ok(archiveEntries.includes("remote/index.js"));
+  assert.ok(archiveEntries.includes("remote/setup.sh"));
+  const allowedArchiveEntry = /^remote\/(?:$|package(?:-lock)?\.json$|(?:index|publisher|ccusage|protocol)\.js$|setup\.sh$|node_modules\/.*$)/;
+  assert.ok(archiveEntries.every((entry) => allowedArchiveEntry.test(entry)));
 
   await execFileAsync("tar", ["-xzf", path.resolve(rootDir, archivePath), "-C", tempDir]);
   await rename(path.join(tempDir, "remote"), extractDir);

@@ -46,13 +46,25 @@ Extract `quota-dashboard-node-vX.Y.Z.tar.gz` on a Node.js 22+ host and run
 extract `quota-dashboard-remote-agent-vX.Y.Z.tar.gz` and run its bundled installer:
 
 ```sh
-tar -xzf quota-dashboard-remote-agent-vX.Y.Z.tar.gz
-./remote/setup.sh
+REMOTE_AGENT_DIR="${HOME}/.local/share/quota-dashboard/remote-agent"
+mkdir -p "${REMOTE_AGENT_DIR}"
+tar -xzf quota-dashboard-remote-agent-vX.Y.Z.tar.gz --strip-components=1 -C "${REMOTE_AGENT_DIR}"
+"${REMOTE_AGENT_DIR}/setup.sh"
 ```
 
 The remote-agent archive includes its production dependencies, so installation does
 not need npm or network access. Install Node.js 22+ and `ccusage` separately first.
-Host upgrades remain manual: extract a newer archive and rerun `setup.sh`.
+Keep `${HOME}/.local/share/quota-dashboard/remote-agent` in place after installation;
+`setup.sh` records the absolute path to its `index.js`. Host upgrades remain manual:
+replace that directory with a newer archive, then rerun its `setup.sh`:
+
+```sh
+REMOTE_AGENT_DIR="${HOME}/.local/share/quota-dashboard/remote-agent"
+rm -rf "${REMOTE_AGENT_DIR}"
+mkdir -p "${REMOTE_AGENT_DIR}"
+tar -xzf quota-dashboard-remote-agent-vX.Y.Z.tar.gz --strip-components=1 -C "${REMOTE_AGENT_DIR}"
+"${REMOTE_AGENT_DIR}/setup.sh"
+```
 
 ## Configuration
 
@@ -140,10 +152,10 @@ npm run build
 ./dist/remote/setup.sh
 ```
 
-From an extracted remote-agent release archive:
+From an extracted remote-agent release archive installed at the durable path above:
 
 ```sh
-./remote/setup.sh
+"${HOME}/.local/share/quota-dashboard/remote-agent/setup.sh"
 ```
 
 The script asks for the MQTT broker, credentials, host ID, and canonical timezone. It

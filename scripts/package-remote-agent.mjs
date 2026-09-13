@@ -25,12 +25,12 @@ try {
   }
   await cp(path.join(rootDir, "src", "remote", "setup.sh"), path.join(remoteDir, "setup.sh"));
   await chmod(path.join(remoteDir, "setup.sh"), 0o755);
-  await cp(path.join(rootDir, "src", "remote", "package.json"), path.join(stageDir, "package.json"));
-  await cp(path.join(rootDir, "src", "remote", "package-lock.json"), path.join(stageDir, "package-lock.json"));
+  await cp(path.join(rootDir, "src", "remote", "package.json"), path.join(remoteDir, "package.json"));
+  await cp(path.join(rootDir, "src", "remote", "package-lock.json"), path.join(remoteDir, "package-lock.json"));
 
-  await execFileAsync("npm", ["ci", "--omit=dev", "--ignore-scripts"], { cwd: stageDir });
+  await execFileAsync("npm", ["ci", "--omit=dev", "--ignore-scripts"], { cwd: remoteDir });
   await rm(archivePath, { force: true });
-  await execFileAsync("tar", ["-czf", archivePath, "-C", stageDir, "."]);
+  await execFileAsync("tar", ["-czf", archivePath, "-C", stageDir, "remote"]);
 } finally {
   await rm(stageDir, { recursive: true, force: true });
 }
