@@ -84,6 +84,22 @@ function ollamaResetAt(value: JsonObject, now: number, windowSeconds: number | n
   return windowSeconds !== null && anchor !== null ? nextOllamaReset(now, windowSeconds, anchor) : null;
 }
 
+function ollamaRequestCount(value: JsonObject): number | null {
+  const reported = strictNumber(value.requests ?? value.request_count ?? value.requestCount);
+  if (reported !== null) return reported;
+  if (!Array.isArray(value.models)) return null;
+  let total = 0;
+  let found = false;
+  for (const rawModel of value.models) {
+    const model = objectValue(rawModel);
+    const count = strictNumber(model.request_count ?? model.requests ?? model.requestCount);
+    if (count === null) continue;
+    total += count;
+    found = true;
+  }
+  return found ? total : null;
+}
+
 export function parseOllamaUsage(payload: unknown, now = Date.now()): QuotaWindow[] {
   const limits = objectValue(objectValue(payload).limits);
   const windows: QuotaWindow[] = [];
@@ -91,11 +107,17 @@ export function parseOllamaUsage(payload: unknown, now = Date.now()): QuotaWindo
     const limit = objectValue(limits[name]);
     const rawPercent = [limit.used_percent, limit.used].map(strictNumber).find((value): value is number => value !== null) ?? null;
     const rawUsage = strictNumber(limit.usage);
+    const rawLimit = strictNumber(limit.limit ?? limit.max ?? limit.quota);
+    const requestCount = ollamaRequestCount(limit);
     if (rawPercent === null && rawUsage === null) continue;
     const usage = rawPercent !== null ? rawPercent / 100 : rawUsage!;
     windows.push(usageWindow({
       name,
       usedPercent: Math.round(usage * 10000) / 100,
+      usedValue: rawUsage,
+      limitValue: rawLimit,
+      requestCount,
+      unit: typeof limit.unit === "string" ? limit.unit : null,
       resetAt: ollamaResetAt(limit, now, seconds, anchor),
       ...(seconds === null ? {} : { windowSeconds: seconds }),
     }));
