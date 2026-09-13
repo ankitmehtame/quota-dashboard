@@ -77,11 +77,32 @@ jobs:
           cat "$RUNNER_TEMP/quota-dashboard-server.log"
           exit 1
 
+      - name: Package remote agent archive
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            remote_version="$GITHUB_REF_NAME"
+          else
+            remote_version="ci-$GITHUB_SHA"
+          fi
+          node scripts/package-remote-agent.mjs "$remote_version"
+          echo "REMOTE_AGENT_ARCHIVE=quota-dashboard-remote-agent-$remote_version.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Smoke-test remote agent archive
+        run: node scripts/smoke-test-remote-agent.mjs "$REMOTE_AGENT_ARCHIVE"
+
       - name: Upload Node.js artifact
         uses: actions/upload-artifact@v6
         with:
           name: quota-dashboard-node
           path: src/dist
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Upload remote agent artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: quota-dashboard-remote-agent
+          path: ${{ env.REMOTE_AGENT_ARCHIVE }}
           if-no-files-found: error
           retention-days: 14
 
@@ -94,7 +115,9 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: quota-dashboard-release
-          path: quota-dashboard-node-${{ github.ref_name }}.tar.gz
+          path: |
+            quota-dashboard-node-${{ github.ref_name }}.tar.gz
+            quota-dashboard-remote-agent-${{ github.ref_name }}.tar.gz
           if-no-files-found: error
           retention-days: 14
 
@@ -116,4 +139,6 @@ jobs:
         with:
           generate_release_notes: true
           prerelease: ${{ needs.build.outputs.prerelease == 'true' }}
-          files: quota-dashboard-node-${{ github.ref_name }}.tar.gz
+          files: |
+            quota-dashboard-node-${{ github.ref_name }}.tar.gz
+            quota-dashboard-remote-agent-${{ github.ref_name }}.tar.gz

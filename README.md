@@ -37,12 +37,22 @@ Extract it on a Node.js 22+ host and run
 Every push to `main` automatically creates the next minor version tag (`vX.Y.0`)
 and GitHub Release. The release is created after the build, tests, and runtime
 smoke test pass. Tags whose commits are on `main` create regular releases; tags
-from other branches create pre-releases. Each release includes a compressed
-Node.js runtime archive. Manual tag pushes are intended for branch pre-releases;
+from other branches create pre-releases. Each release includes separate compressed
+dashboard and remote-agent Node.js archives. Manual tag pushes are intended for branch pre-releases;
 normal releases should be produced by merging to `main`.
 
-Extract the release archive on a Node.js 22+ host and run `node server.js` from
-the extracted directory.
+Extract `quota-dashboard-node-vX.Y.Z.tar.gz` on a Node.js 22+ host and run
+`node server.js` from the extracted directory. To install only a remote publisher,
+extract `quota-dashboard-remote-agent-vX.Y.Z.tar.gz` and run its bundled installer:
+
+```sh
+tar -xzf quota-dashboard-remote-agent-vX.Y.Z.tar.gz
+./remote/setup.sh
+```
+
+The remote-agent archive includes its production dependencies, so installation does
+not need npm or network access. Install Node.js 22+ and `ccusage` separately first.
+Host upgrades remain manual: extract a newer archive and rerun `setup.sh`.
 
 ## Configuration
 
@@ -130,7 +140,7 @@ npm run build
 ./dist/remote/setup.sh
 ```
 
-From an extracted release archive:
+From an extracted remote-agent release archive:
 
 ```sh
 ./remote/setup.sh
