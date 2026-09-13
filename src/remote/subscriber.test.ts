@@ -8,6 +8,7 @@ import {
   makeMqttSubscriptionTopics,
   parseMqttSubscriptionTopic,
   parseRemoteMqttMessage,
+  readRemoteMqttSubscriberConfig,
 } from "./subscriber.js";
 
 const metadata = {
@@ -125,6 +126,36 @@ test("does not connect when MQTT is not configured", async () => {
   assert.equal(connectCalls, 0);
   assert.equal(store.getSnapshot().configured, false);
   assert.equal(store.getSnapshot().connection, "disabled");
+});
+
+test("omits empty subscriber credentials from config and connect options", async () => {
+  const envConfig = readRemoteMqttSubscriberConfig({
+    MQTT_URL: "mqtt://broker",
+    MQTT_USERNAME: "",
+    MQTT_PASSWORD: " pass word ",
+  });
+  assert.equal("username" in envConfig, false);
+  assert.equal(envConfig.password, " pass word ");
+
+  const client = new EventEmitter();
+  let options: Record<string, any> | undefined;
+  const store = new RemoteMqttStore({
+    mqttUrl: "mqtt://broker",
+    username: "",
+    password: "",
+    clientOptions: { username: "", password: "" },
+  }, {
+    connect: ((_url: string, connectOptions: Record<string, any>) => {
+      options = connectOptions;
+      return client;
+    }) as never,
+  });
+
+  await store.start();
+  assert.equal("username" in (options || {}), false);
+  assert.equal("password" in (options || {}), false);
+  assert.equal("username" in store.config, false);
+  assert.equal("password" in store.config, false);
 });
 
 test("connects, subscribes to all three wildcard topics, and shuts down", async () => {
