@@ -9,5 +9,5 @@
     "outDir": "dist",
     "sourceMap": true
   },
-  "include": ["server.ts", "lib/**/*.ts"]
+  "include": ["server.ts", "lib/**/*.ts", "remote/**/*.ts"]
 }

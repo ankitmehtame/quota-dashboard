@@ -42,6 +42,10 @@ jobs:
         working-directory: src
         run: npm run build
 
+      - name: Install runtime dependencies for smoke test
+        working-directory: src/dist
+        run: npm ci --omit=dev --ignore-scripts
+
       - name: Smoke-test runtime artifact
         working-directory: src/dist
         run: |
@@ -107,6 +111,10 @@ jobs:
       - name: Build tagged runtime artifact
         working-directory: src
         run: npm run build
+
+      - name: Install runtime dependencies in artifact
+        working-directory: src/dist
+        run: npm ci --omit=dev --ignore-scripts
 
       - name: Package release archive
         run: tar -czf "quota-dashboard-node-${{ steps.release_tag.outputs.tag }}.tar.gz" -C src/dist .
