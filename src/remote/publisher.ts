@@ -68,8 +68,8 @@ export function readRemotePublisherConfig(env: NodeJS.ProcessEnv = process.env):
     publishIntervalMs: positiveNumber(env.MQTT_INTERVAL_MS || env.MQTT_PUBLISH_INTERVAL_MS, DEFAULT_PUBLISH_INTERVAL_MS),
     ccusageTimeoutMs: positiveNumber(env.CCUSAGE_TIMEOUT_MS, DEFAULT_CCUSAGE_TIMEOUT_MS),
     ccusageMaxBuffer: positiveNumber(env.CCUSAGE_MAX_BUFFER, DEFAULT_CCUSAGE_MAX_BUFFER),
-    ...(env.MQTT_USERNAME !== undefined ? { username: env.MQTT_USERNAME } : {}),
-    ...(env.MQTT_PASSWORD !== undefined ? { password: env.MQTT_PASSWORD } : {}),
+    ...(env.MQTT_USERNAME !== undefined && env.MQTT_USERNAME !== "" ? { username: env.MQTT_USERNAME } : {}),
+    ...(env.MQTT_PASSWORD !== undefined && env.MQTT_PASSWORD !== "" ? { password: env.MQTT_PASSWORD } : {}),
     ...(env.CCUSAGE_VERSION?.trim() ? { ccusageVersion: env.CCUSAGE_VERSION.trim() } : {}),
   };
 }
@@ -88,8 +88,8 @@ function mqttOptions(config: RemotePublisherConfig, will: string, topics: Return
       retain: true,
     },
   };
-  if (config.username !== undefined) options.username = config.username;
-  if (config.password !== undefined) options.password = config.password;
+  if (config.username !== undefined && config.username !== "") options.username = config.username;
+  if (config.password !== undefined && config.password !== "") options.password = config.password;
   return options;
 }
 
@@ -125,7 +125,7 @@ export class RemoteMqttPublisher {
   private inFlight: Promise<void> | null = null;
   private stopped = false;
   private stopPromise: Promise<void> | null = null;
-  private connectedOnce = false;
+  private connected = false;
 
   constructor(config = readRemotePublisherConfig(), dependencies: PublisherDependencies = {}) {
     this.config = { ...config, hostId: sanitizeHostId(config.hostId) };
@@ -152,19 +152,8 @@ export class RemoteMqttPublisher {
     this.client = client;
     client.on("connect", this.onConnect);
     client.on("reconnect", this.onReconnect);
-    try {
-      await this.waitForConnection(client);
-      this.connectedOnce = true;
-      await publish(client, this.topics.status, JSON.stringify(makeStatusMessage(this.nextMetadata(this.range()), "online")));
-      this.timer = setInterval(() => {
-        void this.publishSnapshot();
-      }, this.config.publishIntervalMs);
-      await this.publishSnapshot();
-    } catch (error) {
-      this.client = null;
-      client.end(true);
-      throw error;
-    }
+    client.on("offline", this.onOffline);
+    client.on("error", this.onError);
   }
 
   /** Publish one snapshot, returning false when another run already owns the slot. */
@@ -197,16 +186,21 @@ export class RemoteMqttPublisher {
     if (this.inFlight) await this.inFlight.catch(() => undefined);
     const client = this.client;
     this.client = null;
+    const wasConnected = this.connected;
+    this.connected = false;
     if (!client) return;
     client.off("connect", this.onConnect);
     client.off("reconnect", this.onReconnect);
-    try {
-      await publish(client, this.topics.status, JSON.stringify(makeStatusMessage(this.nextMetadata(this.range()), "offline")));
-    } catch (error) {
-      console.error(`MQTT offline status failed: ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      await new Promise<void>((resolve, reject) => client.end(false, {}, (error) => error ? reject(error) : resolve()));
+    client.off("offline", this.onOffline);
+    client.off("error", this.onError);
+    if (wasConnected) {
+      try {
+        await publish(client, this.topics.status, JSON.stringify(makeStatusMessage(this.nextMetadata(this.range()), "offline")));
+      } catch (error) {
+        console.error(`MQTT offline status failed: ${error instanceof Error ? error.message : String(error)}`);
+      }
     }
+    await new Promise<void>((resolve, reject) => client.end(false, {}, (error) => error ? reject(error) : resolve()));
   }
 
   private range(): MqttDateRange {
@@ -244,36 +238,32 @@ export class RemoteMqttPublisher {
     }
   }
 
-  private waitForConnection(client: MqttClient): Promise<void> {
-    return new Promise((resolve, reject) => {
-      const onConnect = () => {
-        cleanup();
-        resolve();
-      };
-      const onError = (error: Error) => {
-        cleanup();
-        reject(error);
-      };
-      const cleanup = () => {
-        client.off("connect", onConnect);
-        client.off("error", onError);
-      };
-      client.once("connect", onConnect);
-      client.once("error", onError);
-    });
-  }
-
   private readonly onConnect = (): void => {
-    if (!this.connectedOnce || this.stopped || !this.client) return;
+    if (this.stopped || !this.client || this.connected) return;
+    this.connected = true;
     const client = this.client;
+    if (!this.timer) {
+      this.timer = setInterval(() => {
+        void this.publishSnapshot();
+      }, this.config.publishIntervalMs);
+    }
     const status = makeStatusMessage(this.nextMetadata(this.range()), "online");
     void publish(client, this.topics.status, JSON.stringify(status))
       .then(() => this.publishSnapshot())
       .catch((error: unknown) => console.error(`MQTT reconnect publish failed: ${error instanceof Error ? error.message : String(error)}`));
   };
 
+  private readonly onError = (error: Error): void => {
+    console.error(`MQTT connection error: ${error.message}`);
+  };
+
+  private readonly onOffline = (): void => {
+    this.connected = false;
+  };
+
   private readonly onReconnect = (): void => {
     if (this.stopped || !this.client) return;
+    this.connected = false;
     this.connectionId = randomUUID();
     const offline = makeStatusMessage(this.nextMetadata(this.range()), "offline");
     this.client.options.will = {

@@ -138,8 +138,8 @@ export function readRemoteMqttSubscriberConfig(env: NodeJS.ProcessEnv = process.
     mqttPrefix: sanitizeTopicPrefix(env.MQTT_PREFIX || DEFAULT_MQTT_PREFIX),
     enabled,
     maxPayloadBytes: normalizedMaxPayloadBytes(Number(env.MQTT_MAX_PAYLOAD_BYTES)),
-    ...(env.MQTT_USERNAME !== undefined ? { username: env.MQTT_USERNAME } : {}),
-    ...(env.MQTT_PASSWORD !== undefined ? { password: env.MQTT_PASSWORD } : {}),
+    ...(env.MQTT_USERNAME !== undefined && env.MQTT_USERNAME !== "" ? { username: env.MQTT_USERNAME } : {}),
+    ...(env.MQTT_PASSWORD !== undefined && env.MQTT_PASSWORD !== "" ? { password: env.MQTT_PASSWORD } : {}),
   };
 }
 
@@ -264,12 +264,15 @@ export class RemoteMqttStore {
   constructor(config: RemoteMqttSubscriberConfig = readRemoteMqttSubscriberConfig(), dependencies: RemoteMqttSubscriberDependencies = {}) {
     const mqttUrl = typeof config.mqttUrl === "string" && config.mqttUrl.trim() ? config.mqttUrl.trim() : null;
     const enabled = config.enabled !== false && Boolean(mqttUrl);
+    const { username, password, ...configWithoutCredentials } = config;
     this.config = {
-      ...config,
+      ...configWithoutCredentials,
       mqttUrl,
       mqttPrefix: sanitizeTopicPrefix(config.mqttPrefix || DEFAULT_MQTT_PREFIX),
       enabled,
       maxPayloadBytes: normalizedMaxPayloadBytes(config.maxPayloadBytes),
+      ...(username !== undefined && username !== "" ? { username } : {}),
+      ...(password !== undefined && password !== "" ? { password } : {}),
     };
     this.mqttTopics = makeMqttSubscriptionTopics(this.config.mqttPrefix);
     this.connect = dependencies.connect || mqtt.connect;
@@ -369,6 +372,8 @@ export class RemoteMqttStore {
       connectTimeout: 30_000,
       ...this.config.clientOptions,
     };
+    if (options.username === "") delete options.username;
+    if (options.password === "") delete options.password;
     if (this.config.username !== undefined) options.username = this.config.username;
     if (this.config.password !== undefined) options.password = this.config.password;
     let client: MqttClient;
