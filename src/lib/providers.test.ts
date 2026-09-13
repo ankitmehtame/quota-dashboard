@@ -159,6 +159,11 @@ test("aggregates Ollama request counts from monthly model usage", () => {
   assert.equal(windows[0].resetAt, null);
 });
 
+test("reports zero Ollama requests for an empty monthly model list", () => {
+  const windows = parseOllamaUsage({ limits: { monthly: { usage: 0, models: [] } } });
+  assert.equal(windows[0].requestCount, 0);
+});
+
 test("falls back for invalid Ollama values and handles percentage edge cases", () => {
   const windows = parseOllamaUsage({ limits: {
     session: { used_percent: null, usage: 0.5, reset: null },
