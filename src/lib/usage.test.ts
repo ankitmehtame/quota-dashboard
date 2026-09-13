@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { parseCcusage } from "./usage.js";
+import { mergeUsageRecords, parseCcusage, summarizeUsage } from "./usage.js";
 
 test("normalizes ccusage model breakdowns", () => {
   const records = parseCcusage({ daily: [{ date: "2026-08-12", modelBreakdowns: [{ modelName: "gpt-5", inputTokens: 10, cacheReadTokens: 4, outputTokens: 6, cost: 0.25 }] }] });
@@ -29,4 +29,50 @@ test("uses ccusage metadata agents when rows are aggregated", () => {
 test("prefers ccusage per-agent rows over the combined parent row", () => {
   const records = parseCcusage({ daily: [{ period: "2026-08-12", agent: "all", modelBreakdowns: [{ modelName: "combined", cost: 99 }], agents: [{ agent: "hermes", modelBreakdowns: [{ modelName: "h-model", cost: 1 }] }, { agent: "opencode", modelBreakdowns: [{ modelName: "o-model", cost: 2 }] }] }] });
   assert.deepEqual(records.map((record) => [record.provider, record.costUsd]), [["hermes", 1], ["opencode", 2]]);
+});
+
+test("ignores malformed agent entries", () => {
+  const records = parseCcusage({ daily: [{ date: "2026-08-12", agent: "codex", totalCost: 1, agents: [null, "invalid"] }] });
+  assert.equal(records.length, 1);
+  assert.equal(records[0].provider, "codex");
+});
+
+test("combines local and remote ccusage while enforcing range and timezone", () => {
+  const local = parseCcusage({ daily: [{ date: "2026-09-13", agent: "codex", modelBreakdowns: [{ modelName: "local-model", inputTokens: 10, cost: 1 }] }] });
+  const remoteData = { daily: [
+    { date: "2026-09-13", agent: "opencode", modelBreakdowns: [{ modelName: "remote-model", outputTokens: 7, cost: 2 }] },
+    { date: "2025-01-01", agent: "opencode", modelBreakdowns: [{ modelName: "old-model", outputTokens: 99, cost: 9 }] },
+  ] };
+  const merged = mergeUsageRecords(["codex", "opencode"], { from: "2026-09-01", to: "2026-09-13", timeZone: "Asia/Singapore" }, local, [
+    { hostId: "macbook", generatedAt: "2026-09-13T00:00:00Z", timezone: "Asia/Singapore", range: { from: "2025-09-09", to: "2026-09-13" }, status: "ok", error: null, stale: false, data: remoteData },
+    { hostId: "debian", generatedAt: "2026-09-13T00:00:00Z", timezone: "UTC", range: { from: "2025-09-09", to: "2026-09-13" }, status: "ok", error: null, stale: false, data: remoteData },
+  ]);
+  assert.deepEqual(merged.records.map((record) => record.model), ["local-model", "remote-model"]);
+  assert.equal(merged.hosts[0].included, true);
+  assert.equal(merged.hosts[1].included, false);
+  assert.match(merged.hosts[1].error || "", /Timezone UTC/);
+  assert.deepEqual(summarizeUsage(merged.records), {
+    daily: [{ date: "2026-09-13", costUsd: 3, totalTokens: 17, byProvider: { codex: { costUsd: 1, totalTokens: 10 }, opencode: { costUsd: 2, totalTokens: 7 } }, byModel: [{ provider: "codex", models: [{ model: "local-model", costUsd: 1, totalTokens: 10 }] }, { provider: "opencode", models: [{ model: "remote-model", costUsd: 2, totalTokens: 7 }] }] }],
+    byModel: [{ provider: "opencode", model: "remote-model", costUsd: 2, totalTokens: 7 }, { provider: "codex", model: "local-model", costUsd: 1, totalTokens: 10 }],
+    byProvider: [{ provider: "opencode", costUsd: 2, totalTokens: 7 }, { provider: "codex", costUsd: 1, totalTokens: 10 }],
+    totalCostUsd: 3,
+    totalTokens: 17,
+  });
+});
+
+test("includes available records but flags a remote snapshot with incomplete range coverage", () => {
+  const merged = mergeUsageRecords(["opencode"], { from: "2026-09-01", to: "2026-09-13", timeZone: "UTC" }, [], [{
+    hostId: "short-history",
+    generatedAt: "2026-09-13T00:00:00Z",
+    timezone: "UTC",
+    range: { from: "2026-09-10", to: "2026-09-13" },
+    status: "ok",
+    error: null,
+    stale: false,
+    data: { daily: [{ date: "2026-09-12", agent: "opencode", totalCost: 1 }] },
+  }]);
+  assert.equal(merged.records.length, 1);
+  assert.equal(merged.hosts[0].included, true);
+  assert.equal(merged.hosts[0].complete, false);
+  assert.match(merged.hosts[0].error || "", /does not cover/);
 });

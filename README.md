@@ -1,8 +1,8 @@
 # Quota / usage
 
-A Node service and installable PWA for local AI usage and provider quota status. The
-application has no npm package dependencies, but local usage reporting requires the
-external `ccusage` command-line tool.
+A Node service and installable PWA for AI usage across multiple machines and provider
+quota status. Local and remote usage reporting requires the external `ccusage`
+command-line tool. Remote snapshots are transported through MQTT.
 
 ## Run
 
@@ -49,6 +49,12 @@ the extracted directory.
 Provider enablement and dashboard order are stored in `~/.config/quota-dashboard/config.json` with mode `0600`. No machine-specific absolute paths or identifiers are stored in the application. Provider credentials and machine-specific overrides remain server-side and can be supplied through environment variables:
 
 - `CCUSAGE_BIN` (defaults to `ccusage`)
+- `LOCAL_HOST_ID` (defaults to the sanitized system hostname)
+- `MQTT_URL` or `MQTT_BROKER_URL` (enables remote usage, for example `mqtt://homeassistant.local:1883`)
+- `MQTT_USERNAME` and `MQTT_PASSWORD`
+- `MQTT_PREFIX` (defaults to `quota-dashboard/v1`)
+- `MQTT_STALE_AFTER_SECONDS` (defaults to `900`)
+- `MQTT_MAX_PAYLOAD_BYTES` (defaults to 32 MiB)
 - `OPENROUTER_API_KEY`
 - `OLLAMA_API_KEY` (reserved for Ollama Cloud API requests)
 - `OPENCODE_GO_WORKSPACE_ID`
@@ -66,6 +72,92 @@ accounts may report session and weekly windows instead. Reset timestamps are
 shown when Ollama reports them, while legacy windows use their known schedules.
 
 Local usage is read exclusively with one shared `ccusage daily --json` command. The response is separated into Codex, OpenCode, Hermes, and Antigravity groups using its provider/source fields; those groups are independently toggleable in the Providers dialog. Antigravity usage appears when the installed `ccusage` release supports that source. The dashboard does not read provider-local databases directly. Codex/ChatGPT quota is fetched directly from `https://chatgpt.com/backend-api/wham/usage` using the Codex OAuth credentials in `~/.codex/auth.json`; an expired access token is refreshed automatically when the endpoint returns `401`. OpenCode Go supports rolling, weekly, and monthly windows when its dashboard returns them.
+
+## Remote usage
+
+Each remote publisher runs `ccusage daily --json --by-agent` at startup and every five
+minutes. It publishes a retained snapshot for the previous 370 days. The original
+parsed ccusage document remains unchanged under the envelope's `data` field:
+
+```json
+{
+  "schemaVersion": 1,
+  "publisherId": "1bb29fb4-f8c6-4fb8-a656-18ab4e06e7ac",
+  "connectionId": "b954f2a3-86d8-4dd7-a152-f2ce3f83b06f",
+  "sequence": 42,
+  "hostId": "macbook",
+  "generatedAt": "2026-09-13T15:30:00.000Z",
+  "ccusageVersion": "ccusage 20.0.20",
+  "timezone": "Asia/Singapore",
+  "range": { "from": "2025-09-09", "to": "2026-09-13" },
+  "data": { "daily": [], "totals": {} }
+}
+```
+
+The default MQTT topics are:
+
+```text
+quota-dashboard/v1/hosts/<host-id>/usage
+quota-dashboard/v1/hosts/<host-id>/status
+quota-dashboard/v1/hosts/<host-id>/error
+```
+
+Usage, status, and error messages use QoS 1 and retained delivery. A failed ccusage
+query does not replace the last successful usage snapshot. The publisher reports the
+error separately, and the dashboard continues to include the stale data while marking
+the host as unhealthy. Older or duplicate deliveries from a prior publisher process are
+ignored. A snapshot whose published range does not cover the selected dashboard range
+still contributes its available records but is explicitly marked incomplete.
+
+All publishers and the dashboard must use the same IANA timezone. ccusage produces
+date buckets rather than individual timestamps, so the dashboard rejects a remote
+snapshot whose timezone differs from the dashboard query timezone. Each machine must
+also own distinct usage files. Publishing synchronized copies of the same coding-agent
+data will duplicate usage.
+
+### Install a publisher
+
+The setup script supports per-user services on Debian with systemd and on macOS with
+launchd. Install Node.js 22+ and ccusage first. Keep the extracted release or repository
+directory in place because the service launcher refers to its absolute path.
+
+From a source checkout:
+
+```sh
+cd src
+npm install
+npm run build
+./dist/remote/setup.sh
+```
+
+From an extracted release archive:
+
+```sh
+./remote/setup.sh
+```
+
+The script asks for the MQTT broker, credentials, host ID, and canonical timezone. It
+writes `~/.config/quota-dashboard/remote.env` with mode `0600`, then installs and starts
+`quota-dashboard-remote.service` on Debian or `local.quota-dashboard.remote` on macOS.
+On Debian, enable user lingering separately if the publisher must run while the user is
+logged out:
+
+```sh
+loginctl enable-linger "$USER"
+```
+
+The remote publisher accepts these environment variables when run without the setup
+script: `MQTT_URL`, `MQTT_USERNAME`, `MQTT_PASSWORD`, `MQTT_PREFIX`, `MQTT_HOST_ID`,
+`CCUSAGE_TIMEZONE`, `CCUSAGE_DAYS`, `MQTT_INTERVAL_MS`, `CCUSAGE_BIN`,
+`CCUSAGE_TIMEOUT_MS`, `CCUSAGE_MAX_BUFFER`, and optional `CCUSAGE_VERSION`.
+
+The first version intentionally uses ordinary MQTT username/password authentication.
+Credentials and usage metadata are unencrypted with an `mqtt://` URL. Keep the broker
+on a trusted private network and do not expose it to the internet. The MQTT library can
+connect to an `mqtts://` broker that uses a certificate trusted by the operating system,
+but custom CA configuration is not currently exposed. Configure broker ACLs so each
+publisher account can write only to its own `quota-dashboard/v1/hosts/<host-id>/#`
+topics and the dashboard account can read the shared host prefix.
 
 ## Future clients
 

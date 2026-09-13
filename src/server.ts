@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { homedir, hostname } from "node:os";
 import { dirname, extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -9,6 +9,8 @@ import { type AppConfig, type ProviderId, type UsageSourceId, DEFAULT_CONFIG, PR
 import type { ProviderResult } from "./lib/core.js";
 import { isProviderConfigured, PROVIDER_FETCHERS } from "./lib/providers.js";
 import { readUsageSources } from "./lib/usage.js";
+import { sanitizeHostId } from "./remote/protocol.js";
+import { RemoteMqttStore, readRemoteMqttSubscriberConfig } from "./remote/subscriber.js";
 
 function loadEnvironmentFile(path: string): void {
   try {
@@ -32,6 +34,10 @@ const port = Number(process.env.PORT || 4173);
 const configPath = process.env.CONFIG_PATH || join(homedir(), ".config", "quota-dashboard", "config.json");
 const quotaCache = new Map<ProviderId, { cachedAt: number; value: ProviderResult }>();
 const dashboardCache = new Map<string, { cachedAt: number; fetchedAt: string; value: DashboardValue }>();
+const localHostId = sanitizeHostId(process.env.LOCAL_HOST_ID?.trim() || hostname());
+const remoteUsageStore = new RemoteMqttStore(readRemoteMqttSubscriberConfig());
+remoteUsageStore.addChangeListener(() => dashboardCache.clear());
+void remoteUsageStore.start().catch((error) => console.error(`Remote MQTT subscriber failed: ${error instanceof Error ? error.message : String(error)}`));
 const buildInfo = await loadBuildInfo();
 
 type BuildInfo = { version: string; commit: string | null };
@@ -91,7 +97,34 @@ async function dashboard(url: URL, config: AppConfig) {
   const quotaEntries = await Promise.all(enabled.map(async (id) => [id, await getQuota(id, true)]));
   const quotas = Object.fromEntries(quotaEntries);
   const usageSources = USAGE_SOURCE_IDS.filter((id) => config.usageSources[id].enabled);
-  const usage = usageSources.length ? await readUsageSources(usageSources, range) : { status: "disabled", daily: [], byModel: [], byProvider: [], totalCostUsd: 0, totalTokens: 0, error: null, source: null, sources: [] };
+  const remoteState = remoteUsageStore.getSnapshot();
+  const configuredStaleSeconds = Number(process.env.MQTT_STALE_AFTER_SECONDS || 900);
+  const staleAfterMs = (Number.isFinite(configuredStaleSeconds) && configuredStaleSeconds > 0 ? configuredStaleSeconds : 900) * 1000;
+  const remoteInputs = Object.entries(remoteState.hosts)
+    .filter(([hostId]) => hostId !== localHostId)
+    .map(([hostId, state]) => {
+      const generatedAt = state.usage?.generatedAt ?? null;
+      const generatedTime = generatedAt ? Date.parse(generatedAt) : NaN;
+      return {
+        hostId,
+        generatedAt,
+        timezone: state.usage?.timezone ?? state.status?.timezone ?? null,
+        range: state.usage?.range ?? null,
+        status: state.status?.status ?? "unknown",
+        error: state.error?.error ?? state.status?.error ?? null,
+        stale: !Number.isFinite(generatedTime) || generatedTime > Date.now() + 60_000 || Date.now() - generatedTime > staleAfterMs,
+        data: state.usage?.data ?? null,
+      };
+    });
+  const usageResult = usageSources.length ? await readUsageSources(usageSources, range, remoteInputs) : { status: "disabled", daily: [], byModel: [], byProvider: [], totalCostUsd: 0, totalTokens: 0, error: null, source: null, sources: [], hosts: [] };
+  const usage = {
+    ...usageResult,
+    mqtt: { configured: remoteState.configured, connection: remoteState.connection },
+    hosts: [
+      { hostId: localHostId, generatedAt: new Date().toISOString(), timezone: range.timeZone, range: { from: range.from, to: range.to }, status: usageResult.error ? "error" : "ok", error: usageResult.error, stale: false, local: true, included: true, complete: true },
+      ...usageResult.hosts,
+    ],
+  };
   const statuses = Object.fromEntries(await Promise.all(config.providerOrder.map(async (id) => [id, providerStatus({ id, config: config.providers[id], result: quotas[id] ?? { configured: await isProviderConfigured(id) } })])));
   const value = { version: buildInfo.version, apiVersion: 1, serverNow: new Date().toISOString(), timezone: range.timeZone, providerOrder: config.providerOrder, providers: statuses, quotas, usage: { ...usage, from: range.from, to: range.to, providers: usageSources } };
   dashboardCache.set(cacheKey, { cachedAt: Date.now(), fetchedAt: value.serverNow, value });
@@ -197,3 +230,14 @@ const server = createServer(async (request, response) => {
 server.listen(port, process.env.HOST || "127.0.0.1", () => {
   console.log(`Quota dashboard listening on http://${process.env.HOST || "127.0.0.1"}:${port}`);
 });
+
+let shuttingDown = false;
+async function shutdown(): Promise<void> {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  await remoteUsageStore.stop().catch((error) => console.error(`Remote MQTT shutdown failed: ${error instanceof Error ? error.message : String(error)}`));
+  server.close(() => process.exit(0));
+}
+
+process.once("SIGINT", () => void shutdown());
+process.once("SIGTERM", () => void shutdown());
