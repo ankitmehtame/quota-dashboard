@@ -1,4 +1,4 @@
-type QuotaWindow = { name?: string; usedPercent?: number | null; resetAt?: string | null; windowSeconds?: number | null; valueLabel?: string | null; balanceLabel?: string | null; spentLabel?: string | null };
+type QuotaWindow = { name?: string; usedPercent?: number | null; usedValue?: number | null; limitValue?: number | null; requestCount?: number | null; unit?: string | null; resetAt?: string | null; windowSeconds?: number | null; valueLabel?: string | null; balanceLabel?: string | null; spentLabel?: string | null };
 type Provider = { id: string; name: string; shortName: string; accent: string; description: string; enabled: boolean; configured: boolean; status: string };
 type ModelUsageItem = { model: string; costUsd: number; totalTokens?: number };
 type UsageModel = ModelUsageItem & { provider: string };
@@ -128,22 +128,43 @@ function relativeTime(iso: string | null | undefined): string {
 
 function timeUntil(iso: string | null | undefined): string {
   if (!iso) return "no reset reported";
-  const minutes = Math.max(0, Math.round((Date.parse(iso) - Date.now()) / 60_000));
+  const timestamp = Date.parse(iso);
+  if (!Number.isFinite(timestamp)) return "reset time unavailable";
+  const minutes = Math.max(0, Math.round((timestamp - Date.now()) / 60_000));
   const days = Math.floor(minutes / 1440);
   const hours = Math.floor((minutes % 1440) / 60);
   const remainder = minutes % 60;
   const duration = days > 0 ? `${days}d ${hours}h ${remainder}m` : hours > 0 ? `${hours}h ${remainder}m` : `${remainder}m`;
-  const date = new Intl.DateTimeFormat([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: state.hour12 }).format(new Date(iso));
+  const date = new Intl.DateTimeFormat([], { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: state.hour12 }).format(new Date(timestamp));
   return `resets in ${duration} · ${date}`;
 }
 
-function quotaNowPosition(window: QuotaWindow | undefined): number | null {
-  if (!window?.resetAt || !window?.windowSeconds) return null;
-  const resetAt = Date.parse(window.resetAt);
-  const startAt = resetAt - window.windowSeconds * 1000;
+function quotaValue(value: number | null | undefined, unit: string | null | undefined): string | null {
+  if (!Number.isFinite(value)) return null;
+  const formatted = (value ?? 0).toLocaleString("en-US", { maximumFractionDigits: 6 });
+  return unit ? `${formatted} ${unit}` : formatted;
+}
+
+function quotaNowPosition(window: QuotaWindow | undefined, providerId: string): number | null {
   const now = Date.now();
-  if (!Number.isFinite(resetAt) || now < startAt || now > resetAt) return null;
-  return ((now - startAt) / (resetAt - startAt)) * 100;
+  const resetAt = window?.resetAt ? Date.parse(window.resetAt) : NaN;
+  if (Number.isFinite(resetAt)) {
+    let startAt = window?.windowSeconds ? resetAt - window.windowSeconds * 1000 : null;
+    if (startAt === null && providerId === "ollama" && window?.name === "monthly") {
+      const resetDate = new Date(resetAt);
+      const year = resetDate.getUTCFullYear();
+      const month = resetDate.getUTCMonth();
+      const day = Math.min(resetDate.getUTCDate(), new Date(Date.UTC(year, month, 0)).getUTCDate());
+      startAt = Date.UTC(year, month - 1, day, resetDate.getUTCHours(), resetDate.getUTCMinutes(), resetDate.getUTCSeconds(), resetDate.getUTCMilliseconds());
+    }
+    if (startAt === null || now < startAt || now > resetAt) return null;
+    return ((now - startAt) / (resetAt - startAt)) * 100;
+  }
+  if (providerId !== "ollama" || window?.name !== "monthly") return null;
+  const current = new Date(now);
+  const startAt = new Date(current.getFullYear(), current.getMonth(), 1).getTime();
+  const endAt = new Date(current.getFullYear(), current.getMonth() + 1, 1).getTime();
+  return ((now - startAt) / (endAt - startAt)) * 100;
 }
 
 function formatRefreshTime(iso: string | null | undefined): string {
@@ -174,8 +195,9 @@ function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][st
   const content = windows.map((window, index) => {
     const percent = window?.usedPercent;
     const value = window?.balanceLabel ? `<span class="quota-balance-primary">${escapeHtml(window.balanceLabel)}</span><span class="quota-balance-secondary">${escapeHtml(window.spentLabel || "")}</span>` : escapeHtml(window?.valueLabel || "Not available");
-    const nowPosition = quotaNowPosition(window);
+    const nowPosition = quotaNowPosition(window, provider.id);
     const nowExpected = nowPosition === null ? null : Math.floor(nowPosition * 10) / 10;
+    const approximateNow = provider.id === "ollama" && window?.name === "monthly";
     const percentageValue = percent == null
       ? value
       : `<span class="quota-used-percent">${formatPercent(percent)}% <small>used</small></span>${nowExpected === null ? "" : `<span class="quota-expected-percent">/ ${formatPercent(nowExpected)}% elapsed</span>`}`;
@@ -184,8 +206,16 @@ function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][st
       : percent == null && window?.valueLabel
         ? ""
         : window?.valueLabel || (provider.id === "codex" || provider.id === "ollama" ? "" : provider.configured ? "No balance reported" : "Configure credentials on server");
+    const formattedLimit = quotaValue(window?.limitValue, window?.unit);
+    const limitLabel = formattedLimit === null ? "" : `limit ${formattedLimit}`;
+    const requestLabel = window?.requestCount == null ? "" : `${window.requestCount.toLocaleString("en-US")} ${window.requestCount === 1 ? "request" : "requests"}`;
+    const footLabel = [label, limitLabel, requestLabel].filter(Boolean).join(" · ");
+    const resetLabel = window?.resetAt ? timeUntil(window.resetAt) : provider.id === "ollama" && provider.configured ? "reset not reported" : "";
+    const nowDescription = approximateNow
+      ? window?.resetAt ? `${nowExpected}% of monthly window elapsed (start inferred)` : `${nowExpected}% of calendar month elapsed (approx.)`
+      : `${nowExpected}% of window elapsed`;
     const showWindowName = windows.length > 1 || provider.id === "codex" || provider.id === "ollama";
-    return `<div class="quota-window${index ? " quota-window-separated" : ""}">${showWindowName ? `<div class="quota-window-name">${escapeHtml(window?.name || "Usage")}</div>` : ""}<div class="quota-percent ${percent == null && !window?.valueLabel ? "unavailable" : percent == null ? "quota-balance" : "quota-percentage"}">${percentageValue}</div>${percent != null ? `<div class="bar"><span style="width:${Math.min(percent, 100)}%"></span>${nowPosition !== null ? `<button class="quota-now-marker" style="left:${nowPosition}%" type="button" aria-label="Current quota window position"><span class="quota-now-tooltip"><strong>Now</strong><span>${nowExpected}% of window elapsed</span><span>Snapshot: ${escapeHtml(formatRefreshTime(refreshedAt))}</span></span></button>` : ""}</div>` : ""}<div class="quota-foot">${label ? `<span>${escapeHtml(label)}</span>` : ""}<span>${window?.resetAt ? escapeHtml(timeUntil(window.resetAt)) : ""}</span></div></div>`;
+    return `<div class="quota-window${index ? " quota-window-separated" : ""}">${showWindowName ? `<div class="quota-window-name">${escapeHtml(window?.name || "Usage")}</div>` : ""}<div class="quota-percent ${percent == null && !window?.valueLabel ? "unavailable" : percent == null ? "quota-balance" : "quota-percentage"}">${percentageValue}</div>${percent != null ? `<div class="bar"><span style="width:${Math.min(percent, 100)}%"></span>${nowPosition !== null ? `<button class="quota-now-marker" style="left:${nowPosition}%" type="button" aria-label="${approximateNow ? "Approximate current monthly position" : "Current quota window position"}"><span class="quota-now-tooltip"><strong>Now</strong><span>${escapeHtml(nowDescription)}</span><span>Snapshot: ${escapeHtml(formatRefreshTime(refreshedAt))}</span></span></button>` : ""}</div>` : ""}<div class="quota-foot">${footLabel ? `<span>${escapeHtml(footLabel)}</span>` : ""}<span>${escapeHtml(resetLabel)}</span></div></div>`;
   }).join("");
   const accent = /^[a-z-]+$/.test(provider.accent) ? provider.accent : "mint";
   return `<article class="quota-card" style="--accent: var(--${accent})"><div class="provider-head"><div><div class="provider-name">${escapeHtml(provider.shortName)}</div><div class="provider-sub">${escapeHtml(provider.description)}</div></div><span class="provider-badge">${escapeHtml(status)}</span></div>${plan}<div class="quota-main">${content}${resetCredits}${quota?.error ? `<div class="quota-error">${escapeHtml(quota.error)}</div>` : ""}</div></article>`;

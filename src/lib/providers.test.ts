@@ -142,10 +142,26 @@ test("parses Ollama percentage usage and provider reset timestamps", () => {
 });
 
 test("parses the current Ollama monthly usage window", () => {
-  const windows = parseOllamaUsage({ limits: { monthly: { usage: 0.005, reset_at: "2026-09-15T00:00:00Z", models: [] } } });
-  assert.deepEqual(windows.map((window) => ({ name: window.name, usedPercent: window.usedPercent, resetAt: window.resetAt, windowSeconds: window.windowSeconds })), [
-    { name: "monthly", usedPercent: 0.5, resetAt: "2026-09-15T00:00:00.000Z", windowSeconds: null },
+  const windows = parseOllamaUsage({ limits: { monthly: { usage: 0.005, limit: 1, unit: "credits", reset_at: "2026-09-15T00:00:00Z", models: [{ name: "model-a", request_count: 40 }, { name: "model-b", request_count: 2 }] } } });
+  assert.deepEqual(windows.map((window) => ({ name: window.name, usedPercent: window.usedPercent, usedValue: window.usedValue, limitValue: window.limitValue, requestCount: window.requestCount, unit: window.unit, resetAt: window.resetAt, windowSeconds: window.windowSeconds })), [
+    { name: "monthly", usedPercent: 0.5, usedValue: 0.005, limitValue: 1, requestCount: 42, unit: "credits", resetAt: "2026-09-15T00:00:00.000Z", windowSeconds: null },
   ]);
+});
+
+test("aggregates Ollama request counts from monthly model usage", () => {
+  const windows = parseOllamaUsage({ limits: { monthly: { usage: 0.034, models: [
+    { name: "gemma4:31b", request_count: 1197 },
+    { name: "gpt-oss:120b", request_count: 2 },
+  ] } } });
+  assert.equal(windows[0].usedValue, 0.034);
+  assert.equal(windows[0].limitValue, null);
+  assert.equal(windows[0].requestCount, 1199);
+  assert.equal(windows[0].resetAt, null);
+});
+
+test("reports zero Ollama requests for an empty monthly model list", () => {
+  const windows = parseOllamaUsage({ limits: { monthly: { usage: 0, models: [] } } });
+  assert.equal(windows[0].requestCount, 0);
 });
 
 test("falls back for invalid Ollama values and handles percentage edge cases", () => {
