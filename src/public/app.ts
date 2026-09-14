@@ -117,6 +117,28 @@ function money(value: number | null | undefined): string {
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(value ?? 0);
 }
 
+function usagePresetLabel(range: string): string {
+  return ({ today: "Today", "calendar-week": "Week", "calendar-month": "Month", "calendar-year": "Year", "relative-7": "7D", "relative-15": "15D", "relative-30": "30D", "relative-90": "90D", "relative-180": "180D" } as Record<string, string>)[range] || range;
+}
+
+function localApiDate(value: string | undefined): Date | null {
+  const match = value?.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  // Use local noon so a DST transition at local midnight cannot move the
+  // displayed calendar date to an adjacent day.
+  const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12);
+  return date.getFullYear() === Number(match[1]) && date.getMonth() === Number(match[2]) - 1 && date.getDate() === Number(match[3]) ? date : null;
+}
+
+function compactUsageDateRange(from: string | undefined, to: string | undefined): string {
+  const start = localApiDate(from);
+  const end = localApiDate(to);
+  if (!start || !end || start > end) return "—";
+  const includeYear = start.getFullYear() !== new Date().getFullYear() || end.getFullYear() !== new Date().getFullYear();
+  const formatter = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", ...(includeYear ? { year: "numeric" } : {}) });
+  return formatter.formatRange(start, end);
+}
+
 function formatTokens(value: number | null | undefined): string {
   return (value || 0).toLocaleString();
 }
@@ -232,6 +254,22 @@ function recordTokens(record: UsageRecord): number {
   return record.inputTokens + record.cachedInputTokens + record.cacheCreationTokens + record.outputTokens + record.reasoningTokens;
 }
 
+function hostHealthy(host: UsageHost): boolean {
+  return ["ok", "online"].includes(host.status) && !host.error && !host.stale && host.included !== false && host.complete !== false;
+}
+
+function enabledUsageProviders(usage: Usage): Set<string> | null {
+  if (!usage.providers) return null;
+  const providers = new Set(usage.providers);
+  if (providers.has("opencode") || providers.has("hermes") || providers.has("antigravity")) providers.add("shared");
+  return providers;
+}
+
+function recordsForHosts(usage: Usage, selectedHostIds: Set<string>): UsageRecord[] {
+  const providers = enabledUsageProviders(usage);
+  return (usage.records || []).filter((record) => record.hostId !== undefined && selectedHostIds.has(record.hostId) && (!providers || providers.has(record.provider)));
+}
+
 function summarizeSelectedRecords(records: UsageRecord[]): Pick<Usage, "daily" | "byModel" | "byProvider" | "totalCostUsd" | "totalTokens"> {
   const daily = new Map<string, UsageDay>();
   const byModel = new Map<string, UsageModel>();
@@ -293,9 +331,42 @@ function reconcileHostSelections(usage: Usage): { hosts: UsageHost[]; usableHost
 }
 
 function filterUsageByHosts(usage: Usage, selectedHostIds: Set<string>): Usage {
-  if (!usage.records) return selectedHostIds.size ? usage : { ...usage, daily: [], byModel: [], byProvider: [], totalCostUsd: 0, totalTokens: 0 };
-  const records = usage.records.filter((record) => record.hostId !== undefined && selectedHostIds.has(record.hostId));
+  if (!usage.records) return selectedHostIds.size ? { ...usage, daily: [], byModel: [], byProvider: [], totalCostUsd: Number.NaN, totalTokens: 0 } : { ...usage, daily: [], byModel: [], byProvider: [], totalCostUsd: 0, totalTokens: 0 };
+  const records = recordsForHosts(usage, selectedHostIds);
   return { ...usage, records, ...summarizeSelectedRecords(records) };
+}
+
+function todaySpend(usage: Usage, hosts: UsageHost[], usableHosts: UsageHost[], selectedHostIds: Set<string>): { amount: number; known: boolean; partial: boolean } {
+  // An explicit empty selection is a valid zero. No usable hosts means there
+  // is no trustworthy source from which to infer a zero.
+  if (!usableHosts.length) return { amount: 0, known: false, partial: false };
+  if (!selectedHostIds.size) return { amount: 0, known: true, partial: false };
+  const selectedHosts = hosts.filter((host) => selectedHostIds.has(host.hostId));
+  const records = recordsForHosts(usage, selectedHostIds);
+  const currentRecords = records.filter((record) => record.date === usage.to);
+  const hasTrustworthyAmount = selectedHosts.some(hostHealthy) || currentRecords.length > 0;
+  return {
+    amount: currentRecords.reduce((total, record) => total + record.costUsd, 0),
+    known: hasTrustworthyAmount,
+    partial: hasTrustworthyAmount && selectedHosts.some((host) => !hostHealthy(host)),
+  };
+}
+
+function renderSpendMetrics(usage: Usage, hosts: UsageHost[], usableHosts: UsageHost[], selectedUsage: Usage, selectedHostIds: Set<string>): void {
+  const dateRange = compactUsageDateRange(usage.from, usage.to);
+  const noHostsSelected = usableHosts.length > 0 && selectedHostIds.size === 0;
+  const selectedHosts = hosts.filter((host) => selectedHostIds.has(host.hostId));
+  const periodKnown = noHostsSelected || Boolean(selectedUsage.records?.length) || selectedHosts.some(hostHealthy);
+  const periodAmount = selectedUsage.records ? selectedUsage.totalCostUsd : 0;
+  $("#usage-total").textContent = money(periodKnown ? periodAmount : Number.NaN);
+  $("#usage-total-caption").textContent = `Estimated spend · ${usagePresetLabel(state.range)} · ${dateRange}`;
+
+  const todayMetric = $("#today-metric") as HTMLElement;
+  todayMetric.hidden = state.range === "today";
+  if (todayMetric.hidden) return;
+  const today = todaySpend(usage, hosts, usableHosts, selectedHostIds);
+  $("#today-total").textContent = money(today.known ? today.amount : Number.NaN);
+  $("#today-caption").textContent = `Today so far${today.partial ? " · partial" : ""}`;
 }
 
 function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve"): void {
@@ -306,7 +377,7 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
   const { hosts, usableHosts, selectedHostIds } = reconcileHostSelections(usage);
   const selectedUsage = filterUsageByHosts(usage, selectedHostIds);
   const noHostsSelected = usableHosts.length > 0 && selectedHostIds.size === 0;
-  $("#usage-total").textContent = money(selectedUsage.totalCostUsd);
+  renderSpendMetrics(usage, hosts, usableHosts, selectedUsage, selectedHostIds);
   $("#axis-start").textContent = selectedUsage.from || "—";
   const sourceNames: Record<string, string> = { ...usageSourceNames, shared: "Shared" };
   const sourceColors: Record<string, string> = { codex: "mint", opencode: "violet", hermes: "orange", antigravity: "blue", shared: "neutral" };
@@ -315,7 +386,7 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
   $("#usage-hosts").innerHTML = hosts.map((host) => {
     const usable = hostUsable(usage, host);
     const selected = usable && selectedHostIds.has(host.hostId);
-    const healthy = ["ok", "online"].includes(host.status) && !host.error && !host.stale && host.included !== false && host.complete !== false;
+    const healthy = hostHealthy(host);
     const detail = host.disabledReason || host.error || (host.included === false ? "Timezone mismatch" : host.complete === false ? "Range incomplete" : host.stale ? "Stale usage data" : host.status);
     const stateLabel = !usable ? "unavailable" : selected ? healthy ? "selected, healthy" : "selected, unhealthy" : "unselected";
     return `<button class="usage-host ${!usable ? "disabled" : selected ? healthy ? "selected healthy" : "selected unhealthy" : "unselected"}" type="button" data-host-id="${escapeHtml(host.hostId)}" aria-label="${escapeHtml(host.hostId)}: ${stateLabel}${detail ? `, ${escapeHtml(detail)}` : ""}" aria-pressed="${selected}" title="${escapeHtml(detail)}" ${!usable ? "disabled" : ""}>${escapeHtml(host.hostId)}</button>`;
@@ -368,7 +439,7 @@ function renderStatus(data: Dashboard): void {
   const enabled = statuses.filter((provider) => provider.enabled);
   const errors = enabled.filter((provider) => provider.status === "error");
   const hosts = data.usage.hosts || [];
-  const hostProblems = hosts.filter((host) => Boolean(host.error) || !["ok", "online"].includes(host.status) || host.stale || host.included === false || host.complete === false);
+  const hostProblems = hosts.filter((host) => !hostHealthy(host));
   const mqttProblem = data.usage.mqtt?.configured && data.usage.mqtt.connection !== "connected";
   const problems = errors.length + hostProblems.length + (mqttProblem ? 1 : 0);
   $("#status-copy").textContent = problems
@@ -394,6 +465,10 @@ async function loadDashboard(refresh = false): Promise<void> {
   document.querySelector(".range-picker")?.classList.add("loading");
   document.querySelectorAll<HTMLButtonElement>(".range-picker button").forEach((button) => { button.disabled = true; });
   $("#usage-total").textContent = "—";
+  $("#usage-total-caption").textContent = `Estimated spend · ${usagePresetLabel(state.range)} · —`;
+  $("#today-total").textContent = "—";
+  $("#today-caption").textContent = "Today so far";
+  $("#today-metric").hidden = state.range === "today";
   $("#usage-chart").innerHTML = `<div class="chart-empty">Loading usage data…</div>`;
   $("#models-list").innerHTML = `<div class="chart-empty">Loading model data…</div>`;
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
