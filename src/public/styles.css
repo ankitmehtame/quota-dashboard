@@ -114,3 +114,30 @@ dialog { color: var(--text); background: var(--surface-raised); border: 1px soli
   white-space: normal;
   overflow-wrap: anywhere;
 }
+
+/* Usage controls and data panes stay inside the two-card row. */
+.usage-layout { align-items: stretch; min-width: 0; }
+.chart-card, .models-card { height: 375px; min-height: 375px; min-width: 0; }
+.chart-card { display: flex; flex-direction: column; }
+.chart-topline, .usage-hosts { flex: 0 0 auto; }
+.usage-hosts { max-height: 40px; overflow-y: auto; }
+.chart-scroll { min-width: 0; min-height: 225px; flex: 1; overflow-x: auto; overflow-y: hidden; scrollbar-color: var(--line) transparent; }
+.chart, .chart-axis { min-width: max(100%, var(--chart-min-width, 10px)); }
+.chart-scroll .chart { flex: 0 0 175px; margin-top: 10px; }
+.models-card { display: flex; flex-direction: column; }
+.models-list { min-height: 0; overflow-y: auto; scrollbar-color: var(--line) transparent; }
+.usage-host { appearance: none; background: transparent; cursor: pointer; }
+.usage-host i { display: none; }
+.usage-host.selected.healthy { background: var(--mint); border-color: var(--mint); color: var(--bg); }
+.usage-host.selected.unhealthy, .usage-host.disabled { background: var(--danger); border-color: var(--danger); color: var(--bg); }
+.usage-host.unselected { background: transparent; border-color: var(--line); color: var(--muted); }
+.usage-host.disabled { cursor: not-allowed; }
+.usage-host:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
+.usage-host:hover:not(:disabled) { border-color: var(--mint-dark); }
+.usage-host.selected.unhealthy:hover:not(:disabled) { border-color: var(--danger); }
+.chart-column { flex: 1 0 10px; min-width: 10px; max-width: none; }
+.today-harness { flex: 1 0 10px; width: auto; }
+
+@media (max-width: 560px) {
+  .chart-card, .models-card { height: 375px; min-height: 375px; }
+}

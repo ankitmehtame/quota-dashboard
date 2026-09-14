@@ -192,3 +192,7 @@ The normalized, versioned API is designed for later native clients and widgets:
 - `PUT /api/v1/providers/:id/enabled`
 
 The widget endpoint deliberately returns a compact provider snapshot, separate from the web dashboard response.
+
+The dashboard usage response retains its existing aggregate fields and also includes normalized `usage.records`
+with a `hostId` on each record. The browser uses those records to filter totals, charts, model rankings, and
+daily details immediately when usage hosts are toggled.

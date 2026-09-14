@@ -116,12 +116,13 @@ async function dashboard(url: URL, config: AppConfig) {
         data: state.usage?.data ?? null,
       };
     });
-  const usageResult = usageSources.length ? await readUsageSources(usageSources, range, remoteInputs) : { status: "disabled", daily: [], byModel: [], byProvider: [], totalCostUsd: 0, totalTokens: 0, error: null, source: null, sources: [], hosts: [] };
+  const usageResult = usageSources.length ? await readUsageSources(usageSources, range, remoteInputs, localHostId) : { status: "disabled", daily: [], byModel: [], byProvider: [], totalCostUsd: 0, totalTokens: 0, error: null, source: null, sources: [], hosts: [], records: [] };
+  const localUsable = usageResult.records.some((record) => record.hostId === localHostId);
   const usage = {
     ...usageResult,
     mqtt: { configured: remoteState.configured, connection: remoteState.connection },
     hosts: [
-      { hostId: localHostId, generatedAt: new Date().toISOString(), timezone: range.timeZone, range: { from: range.from, to: range.to }, status: usageResult.error ? "error" : "ok", error: usageResult.error, stale: false, local: true, included: true, complete: true },
+      { hostId: localHostId, generatedAt: new Date().toISOString(), timezone: range.timeZone, range: { from: range.from, to: range.to }, status: usageResult.error ? "error" : "ok", error: usageResult.error, stale: false, local: true, included: true, complete: true, usable: localUsable, disabledReason: localUsable ? null : usageResult.error || "No usable usage data collected" },
       ...usageResult.hosts,
     ],
   };
