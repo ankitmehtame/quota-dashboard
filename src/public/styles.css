@@ -136,6 +136,7 @@ dialog { color: var(--text); background: var(--surface-raised); border: 1px soli
 .usage-host:hover:not(:disabled) { border-color: var(--mint-dark); }
 .usage-host.selected.unhealthy:hover:not(:disabled) { border-color: var(--danger); }
 .chart-column { flex: 1 0 10px; min-width: 10px; max-width: none; }
+.chart-column:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
 .today-harness { flex: 1 0 10px; width: auto; }
 
 @media (max-width: 560px) {
