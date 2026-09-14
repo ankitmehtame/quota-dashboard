@@ -6,6 +6,8 @@ const TIMEOUT_MS = 30_000;
 const MAX_BUFFER = 32 * 1024 * 1024;
 
 export type UsageRecord = {
+  /** Set when records are merged from multiple machines. */
+  hostId?: string;
   date: string;
   provider: string;
   model: string;
@@ -40,6 +42,8 @@ export type UsageHost = Omit<RemoteUsageInput, "data"> & {
   local: boolean;
   included: boolean;
   complete: boolean;
+  usable: boolean;
+  disabledReason: string | null;
 };
 
 type JsonObject = Record<string, unknown>;
@@ -194,15 +198,20 @@ export function mergeUsageRecords(
   range: { from: string; to: string; timeZone: string },
   localRecords: UsageRecord[],
   remoteInputs: RemoteUsageInput[],
+  localHostId = "local",
 ): { records: UsageRecord[]; hosts: UsageHost[] } {
   const selected = selectedProviders(enabledProviders);
-  const records = localRecords.filter((record) => selected.has(record.provider));
+  const records = localRecords
+    .filter((record) => selected.has(record.provider))
+    .map((record) => ({ ...record, hostId: localHostId }));
   const hosts: UsageHost[] = [];
   for (const remote of remoteInputs) {
     const timezoneMatches = remote.timezone === range.timeZone;
     const rangeComplete = Boolean(remote.range && remote.range.from <= range.from && remote.range.to >= range.to);
     const remoteRecords = timezoneMatches
-      ? parseCcusage(remote.data).filter((record) => record.date >= range.from && record.date <= range.to && selected.has(record.provider))
+      ? parseCcusage(remote.data)
+        .filter((record) => record.date >= range.from && record.date <= range.to && selected.has(record.provider))
+        .map((record) => ({ ...record, hostId: remote.hostId }))
       : [];
     records.push(...remoteRecords);
     hosts.push({
@@ -220,6 +229,12 @@ export function mergeUsageRecords(
       local: false,
       included: timezoneMatches,
       complete: rangeComplete,
+      usable: remoteRecords.length > 0,
+      disabledReason: !timezoneMatches
+        ? `Timezone ${remote.timezone || "unknown"} does not match ${range.timeZone}`
+        : remoteRecords.length > 0
+          ? null
+          : remote.error || `No usable usage data reported by ${remote.hostId}`,
     });
   }
   return { records, hosts };
@@ -229,11 +244,12 @@ export async function readUsageSources(
   enabledProviders: string[],
   range: { from: string; to: string; timeZone: string },
   remoteInputs: RemoteUsageInput[] = [],
+  localHostId = "local",
 ) {
   const result = await readCcusageUsage(range);
-  const { records, hosts } = mergeUsageRecords(enabledProviders, range, result.status === "ok" ? result.records || [] : [], remoteInputs);
+  const { records, hosts } = mergeUsageRecords(enabledProviders, range, result.status === "ok" ? result.records || [] : [], remoteInputs, localHostId);
   const summary = summarizeUsage(records);
-  const remoteProblem = hosts.some((host) => !["ok", "online"].includes(host.status) || host.stale || !host.included || !host.complete);
+  const remoteProblem = hosts.some((host) => !host.usable || !["ok", "online"].includes(host.status) || host.stale || !host.included || !host.complete);
   const status = result.status === "ok" && !remoteProblem ? "ok" : records.length ? "partial" : "error";
   return {
     status,
@@ -241,6 +257,7 @@ export async function readUsageSources(
     source: binarySource(),
     sources: enabledProviders.map((provider) => ({ provider, status: result.status, error: result.error })),
     hosts,
+    records,
     ...summary,
   };
 }

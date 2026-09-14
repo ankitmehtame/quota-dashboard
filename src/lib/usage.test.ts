@@ -47,10 +47,14 @@ test("combines local and remote ccusage while enforcing range and timezone", () 
     { hostId: "macbook", generatedAt: "2026-09-13T00:00:00Z", timezone: "Asia/Singapore", range: { from: "2025-09-09", to: "2026-09-13" }, status: "ok", error: null, stale: false, data: remoteData },
     { hostId: "debian", generatedAt: "2026-09-13T00:00:00Z", timezone: "UTC", range: { from: "2025-09-09", to: "2026-09-13" }, status: "ok", error: null, stale: false, data: remoteData },
   ]);
+  assert.deepEqual(merged.records.map((record) => record.hostId), ["local", "macbook"]);
   assert.deepEqual(merged.records.map((record) => record.model), ["local-model", "remote-model"]);
   assert.equal(merged.hosts[0].included, true);
+  assert.equal(merged.hosts[0].usable, true);
   assert.equal(merged.hosts[1].included, false);
+  assert.equal(merged.hosts[1].usable, false);
   assert.match(merged.hosts[1].error || "", /Timezone UTC/);
+  assert.deepEqual(summarizeUsage(merged.records.filter((record) => record.hostId === "macbook")).byModel, [{ provider: "opencode", model: "remote-model", costUsd: 2, totalTokens: 7 }]);
   assert.deepEqual(summarizeUsage(merged.records), {
     daily: [{ date: "2026-09-13", costUsd: 3, totalTokens: 17, byProvider: { codex: { costUsd: 1, totalTokens: 10 }, opencode: { costUsd: 2, totalTokens: 7 } }, byModel: [{ provider: "codex", models: [{ model: "local-model", costUsd: 1, totalTokens: 10 }] }, { provider: "opencode", models: [{ model: "remote-model", costUsd: 2, totalTokens: 7 }] }] }],
     byModel: [{ provider: "opencode", model: "remote-model", costUsd: 2, totalTokens: 7 }, { provider: "codex", model: "local-model", costUsd: 1, totalTokens: 10 }],
@@ -74,5 +78,22 @@ test("includes available records but flags a remote snapshot with incomplete ran
   assert.equal(merged.records.length, 1);
   assert.equal(merged.hosts[0].included, true);
   assert.equal(merged.hosts[0].complete, false);
+  assert.equal(merged.hosts[0].usable, true);
   assert.match(merged.hosts[0].error || "", /does not cover/);
+});
+
+test("marks a host with no selected-provider records as unavailable", () => {
+  const merged = mergeUsageRecords(["opencode"], { from: "2026-09-01", to: "2026-09-13", timeZone: "UTC" }, [], [{
+    hostId: "empty-host",
+    generatedAt: "2026-09-13T00:00:00Z",
+    timezone: "UTC",
+    range: { from: "2026-09-01", to: "2026-09-13" },
+    status: "ok",
+    error: null,
+    stale: false,
+    data: { daily: [{ date: "2026-09-12", agent: "codex", totalCost: 1 }] },
+  }]);
+  assert.equal(merged.records.length, 0);
+  assert.equal(merged.hosts[0].usable, false);
+  assert.match(merged.hosts[0].disabledReason || "", /No usable/);
 });
