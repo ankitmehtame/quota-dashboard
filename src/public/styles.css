@@ -142,3 +142,13 @@ dialog { color: var(--text); background: var(--surface-raised); border: 1px soli
 @media (max-width: 560px) {
   .chart-card, .models-card { height: 375px; min-height: 375px; }
 }
+
+.usage-metrics { display: flex; gap: 22px; }
+.usage-metric + .usage-metric { border-left: 1px solid var(--line); padding-left: 22px; }
+.usage-metric strong { display: block; }
+.usage-metric span { max-width: 220px; }
+
+@media (max-width: 560px) {
+  .usage-metrics { flex-direction: column; gap: 14px; }
+  .usage-metric + .usage-metric { border-left: 0; border-top: 1px solid var(--line); padding: 14px 0 0; }
+}

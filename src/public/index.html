@@ -59,10 +59,19 @@
           <div class="usage-layout">
             <article class="chart-card">
               <div class="chart-topline">
-                <div><strong id="usage-total">$0.00</strong><span>estimated spend</span></div>
+                <div class="usage-metrics" role="group" aria-label="Usage totals" aria-live="polite" aria-atomic="true">
+                  <div class="usage-metric">
+                    <strong id="usage-total">$0.00</strong>
+                    <span id="usage-total-caption">Estimated spend · Today · —</span>
+                  </div>
+                  <div class="usage-metric today-metric" id="today-metric" hidden>
+                    <strong id="today-total">$0.00</strong>
+                    <span id="today-caption">Today so far</span>
+                  </div>
+                </div>
                 <div class="chart-legend"><span class="legend-key mint"></span> Codex <span class="legend-key violet"></span> OpenCode <span class="legend-key orange"></span> Hermes <span class="legend-key blue"></span> Antigravity</div>
               </div>
-              <div class="usage-hosts" id="usage-hosts" aria-label="Usage hosts"></div>
+              <div class="usage-hosts" id="usage-hosts" role="group" aria-label="Usage hosts"></div>
               <div class="chart-scroll">
                 <div class="chart" id="usage-chart"><div class="chart-empty">Waiting for usage data</div></div>
                 <div class="chart-axis"><span id="axis-start">--</span><span class="today-key"><i></i> today</span><span>now</span></div>
