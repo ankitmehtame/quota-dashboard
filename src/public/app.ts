@@ -341,6 +341,7 @@ function todaySpend(usage: Usage, hosts: UsageHost[], usableHosts: UsageHost[], 
   // is no trustworthy source from which to infer a zero.
   if (!usableHosts.length) return { amount: 0, known: false, partial: false };
   if (!selectedHostIds.size) return { amount: 0, known: true, partial: false };
+  if (!usage.records || !usage.to) return { amount: 0, known: false, partial: false };
   const selectedHosts = hosts.filter((host) => selectedHostIds.has(host.hostId));
   const records = recordsForHosts(usage, selectedHostIds);
   const currentRecords = records.filter((record) => record.date === usage.to);
@@ -357,7 +358,7 @@ function renderSpendMetrics(usage: Usage, hosts: UsageHost[], usableHosts: Usage
   const noHostsSelected = usableHosts.length > 0 && selectedHostIds.size === 0;
   const selectedHosts = hosts.filter((host) => selectedHostIds.has(host.hostId));
   const periodKnown = noHostsSelected || Boolean(selectedUsage.records?.length) || selectedHosts.some(hostHealthy);
-  const periodAmount = selectedUsage.records ? selectedUsage.totalCostUsd : 0;
+  const periodAmount = selectedUsage.totalCostUsd;
   $("#usage-total").textContent = money(periodKnown ? periodAmount : Number.NaN);
   $("#usage-total-caption").textContent = `Estimated spend · ${usagePresetLabel(state.range)} · ${dateRange}`;
 
