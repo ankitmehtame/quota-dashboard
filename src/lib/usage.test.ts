@@ -1,7 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 
-import { mergeUsageRecords, parseCcusage, summarizeUsage } from "./usage.js";
+import { mergeUsageRecords, parseCcusage, readUsageSources, summarizeUsage } from "./usage.js";
 
 test("normalizes ccusage model breakdowns", () => {
   const records = parseCcusage({ daily: [{ date: "2026-08-12", modelBreakdowns: [{ modelName: "gpt-5", inputTokens: 10, cacheReadTokens: 4, outputTokens: 6, cost: 0.25 }] }] });
@@ -96,4 +99,31 @@ test("marks a host with no selected-provider records as unavailable", () => {
   assert.equal(merged.records.length, 0);
   assert.equal(merged.hosts[0].usable, false);
   assert.match(merged.hosts[0].disabledReason || "", /No usable/);
+});
+
+test("keeps healthy usage status when the current range has no records", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "quota-dashboard-usage-"));
+  const binary = join(directory, "ccusage");
+  const originalBinary = process.env.CCUSAGE_BIN;
+  await writeFile(binary, "#!/usr/bin/env node\nprocess.stdout.write(JSON.stringify({ daily: [] }));\n", { mode: 0o755 });
+  process.env.CCUSAGE_BIN = binary;
+  try {
+    const result = await readUsageSources(["opencode"], { from: "2026-09-01", to: "2026-09-13", timeZone: "UTC" }, [{
+      hostId: "empty-host",
+      generatedAt: "2026-09-13T00:00:00Z",
+      timezone: "UTC",
+      range: { from: "2026-09-01", to: "2026-09-13" },
+      status: "ok",
+      error: null,
+      stale: false,
+      data: { daily: [{ date: "2026-09-12", agent: "codex", totalCost: 1 }] },
+    }]);
+    assert.equal(result.records.length, 0);
+    assert.equal(result.hosts[0].usable, false);
+    assert.equal(result.status, "ok");
+  } finally {
+    if (originalBinary === undefined) delete process.env.CCUSAGE_BIN;
+    else process.env.CCUSAGE_BIN = originalBinary;
+    await rm(directory, { recursive: true, force: true });
+  }
 });

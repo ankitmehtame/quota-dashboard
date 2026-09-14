@@ -294,7 +294,8 @@ function reconcileHostSelections(usage: Usage): { hosts: UsageHost[]; usableHost
 
 function filterUsageByHosts(usage: Usage, selectedHostIds: Set<string>): Usage {
   if (!usage.records) return selectedHostIds.size ? usage : { ...usage, daily: [], byModel: [], byProvider: [], totalCostUsd: 0, totalTokens: 0 };
-  return { ...usage, records: usage.records.filter((record) => record.hostId !== undefined && selectedHostIds.has(record.hostId)), ...summarizeSelectedRecords(usage.records.filter((record) => record.hostId !== undefined && selectedHostIds.has(record.hostId))) };
+  const records = usage.records.filter((record) => record.hostId !== undefined && selectedHostIds.has(record.hostId));
+  return { ...usage, records, ...summarizeSelectedRecords(records) };
 }
 
 function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve"): void {
@@ -367,7 +368,7 @@ function renderStatus(data: Dashboard): void {
   const enabled = statuses.filter((provider) => provider.enabled);
   const errors = enabled.filter((provider) => provider.status === "error");
   const hosts = data.usage.hosts || [];
-  const hostProblems = hosts.filter((host) => host.usable === false || !["ok", "online"].includes(host.status) || host.stale || host.included === false || host.complete === false);
+  const hostProblems = hosts.filter((host) => Boolean(host.error) || !["ok", "online"].includes(host.status) || host.stale || host.included === false || host.complete === false);
   const mqttProblem = data.usage.mqtt?.configured && data.usage.mqtt.connection !== "connected";
   const problems = errors.length + hostProblems.length + (mqttProblem ? 1 : 0);
   $("#status-copy").textContent = problems

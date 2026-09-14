@@ -249,7 +249,7 @@ export async function readUsageSources(
   const result = await readCcusageUsage(range);
   const { records, hosts } = mergeUsageRecords(enabledProviders, range, result.status === "ok" ? result.records || [] : [], remoteInputs, localHostId);
   const summary = summarizeUsage(records);
-  const remoteProblem = hosts.some((host) => !host.usable || !["ok", "online"].includes(host.status) || host.stale || !host.included || !host.complete);
+  const remoteProblem = hosts.some((host) => Boolean(host.error) || !["ok", "online"].includes(host.status) || host.stale || !host.included || !host.complete);
   const status = result.status === "ok" && !remoteProblem ? "ok" : records.length ? "partial" : "error";
   return {
     status,
