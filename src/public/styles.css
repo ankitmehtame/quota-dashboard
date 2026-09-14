@@ -151,4 +151,5 @@ dialog { color: var(--text); background: var(--surface-raised); border: 1px soli
 @media (max-width: 560px) {
   .usage-metrics { flex-direction: column; gap: 14px; }
   .usage-metric + .usage-metric { border-left: 0; border-top: 1px solid var(--line); padding: 14px 0 0; }
+  .chart-card { height: auto; }
 }
