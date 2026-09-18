@@ -25,6 +25,7 @@ let activeChartTooltip: { anchor: HTMLElement; tooltip: HTMLElement } | null = n
 let activeQuotaTooltip: { anchor: HTMLElement; tooltip: HTMLElement } | null = null;
 type HotUsageBaseline = Map<string, { generatedAt: number; error: string | null }>;
 let hotUsagePoller: { timer: number; startedAt: number; baseline: HotUsageBaseline; targetHostIds: Set<string>; requestInFlight: boolean } | null = null;
+let activeRefreshes = 0;
 
 function positionChartTooltip(anchor: HTMLElement, tooltip: HTMLElement): void {
   const margin = 8;
@@ -506,7 +507,8 @@ function evaluateHotUsagePoll(poller: NonNullable<typeof hotUsagePoller>, usage:
     $("#status-copy").textContent = message;
     return true;
   }
-  const freshHotUsage = targetHosts.length > 0 && targetHosts.every((host) => {
+  const completionHosts = targetHosts.filter((host) => !host || !host.error || host.error !== poller.baseline.get(host.hostId)?.error);
+  const freshHotUsage = targetHosts.length > 0 && completionHosts.every((host) => {
     if (!host || host.category !== "hot" || !host.generatedAt) return false;
     const generatedAt = Date.parse(host.generatedAt);
     const previous = poller.baseline.get(host.hostId);
@@ -544,10 +546,24 @@ async function pollHotUsage(): Promise<void> {
 
 function startHotUsagePolling(baseline: HotUsageBaseline, initialUsage: Usage | null | undefined, startedAt: number, targetHostIds: Set<string>): void {
   stopHotUsagePolling();
+  if (targetHostIds.size === 0) return;
   const poller = { timer: 0, startedAt, baseline, targetHostIds, requestInFlight: false };
   hotUsagePoller = poller;
   if (evaluateHotUsagePoll(poller, initialUsage || null)) return;
   poller.timer = window.setTimeout(() => void pollHotUsage(), HOT_USAGE_POLL_INTERVAL_MS);
+}
+
+function beginRefresh(): boolean {
+  if (activeRefreshes > 0) return false;
+  activeRefreshes += 1;
+  document.querySelectorAll<HTMLButtonElement>("#refresh-button, #usage-refresh-button").forEach((button) => { button.disabled = true; });
+  return true;
+}
+
+function endRefresh(): void {
+  activeRefreshes = Math.max(0, activeRefreshes - 1);
+  if (activeRefreshes > 0) return;
+  document.querySelectorAll<HTMLButtonElement>("#refresh-button, #usage-refresh-button").forEach((button) => { button.disabled = false; });
 }
 
 async function loadUsage(silent = false): Promise<Usage | null> {
@@ -661,34 +677,32 @@ async function loadSettings(): Promise<void> {
 function showToast(message: string): void { const toast = $("#toast"); toast.textContent = message; toast.classList.add("show"); setTimeout(() => toast.classList.remove("show"), 2200); }
 
 $("#refresh-button").addEventListener("click", async () => {
-  const button = $("#refresh-button") as HTMLButtonElement;
+  if (!beginRefresh()) return;
   stopHotUsagePolling();
   const baseline = usageHotBaseline(state.dashboard?.usage);
-  const targetHostIds = usageHotTargetIds(state.dashboard?.usage);
   const startedAt = Date.now();
   let refreshStarted = false;
-  button.disabled = true;
+  let refreshedUsage: Usage | null = null;
   try {
     await startUsageRefresh();
     refreshStarted = true;
     await loadDashboard(true);
+    refreshedUsage = state.dashboard?.usage || null;
     showToast("Quotas and usage refresh started");
   } catch (error) {
     showToast(error instanceof Error ? error.message : "Refresh failed");
   } finally {
-    button.disabled = false;
-    if (refreshStarted) startHotUsagePolling(baseline, state.dashboard?.usage, startedAt, targetHostIds);
+    endRefresh();
+    if (refreshStarted && refreshedUsage) startHotUsagePolling(baseline, refreshedUsage, startedAt, usageHotTargetIds(refreshedUsage));
   }
 });
 $("#usage-refresh-button").addEventListener("click", async () => {
-  const button = $("#usage-refresh-button") as HTMLButtonElement;
+  if (!beginRefresh()) return;
   stopHotUsagePolling();
   const baseline = usageHotBaseline(state.dashboard?.usage);
-  const targetHostIds = usageHotTargetIds(state.dashboard?.usage);
   const startedAt = Date.now();
   let refreshStarted = false;
   let initialUsage: Usage | null = null;
-  button.disabled = true;
   try {
     await startUsageRefresh();
     refreshStarted = true;
@@ -697,8 +711,8 @@ $("#usage-refresh-button").addEventListener("click", async () => {
   } catch (error) {
     showToast(error instanceof Error ? error.message : "Usage refresh failed");
   } finally {
-    button.disabled = false;
-    if (refreshStarted) startHotUsagePolling(baseline, initialUsage || state.dashboard?.usage, startedAt, targetHostIds);
+    endRefresh();
+    if (refreshStarted && initialUsage) startHotUsagePolling(baseline, initialUsage, startedAt, usageHotTargetIds(initialUsage));
   }
 });
 $("#settings-button").addEventListener("click", async () => { await loadSettings(); $("#settings-dialog").showModal(); });
