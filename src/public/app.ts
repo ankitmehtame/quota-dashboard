@@ -19,7 +19,7 @@ const escapeHtml = (value: unknown): string => String(value ?? "").replace(/[&<>
 let providerOrder = ["codex", "openrouter", "opencode-go", "ollama"];
 const usageSourceOrder = ["codex", "opencode", "hermes", "antigravity"];
 const usageSourceNames: Record<string, string> = { codex: "Codex", opencode: "OpenCode", hermes: "Hermes", antigravity: "Antigravity" };
-const HOT_USAGE_POLL_INTERVAL_MS = 10_000;
+const HOT_USAGE_POLL_INTERVAL_MS = 5_000;
 const HOT_USAGE_POLL_TIMEOUT_MS = 2 * 60 * 1000;
 let activeChartTooltip: { anchor: HTMLElement; tooltip: HTMLElement } | null = null;
 let activeQuotaTooltip: { anchor: HTMLElement; tooltip: HTMLElement } | null = null;
@@ -486,7 +486,7 @@ function usageHotBaseline(usage: Usage | undefined): HotUsageBaseline {
 
 function stopHotUsagePolling(): void {
   if (!hotUsagePoller) return;
-  window.clearInterval(hotUsagePoller.timer);
+  window.clearTimeout(hotUsagePoller.timer);
   hotUsagePoller = null;
 }
 
@@ -528,7 +528,12 @@ async function pollHotUsage(): Promise<void> {
     const usage = await loadUsage(true);
     evaluateHotUsagePoll(poller, usage);
   } finally {
-    if (hotUsagePoller === poller) poller.requestInFlight = false;
+    if (hotUsagePoller === poller) {
+      poller.requestInFlight = false;
+      if (Date.now() - poller.startedAt < HOT_USAGE_POLL_TIMEOUT_MS) {
+        poller.timer = window.setTimeout(() => void pollHotUsage(), HOT_USAGE_POLL_INTERVAL_MS);
+      }
+    }
   }
 }
 
@@ -537,7 +542,7 @@ function startHotUsagePolling(baseline: HotUsageBaseline, initialUsage: Usage | 
   const poller = { timer: 0, startedAt, baseline, requestInFlight: false };
   hotUsagePoller = poller;
   if (evaluateHotUsagePoll(poller, initialUsage || null)) return;
-  poller.timer = window.setInterval(() => void pollHotUsage(), HOT_USAGE_POLL_INTERVAL_MS);
+  poller.timer = window.setTimeout(() => void pollHotUsage(), HOT_USAGE_POLL_INTERVAL_MS);
 }
 
 async function loadUsage(silent = false): Promise<Usage | null> {
