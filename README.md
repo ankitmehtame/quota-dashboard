@@ -71,6 +71,13 @@ tar -xzf quota-dashboard-remote-agent-vX.Y.Z.tar.gz --strip-components=1 -C "${R
 Provider enablement and dashboard order are stored in `~/.config/quota-dashboard/config.json` with mode `0600`. No machine-specific absolute paths or identifiers are stored in the application. Provider credentials and machine-specific overrides remain server-side and can be supplied through environment variables:
 
 - `CCUSAGE_BIN` (defaults to `ccusage`)
+- `USAGE_TIMEZONE` (server-authoritative IANA timezone; defaults to the server timezone)
+- `USAGE_DATA_DIR` (defaults to `~/.local/share/quota-dashboard/usage`)
+- `CCUSAGE_HOT_INTERVAL_MS` (local hot refresh interval; defaults to 600000)
+- `CCUSAGE_HOT_TIMEOUT_MS` (local hot command timeout; defaults to 600000)
+- `CCUSAGE_COLD_TIMEOUT_MS` (local cold command timeout; defaults to 1800000)
+- `CCUSAGE_COLD_INTERVAL_MS` (local cold scheduler interval; defaults to 86400000)
+- `CCUSAGE_COLD_MODE` (`offline` or `online`, defaults to `offline`)
 - `LOCAL_HOST_ID` (defaults to the sanitized system hostname)
 - `MQTT_URL` or `MQTT_BROKER_URL` (enables remote usage, for example `mqtt://homeassistant.local:1883`)
 - `MQTT_USERNAME` and `MQTT_PASSWORD`
@@ -93,17 +100,19 @@ Ollama Cloud reads `OLLAMA_API_KEY` from the environment or from
 accounts may report session and weekly windows instead. Reset timestamps are
 shown when Ollama reports them, while legacy windows use their known schedules.
 
-Local usage is read exclusively with one shared `ccusage daily --json` command. The response is separated into Codex, OpenCode, Hermes, and Antigravity groups using its provider/source fields; those groups are independently toggleable in the Providers dialog. Antigravity usage appears when the installed `ccusage` release supports that source. The dashboard does not read provider-local databases directly. Codex/ChatGPT quota is fetched directly from `https://chatgpt.com/backend-api/wham/usage` using the Codex OAuth credentials in `~/.codex/auth.json`; an expired access token is refreshed automatically when the endpoint returns `401`. OpenCode Go supports rolling, weekly, and monthly windows when its dashboard returns them.
+Local usage is collected in the background for one date at a time. The parsed result is separated into Codex, OpenCode, Hermes, and Antigravity groups using its provider/source fields; those groups are independently toggleable in the Providers dialog. Antigravity usage appears when the installed `ccusage` release supports that source. The dashboard reads normalized records from `USAGE_DATA_DIR` immediately and never waits for a `ccusage` process. Each host/date directory also keeps the exact current document in `raw.json` plus timestamped raw backups when a later complete result omits a previously present tool. The dashboard does not read provider-local databases directly. Codex/ChatGPT quota is fetched directly from `https://chatgpt.com/backend-api/wham/usage` using the Codex OAuth credentials in `~/.codex/auth.json`; an expired access token is refreshed automatically when the endpoint returns `401`. OpenCode Go supports rolling, weekly, and monthly windows when its dashboard returns them.
 
 ## Remote usage
 
-Each remote publisher runs `ccusage daily --json --by-agent` at startup and every five
-minutes. It publishes a retained snapshot for the previous 370 days. The original
-parsed ccusage document remains unchanged under the envelope's `data` field:
+Each remote publisher runs a hot collection for today and yesterday at startup and every
+10 minutes. Cold history is collected one date at a time, starting with the newest stale
+date, once per day or when requested by the dashboard. Hot jobs use a 10-minute timeout;
+cold jobs use a 30-minute timeout and default to `--offline`. The original parsed ccusage
+document remains unchanged under the envelope's `data` field:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "publisherId": "1bb29fb4-f8c6-4fb8-a656-18ab4e06e7ac",
   "connectionId": "b954f2a3-86d8-4dd7-a152-f2ce3f83b06f",
   "sequence": 42,
@@ -111,7 +120,9 @@ parsed ccusage document remains unchanged under the envelope's `data` field:
   "generatedAt": "2026-09-13T15:30:00.000Z",
   "ccusageVersion": "ccusage 20.0.20",
   "timezone": "Asia/Singapore",
-  "range": { "from": "2025-09-09", "to": "2026-09-13" },
+  "date": "2026-09-13",
+  "category": "hot",
+  "runId": "run-42",
   "data": { "daily": [], "totals": {} }
 }
 ```
@@ -119,23 +130,23 @@ parsed ccusage document remains unchanged under the envelope's `data` field:
 The default MQTT topics are:
 
 ```text
-quota-dashboard/v1/hosts/<host-id>/usage
+quota-dashboard/v1/hosts/<host-id>/usage/<YYYY-MM-DD>
 quota-dashboard/v1/hosts/<host-id>/status
 quota-dashboard/v1/hosts/<host-id>/error
+quota-dashboard/v1/hosts/<host-id>/command
 ```
 
-Usage, status, and error messages use QoS 1 and retained delivery. A failed ccusage
-query does not replace the last successful usage snapshot. The publisher reports the
-error separately, and the dashboard continues to include the stale data while marking
-the host as unhealthy. Older or duplicate deliveries from a prior publisher process are
-ignored. A snapshot whose published range does not cover the selected dashboard range
-still contributes its available records but is explicitly marked incomplete.
+Usage, status, and error messages use QoS 1; usage/status/error messages are retained,
+while commands are non-retained. Each usage message contains exactly one date. A failed
+ccusage query does not replace the last successful date snapshot. The publisher reports
+the error separately, and the dashboard continues to include stored data while marking
+the host as unhealthy. Older or duplicate deliveries are ignored. Cold requests use a
+command containing `requestId`, `category`, `from`, `to`, and `mode`; the remote agent
+splits a range into one-day jobs.
 
-All publishers and the dashboard must use the same IANA timezone. ccusage produces
-date buckets rather than individual timestamps, so the dashboard rejects a remote
-snapshot whose timezone differs from the dashboard query timezone. Each machine must
-also own distinct usage files. Publishing synchronized copies of the same coding-agent
-data will duplicate usage.
+The server's `USAGE_TIMEZONE` is authoritative. Remote messages must carry the same
+IANA timezone or they are rejected. Each machine also owns distinct persisted usage
+files. Publishing synchronized copies of the same coding-agent data will duplicate usage.
 
 ### Install a publisher
 
@@ -170,8 +181,9 @@ loginctl enable-linger "$USER"
 
 The remote publisher accepts these environment variables when run without the setup
 script: `MQTT_URL`, `MQTT_USERNAME`, `MQTT_PASSWORD`, `MQTT_PREFIX`, `MQTT_HOST_ID`,
-`CCUSAGE_TIMEZONE`, `CCUSAGE_DAYS`, `MQTT_INTERVAL_MS`, `CCUSAGE_BIN`,
-`CCUSAGE_TIMEOUT_MS`, `CCUSAGE_MAX_BUFFER`, and optional `CCUSAGE_VERSION`.
+`CCUSAGE_TIMEZONE`, `CCUSAGE_DAYS`, `MQTT_INTERVAL_MS`, `CCUSAGE_HOT_TIMEOUT_MS`,
+`CCUSAGE_COLD_TIMEOUT_MS`, `CCUSAGE_COLD_INTERVAL_MS`, `CCUSAGE_COLD_MODE`,
+`CCUSAGE_BIN`, `CCUSAGE_MAX_BUFFER`, and optional `CCUSAGE_VERSION`.
 
 The first version intentionally uses ordinary MQTT username/password authentication.
 Credentials and usage metadata are unencrypted with an `mqtt://` URL. Keep the broker
@@ -183,9 +195,12 @@ topics and the dashboard account can read the shared host prefix.
 
 ## Future clients
 
-The normalized, versioned API is designed for later native clients and widgets:
+The normalized, versioned API is designed for native clients and widgets:
 
 - `GET /api/v1/dashboard`
+- `GET /api/v1/usage`
+- `POST /api/v1/usage/refresh`
+- `POST /api/v1/usage/cold`
 - `GET /api/v1/providers`
 - `GET /api/v1/quotas`
 - `GET /api/v1/widget-summary`

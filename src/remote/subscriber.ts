@@ -2,9 +2,15 @@ import mqtt, { type IClientOptions, type MqttClient } from "mqtt";
 
 import {
   MQTT_SCHEMA_VERSION,
+  makeCommandMessage,
+  makeCommandTopic,
+  makeMqttTopics,
+  makeUsageTopic,
+  parseMqttCommand,
   sanitizeHostId,
   sanitizeTopicPrefix,
   type ErrorMessage,
+  type MqttCommand,
   type MqttMetadata,
   type MqttTopics,
   type PublisherStatus,
@@ -22,14 +28,19 @@ const MAX_ERROR_LENGTH = 16_384;
 const MAX_REMOTE_HOSTS = 64;
 const STATUS_VALUES: readonly PublisherStatus[] = ["offline", "online", "ok", "error"];
 
-export type MqttSubscriptionTopics = MqttTopics & { all: readonly [string, string, string] };
+export type MqttSubscriptionTopics = Omit<MqttTopics, "usage"> & { usage: string; all: readonly [string, string, string, string] };
 
 export type RemoteMqttConnectionState = "disabled" | "disconnected" | "connecting" | "reconnecting" | "connected";
 
 export type RemoteHostState = {
+  /** Latest usage retained for the existing server seam. */
   usage: UsageSnapshot | null;
+  /** Complete date-aware usage state for the next server slice. */
+  usageByDate: Record<string, UsageSnapshot>;
   status: StatusMessage | null;
   error: ErrorMessage | null;
+  /** Local ingestion error, such as a timezone mismatch or persistence failure. */
+  ingestError: string | null;
 };
 
 export type RemoteMqttStoreSnapshot = {
@@ -39,7 +50,6 @@ export type RemoteMqttStoreSnapshot = {
 };
 
 export type RemoteMqttSubscriberConfig = {
-  /** An absent URL intentionally disables the dashboard-side subscriber. */
   mqttUrl?: string | null;
   mqttPrefix?: string;
   enabled?: boolean;
@@ -47,6 +57,9 @@ export type RemoteMqttSubscriberConfig = {
   username?: string;
   password?: string;
   clientOptions?: IClientOptions;
+  usageTimezone?: string;
+  onUsage?: (message: UsageSnapshot) => void | Promise<void>;
+  onUsageError?: (message: UsageSnapshot, error: unknown) => void;
   onChange?: (snapshot: RemoteMqttStoreSnapshot) => void;
 };
 
@@ -63,7 +76,8 @@ export type NormalizedRemoteMqttSubscriberConfig = Omit<RemoteMqttSubscriberConf
 
 export type ParsedRemoteMqttTopic = {
   hostId: string;
-  kind: "usage" | "status" | "error";
+  kind: "usage" | "status" | "error" | "command";
+  date?: string;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -74,36 +88,27 @@ function isBoundedString(value: unknown, maxLength = MAX_METADATA_STRING_LENGTH)
   return typeof value === "string" && value.length > 0 && value.length <= maxLength;
 }
 
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === "string" && value.length > 0;
-}
-
 function isValidHostId(value: unknown): value is string {
-  return typeof value === "string"
-    && value.length > 0
-    && value.length <= MAX_HOST_ID_LENGTH
-    && sanitizeHostId(value) === value;
+  return typeof value === "string" && value.length > 0 && value.length <= MAX_HOST_ID_LENGTH && sanitizeHostId(value) === value;
 }
 
 function isCalendarDate(value: unknown): value is string {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const parsed = new Date(`${value}T00:00:00.000Z`);
-  return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
 }
 
 function isMetadata(value: unknown): value is MqttMetadata {
   if (!isRecord(value) || value.schemaVersion !== MQTT_SCHEMA_VERSION || !isValidHostId(value.hostId)) return false;
-  if (!isBoundedString(value.publisherId, 128) || !isBoundedString(value.connectionId, 128) || !Number.isSafeInteger(value.sequence) || (value.sequence as number) < 0 || !isBoundedString(value.generatedAt) || !Number.isFinite(Date.parse(value.generatedAt)) || !isBoundedString(value.timezone)) return false;
+  if (!isBoundedString(value.publisherId, 128) || !isBoundedString(value.connectionId, 128) || !Number.isSafeInteger(value.sequence) || (value.sequence as number) < 0 || !isBoundedString(value.generatedAt) || !Number.isFinite(Date.parse(value.generatedAt)) || !isBoundedString(value.timezone) || !isCalendarDate(value.date) || (value.category !== "hot" && value.category !== "cold") || !isBoundedString(value.runId, 128)) return false;
   try {
     new Intl.DateTimeFormat("en-CA", { timeZone: value.timezone }).format();
   } catch {
     return false;
   }
   if (value.ccusageVersion !== undefined && !isBoundedString(value.ccusageVersion)) return false;
-  return isRecord(value.range)
-    && isCalendarDate(value.range.from)
-    && isCalendarDate(value.range.to)
-    && value.range.from <= value.range.to;
+  if (value.range !== undefined && (!isRecord(value.range) || !isCalendarDate(value.range.from) || !isCalendarDate(value.range.to) || value.range.from > value.range.to)) return false;
+  return true;
 }
 
 function copyAndFreeze<T>(value: T): T {
@@ -114,9 +119,7 @@ function copyAndFreeze<T>(value: T): T {
     const current = objects.pop();
     if (!current || seen.has(current)) continue;
     seen.add(current);
-    for (const child of Object.values(current)) {
-      if (child !== null && typeof child === "object") objects.push(child);
-    }
+    for (const child of Object.values(current)) if (child !== null && typeof child === "object") objects.push(child);
     Object.freeze(current);
   }
   return copy as T;
@@ -127,7 +130,6 @@ function normalizedMaxPayloadBytes(value: number | undefined): number {
   return Math.min(Math.floor(value as number), DEFAULT_MQTT_MAX_PAYLOAD_BYTES);
 }
 
-/** Read the optional dashboard subscriber settings without enabling MQTT by accident. */
 export function readRemoteMqttSubscriberConfig(env: NodeJS.ProcessEnv = process.env): NormalizedRemoteMqttSubscriberConfig {
   const mqttUrl = env.MQTT_URL?.trim() || env.MQTT_BROKER_URL?.trim() || env.MQTT_BROKER?.trim() || null;
   const explicitlyDisabled = env.MQTT_ENABLED?.trim().toLowerCase() === "false";
@@ -147,27 +149,25 @@ export function makeMqttSubscriptionTopics(prefix = DEFAULT_MQTT_PREFIX): MqttSu
   const root = sanitizeTopicPrefix(prefix);
   const base = `${root}/hosts/+`;
   const topics = {
-    usage: `${base}/usage`,
+    usage: `${base}/usage/+`,
     status: `${base}/status`,
     error: `${base}/error`,
+    command: `${base}/command`,
   };
-  return { ...topics, all: [topics.usage, topics.status, topics.error] };
+  return { ...topics, all: [topics.usage, topics.status, topics.error, topics.command] };
 }
 
-/** Parse only the exact topic shape this subscriber is meant to receive. */
 export function parseMqttSubscriptionTopic(topic: string, prefix = DEFAULT_MQTT_PREFIX): ParsedRemoteMqttTopic | null {
   if (typeof topic !== "string") return null;
   const root = sanitizeTopicPrefix(prefix).split("/");
   const parts = topic.split("/");
-  if (parts.length !== root.length + 3 || root.some((part, index) => parts[index] !== part) || parts[root.length] !== "hosts") return null;
+  if (parts.length < root.length + 3 || root.some((part, index) => parts[index] !== part) || parts[root.length] !== "hosts") return null;
   const hostId = parts[root.length + 1];
   const kind = parts[root.length + 2];
-  if (!isValidHostId(hostId) || (kind !== "usage" && kind !== "status" && kind !== "error")) return null;
-  return { hostId, kind };
-}
-
-function parseMetadataEnvelope(payload: unknown): (MqttMetadata & Record<string, unknown>) | null {
-  return isMetadata(payload) ? payload as MqttMetadata & Record<string, unknown> : null;
+  if (!isValidHostId(hostId)) return null;
+  if (kind === "usage" && parts.length === root.length + 4 && isCalendarDate(parts[root.length + 3])) return { hostId, kind, date: parts[root.length + 3] };
+  if ((kind === "status" || kind === "error" || kind === "command") && parts.length === root.length + 3) return { hostId, kind };
+  return null;
 }
 
 function hasBoundedBreakdowns(row: unknown): boolean {
@@ -177,43 +177,55 @@ function hasBoundedBreakdowns(row: unknown): boolean {
   return Array.isArray(row.agents) && row.agents.length <= 64 && row.agents.every((agent) => isRecord(agent) && (agent.modelBreakdowns === undefined || (Array.isArray(agent.modelBreakdowns) && agent.modelBreakdowns.length <= 1_000)));
 }
 
-/** Validate a wire message and return the typed message without changing its data field. */
+function hasOnlyDate(data: Record<string, unknown>, date: string): boolean {
+  if (data.daily === undefined) return true;
+  if (!Array.isArray(data.daily)) return false;
+  return data.daily.every((row) => {
+    if (!isRecord(row) || !hasBoundedBreakdowns(row)) return false;
+    const rowDate = row.date ?? row.period;
+    return rowDate === undefined || rowDate === date;
+  });
+}
+
 export function parseRemoteMqttMessage(
   topic: string,
   payload: Buffer | Uint8Array | string,
   prefix = DEFAULT_MQTT_PREFIX,
   maxPayloadBytes = DEFAULT_MQTT_MAX_PAYLOAD_BYTES,
-): { topic: ParsedRemoteMqttTopic; message: UsageSnapshot | StatusMessage | ErrorMessage } | null {
+): { topic: ParsedRemoteMqttTopic; message: UsageSnapshot | StatusMessage | ErrorMessage | MqttCommand } | null {
   const parsedTopic = parseMqttSubscriptionTopic(topic, prefix);
-  if (!parsedTopic) return null;
-  if (typeof payload !== "string" && !(payload instanceof Uint8Array)) return null;
+  if (!parsedTopic || (typeof payload !== "string" && !(payload instanceof Uint8Array))) return null;
   const payloadLimit = normalizedMaxPayloadBytes(maxPayloadBytes);
   const bytes = typeof payload === "string" ? Buffer.byteLength(payload, "utf8") : payload.byteLength;
   if (!Number.isFinite(bytes) || bytes > payloadLimit) return null;
-
+  if (parsedTopic.kind === "command") {
+    const command = parseMqttCommand(topic, payload, prefix, Math.min(payloadLimit, 64 * 1024));
+    return command ? { topic: parsedTopic, message: command } : null;
+  }
   let value: unknown;
   try {
     value = JSON.parse(typeof payload === "string" ? payload : Buffer.from(payload).toString("utf8")) as unknown;
   } catch {
     return null;
   }
-  const envelope = parseMetadataEnvelope(value);
-  if (!envelope || envelope.hostId !== parsedTopic.hostId) return null;
-
+  if (!isMetadata(value) || value.hostId !== parsedTopic.hostId) return null;
   if (parsedTopic.kind === "usage") {
-    if (!("data" in envelope) || !isRecord(envelope.data)) return null;
-    const daily = envelope.data.daily;
+    if (value.date !== parsedTopic.date || !isRecord((value as Record<string, unknown>).data)) return null;
+    const data = (value as Record<string, unknown>).data as Record<string, unknown>;
+    const daily = data.daily;
     if (daily !== undefined && (!Array.isArray(daily) || daily.length > 2_000)) return null;
-    if (Array.isArray(daily) && !daily.every(hasBoundedBreakdowns)) return null;
-    return { topic: parsedTopic, message: { ...envelope, data: envelope.data } as UsageSnapshot };
+    if (!hasOnlyDate(data, parsedTopic.date as string)) return null;
+    return { topic: parsedTopic, message: value as UsageSnapshot };
   }
   if (parsedTopic.kind === "status") {
-    if (!STATUS_VALUES.includes(envelope.status as PublisherStatus)) return null;
-    if (envelope.error !== undefined && (typeof envelope.error !== "string" || envelope.error.length > MAX_ERROR_LENGTH)) return null;
-    return { topic: parsedTopic, message: envelope as StatusMessage };
+    if (!STATUS_VALUES.includes((value as Record<string, unknown>).status as PublisherStatus)) return null;
+    const error = (value as Record<string, unknown>).error;
+    if (error !== undefined && (typeof error !== "string" || error.length > MAX_ERROR_LENGTH)) return null;
+    return { topic: parsedTopic, message: value as StatusMessage };
   }
-  return envelope.error === null || (isNonEmptyString(envelope.error) && envelope.error.length <= MAX_ERROR_LENGTH)
-    ? { topic: parsedTopic, message: envelope as ErrorMessage }
+  const error = (value as Record<string, unknown>).error;
+  return error === null || (typeof error === "string" && error.length > 0 && error.length <= MAX_ERROR_LENGTH)
+    ? { topic: parsedTopic, message: value as ErrorMessage }
     : null;
 }
 
@@ -221,15 +233,19 @@ function shouldReplace(current: MqttMetadata | null, incoming: MqttMetadata, off
   if (!current) return true;
   if (offline && current.publisherId === incoming.publisherId && current.connectionId === incoming.connectionId) return true;
   if (current.publisherId === incoming.publisherId) return incoming.sequence > current.sequence;
-  const incomingTime = Date.parse(incoming.generatedAt);
-  const currentTime = Date.parse(current.generatedAt);
-  return incomingTime > currentTime;
+  return Date.parse(incoming.generatedAt) > Date.parse(current.generatedAt);
+}
+
+function latestUsage(values: Readonly<Record<string, UsageSnapshot>>): UsageSnapshot | null {
+  return Object.values(values).reduce<UsageSnapshot | null>((latest, value) => !latest || Date.parse(value.generatedAt) > Date.parse(latest.generatedAt) ? value : latest, null);
+}
+
+function publish(client: MqttClient, topic: string, payload: string): Promise<void> {
+  return new Promise((resolve, reject) => client.publish(topic, payload, { qos: 1, retain: false }, (error) => error ? reject(error) : resolve()));
 }
 
 function subscribe(client: MqttClient, topics: readonly string[]): Promise<void> {
-  return new Promise((resolve, reject) => {
-    client.subscribe([...topics], { qos: 1 }, (error) => error ? reject(error) : resolve());
-  });
+  return new Promise((resolve, reject) => client.subscribe([...topics], { qos: 1 }, (error) => error ? reject(error) : resolve()));
 }
 
 function endClient(client: MqttClient): Promise<void> {
@@ -237,7 +253,6 @@ function endClient(client: MqttClient): Promise<void> {
   if (typeof candidate.endAsync === "function") return candidate.endAsync(false);
   return new Promise((resolve) => {
     const done = () => resolve();
-    // mqtt's callback form is used as a fallback for small test doubles and older clients.
     const end = client.end as unknown as (...args: unknown[]) => unknown;
     if (end.length >= 3) end.call(client, false, {}, done);
     else if (end.length === 2) end.call(client, false, done);
@@ -245,14 +260,9 @@ function endClient(client: MqttClient): Promise<void> {
   });
 }
 
-/**
- * An in-memory MQTT subscriber and store for remote usage snapshots.
- * The store intentionally has no disk state: usage and status are retained by MQTT.
- */
 export class RemoteMqttStore {
   readonly config: NormalizedRemoteMqttSubscriberConfig;
   readonly mqttTopics: MqttSubscriptionTopics;
-
   private readonly connect: typeof mqtt.connect;
   private readonly listeners = new Set<(snapshot: RemoteMqttStoreSnapshot) => void>();
   private readonly hosts = new Map<string, RemoteHostState>();
@@ -291,7 +301,9 @@ export class RemoteMqttStore {
 
   getSnapshot(): RemoteMqttStoreSnapshot {
     const hosts = Object.create(null) as Record<string, Readonly<RemoteHostState>>;
-    for (const [hostId, state] of this.hosts) hosts[hostId] = Object.freeze({ ...state });
+    for (const [hostId, state] of this.hosts) {
+      hosts[hostId] = Object.freeze({ ...state, usageByDate: Object.freeze({ ...state.usageByDate }) });
+    }
     return Object.freeze({ configured: this.configured, connection: this.connection, hosts: Object.freeze(hosts) });
   }
 
@@ -301,7 +313,21 @@ export class RemoteMqttStore {
 
   getHost(hostId: string): Readonly<RemoteHostState> | null {
     const state = this.hosts.get(hostId);
-    return state ? Object.freeze({ ...state }) : null;
+    return state ? Object.freeze({ ...state, usageByDate: Object.freeze({ ...state.usageByDate }) }) : null;
+  }
+
+  /** Publish a non-retained date/range command for a remote host. */
+  async publishCommand(hostId: string, command: Omit<MqttCommand, "schemaVersion">): Promise<boolean> {
+    if (!this.client || !this.configured || sanitizeHostId(hostId) !== hostId) return false;
+    const topic = makeCommandTopic(this.config.mqttPrefix, hostId);
+    const payload = JSON.stringify(makeCommandMessage(command));
+    if (!parseMqttCommand(topic, payload, this.config.mqttPrefix)) return false;
+    try {
+      await publish(this.client, topic, payload);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   async start(): Promise<void> {
@@ -337,16 +363,34 @@ export class RemoteMqttStore {
     }
   }
 
-  /** Feed one MQTT message into the store. Returns true only when it was accepted. */
   processMessage(topic: string, payload: Buffer | Uint8Array | string): boolean {
     const parsed = parseRemoteMqttMessage(topic, payload, this.config.mqttPrefix, this.config.maxPayloadBytes);
-    if (!parsed) return false;
+    if (!parsed || parsed.topic.kind === "command") return false;
     if (!this.hosts.has(parsed.topic.hostId) && this.hosts.size >= MAX_REMOTE_HOSTS) return false;
-    const state = this.hosts.get(parsed.topic.hostId) || { usage: null, status: null, error: null };
+    const state = this.hosts.get(parsed.topic.hostId) || { usage: null, usageByDate: Object.create(null) as Record<string, UsageSnapshot>, status: null, error: null, ingestError: null };
     if (parsed.topic.kind === "usage") {
       const message = parsed.message as UsageSnapshot;
-      if (!shouldReplace(state.usage, message)) return false;
-      state.usage = copyAndFreeze(message);
+      if (this.config.usageTimezone && message.timezone !== this.config.usageTimezone) {
+        state.ingestError = `Timezone ${message.timezone} does not match ${this.config.usageTimezone}`;
+        this.hosts.set(parsed.topic.hostId, state);
+        this.emitChange();
+        return false;
+      }
+      const current = state.usageByDate[message.date] || null;
+      if (!shouldReplace(current, message)) return false;
+      const accepted = copyAndFreeze(message);
+      state.usageByDate[message.date] = accepted;
+      state.usage = latestUsage(state.usageByDate);
+      state.ingestError = null;
+      if (this.config.onUsage) {
+        try {
+          void Promise.resolve(this.config.onUsage(accepted)).catch((error) => {
+            this.config.onUsageError?.(accepted, error);
+          });
+        } catch (error) {
+          this.config.onUsageError?.(accepted, error);
+        }
+      }
     } else if (parsed.topic.kind === "status") {
       const message = parsed.message as StatusMessage;
       if (!shouldReplace(state.status, message, message.status === "offline")) return false;
@@ -366,12 +410,7 @@ export class RemoteMqttStore {
   }
 
   private async startInternal(): Promise<void> {
-    const options: IClientOptions = {
-      clean: true,
-      reconnectPeriod: DEFAULT_MQTT_RECONNECT_PERIOD_MS,
-      connectTimeout: 30_000,
-      ...this.config.clientOptions,
-    };
+    const options: IClientOptions = { clean: true, reconnectPeriod: DEFAULT_MQTT_RECONNECT_PERIOD_MS, connectTimeout: 30_000, ...this.config.clientOptions };
     if (options.username === "") delete options.username;
     if (options.password === "") delete options.password;
     if (this.config.username !== undefined) options.username = this.config.username;
@@ -411,10 +450,7 @@ export class RemoteMqttStore {
     void subscribe(client, this.mqttTopics.all).then(() => {
       if (this.stopped || this.client !== client) return;
       this.setConnection("connected");
-    }).catch((error: unknown) => {
-      this.setConnection("disconnected");
-      console.error(`Remote MQTT subscription failed: ${error instanceof Error ? error.message : String(error)}`);
-    });
+    }).catch(() => this.setConnection("disconnected"));
   };
 
   private readonly onMessage = (topic: string, payload: Buffer): void => {
@@ -434,7 +470,6 @@ export class RemoteMqttStore {
   };
 
   private readonly onError = (): void => {
-    // mqtt owns reconnect attempts; an unavailable broker must not stop the dashboard.
     if (!this.stopped) this.setConnection("disconnected");
   };
 
@@ -458,9 +493,6 @@ export class RemoteMqttStore {
 
 export class RemoteMqttSubscriber extends RemoteMqttStore {}
 
-export function createRemoteMqttStore(
-  config?: RemoteMqttSubscriberConfig,
-  dependencies?: RemoteMqttSubscriberDependencies,
-): RemoteMqttStore {
+export function createRemoteMqttStore(config?: RemoteMqttSubscriberConfig, dependencies?: RemoteMqttSubscriberDependencies): RemoteMqttStore {
   return new RemoteMqttStore(config, dependencies);
 }

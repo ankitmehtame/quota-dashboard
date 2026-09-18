@@ -164,7 +164,9 @@ try {
   client.emit("connect");
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(client.publications.map(({ topic }) => topic.split("/").at(-1)), ["status", "usage", "status", "error"]);
+   assert.deepEqual(client.publications.map(({ topic }) => topic.split("/").at(-1)), ["status", "2026-09-12", "2026-09-13", "status", "error"]);
+   assert.equal(client.publications[1].options.retain, true);
+   assert.equal(client.publications[2].options.retain, true);
   await publisher.stop();
 } finally {
   await rm(tempDir, { recursive: true, force: true });

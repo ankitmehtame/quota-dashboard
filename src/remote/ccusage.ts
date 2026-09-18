@@ -2,6 +2,8 @@ import { execFile } from "node:child_process";
 import type { ExecFileOptions } from "node:child_process";
 
 export const DEFAULT_CCUSAGE_TIMEOUT_MS = 30_000;
+export const DEFAULT_HOT_CCUSAGE_TIMEOUT_MS = 10 * 60 * 1000;
+export const DEFAULT_COLD_CCUSAGE_TIMEOUT_MS = 30 * 60 * 1000;
 export const DEFAULT_CCUSAGE_MAX_BUFFER = 32 * 1024 * 1024;
 export const DEFAULT_ROLLING_DAYS = 370;
 
@@ -25,7 +27,8 @@ export type ExecFileRunner = (
   callback: ExecFileCallback,
 ) => unknown;
 
-export function ccusageArgs(range: CcusageRange): string[] {
+export function ccusageArgs(range: CcusageRange, options: { offline?: boolean } | boolean = {}): string[] {
+  const offline = typeof options === "boolean" ? options : options.offline;
   return [
     "daily",
     "--json",
@@ -36,6 +39,7 @@ export function ccusageArgs(range: CcusageRange): string[] {
     range.to,
     "--timezone",
     range.timezone,
+    ...(offline ? ["--offline"] : []),
   ];
 }
 
@@ -85,15 +89,17 @@ export async function runCcusage({
   range,
   timeoutMs = DEFAULT_CCUSAGE_TIMEOUT_MS,
   maxBuffer = DEFAULT_CCUSAGE_MAX_BUFFER,
+  offline = false,
   runner = execFile as unknown as ExecFileRunner,
 }: {
   binary?: string;
   range: CcusageRange;
   timeoutMs?: number;
   maxBuffer?: number;
+  offline?: boolean;
   runner?: ExecFileRunner;
 }): Promise<CcusageCommandResult> {
-  const { stdout, stderr } = await executeFile(runner, binary, ccusageArgs(range), {
+  const { stdout, stderr } = await executeFile(runner, binary, ccusageArgs(range, { offline }), {
     timeout: timeoutMs,
     maxBuffer,
     windowsHide: true,
