@@ -49,15 +49,21 @@ export type PublisherDependencies = {
   log?: (message: string) => void;
 };
 
-/** Redact credentials from an MQTT URL for safe logging. */
+/** Redact credentials, query parameters, and path from an MQTT URL for safe logging. */
 export function sanitizeMqttUrl(rawUrl: string): string {
+  if (typeof rawUrl !== "string") return "";
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return "";
   try {
-    const parsed = new URL(rawUrl);
-    parsed.username = "";
-    parsed.password = "";
-    return parsed.href;
+    const parsed = new URL(trimmed);
+    if (!parsed.host) return "[redacted-url]";
+    return `${parsed.protocol}//${parsed.host}`;
   } catch {
-    return rawUrl.replace(/\/\/[^/@]+@/, "//");
+    const schemeMatch = trimmed.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):\/\//);
+    if (schemeMatch) {
+      return `${schemeMatch[1].toLowerCase()}://[redacted]`;
+    }
+    return "[redacted-url]";
   }
 }
 
