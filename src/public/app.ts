@@ -499,7 +499,8 @@ function evaluateHotUsagePoll(poller: NonNullable<typeof hotUsagePoller>, usage:
   if (hotUsagePoller !== poller) return true;
   const hosts = usage?.hosts || [];
   const targetHosts = [...poller.targetHostIds].map((hostId) => hosts.find((host) => host.hostId === hostId));
-  const errorHost = targetHosts.find((host) => host?.error && host.error !== poller.baseline.get(host.hostId)?.error);
+  const presentTargetHosts = targetHosts.filter((host): host is NonNullable<typeof host> => Boolean(host));
+  const errorHost = presentTargetHosts.find((host) => host.error && host.error !== poller.baseline.get(host.hostId)?.error);
   if (errorHost?.error) {
     stopHotUsagePolling();
     const message = `Hot usage refresh failed: ${errorHost.error}`;
@@ -507,9 +508,19 @@ function evaluateHotUsagePoll(poller: NonNullable<typeof hotUsagePoller>, usage:
     $("#status-copy").textContent = message;
     return true;
   }
-  const completionHosts = targetHosts.filter((host) => !host || !host.error || host.error !== poller.baseline.get(host.hostId)?.error);
-  const freshHotUsage = targetHosts.length > 0 && completionHosts.every((host) => {
-    if (!host || host.category !== "hot" || !host.generatedAt) return false;
+  const completionHosts = presentTargetHosts.filter((host) => !host.error || host.error !== poller.baseline.get(host.hostId)?.error);
+  if (presentTargetHosts.length === poller.targetHostIds.size && completionHosts.length === 0) {
+    const unchangedError = presentTargetHosts.find((host) => host.error)?.error;
+    if (unchangedError) {
+      stopHotUsagePolling();
+      const message = `Hot usage refresh failed: ${unchangedError}`;
+      showToast(message);
+      $("#status-copy").textContent = message;
+      return true;
+    }
+  }
+  const freshHotUsage = presentTargetHosts.length === poller.targetHostIds.size && completionHosts.length > 0 && completionHosts.every((host) => {
+    if (host.category !== "hot" || !host.generatedAt) return false;
     const generatedAt = Date.parse(host.generatedAt);
     const previous = poller.baseline.get(host.hostId);
     return Number.isFinite(generatedAt) && (!previous || !Number.isFinite(previous.generatedAt) || generatedAt > previous.generatedAt);
@@ -678,12 +689,14 @@ function showToast(message: string): void { const toast = $("#toast"); toast.tex
 
 $("#refresh-button").addEventListener("click", async () => {
   if (!beginRefresh()) return;
-  stopHotUsagePolling();
-  const baseline = usageHotBaseline(state.dashboard?.usage);
-  const startedAt = Date.now();
+  let baseline: HotUsageBaseline | null = null;
+  let startedAt = 0;
   let refreshStarted = false;
   let refreshedUsage: Usage | null = null;
   try {
+    stopHotUsagePolling();
+    baseline = usageHotBaseline(state.dashboard?.usage);
+    startedAt = Date.now();
     await startUsageRefresh();
     refreshStarted = true;
     await loadDashboard(true);
@@ -693,17 +706,19 @@ $("#refresh-button").addEventListener("click", async () => {
     showToast(error instanceof Error ? error.message : "Refresh failed");
   } finally {
     endRefresh();
-    if (refreshStarted && refreshedUsage) startHotUsagePolling(baseline, refreshedUsage, startedAt, usageHotTargetIds(refreshedUsage));
+    if (refreshStarted && refreshedUsage && baseline) startHotUsagePolling(baseline, refreshedUsage, startedAt, usageHotTargetIds(refreshedUsage));
   }
 });
 $("#usage-refresh-button").addEventListener("click", async () => {
   if (!beginRefresh()) return;
-  stopHotUsagePolling();
-  const baseline = usageHotBaseline(state.dashboard?.usage);
-  const startedAt = Date.now();
+  let baseline: HotUsageBaseline | null = null;
+  let startedAt = 0;
   let refreshStarted = false;
   let initialUsage: Usage | null = null;
   try {
+    stopHotUsagePolling();
+    baseline = usageHotBaseline(state.dashboard?.usage);
+    startedAt = Date.now();
     await startUsageRefresh();
     refreshStarted = true;
     initialUsage = await loadUsage();
@@ -712,7 +727,7 @@ $("#usage-refresh-button").addEventListener("click", async () => {
     showToast(error instanceof Error ? error.message : "Usage refresh failed");
   } finally {
     endRefresh();
-    if (refreshStarted && initialUsage) startHotUsagePolling(baseline, initialUsage, startedAt, usageHotTargetIds(initialUsage));
+    if (refreshStarted && initialUsage && baseline) startHotUsagePolling(baseline, initialUsage, startedAt, usageHotTargetIds(initialUsage));
   }
 });
 $("#settings-button").addEventListener("click", async () => { await loadSettings(); $("#settings-dialog").showModal(); });
