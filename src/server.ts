@@ -382,9 +382,9 @@ async function buildUsage(url: URL, config: AppConfig) {
   const usageStatus = usageSources.length === 0 ? "disabled" : hostProblem ? (records.length ? "partial" : "error") : "ok";
   const usageResult = usageSources.length ? {
     status: usageStatus,
-    error: hosts.find((host) => host.error)?.error ?? null,
+    error: hosts.find((host) => Boolean(host.error))?.error ?? null,
     source: "filesystem",
-    sources: usageSources.map((provider) => ({ provider, status: usageStatus, error: hosts.find((host) => host.error)?.error ?? null })),
+    sources: usageSources.map((provider) => ({ provider, status: usageStatus, error: hosts.find((host) => Boolean(host.error))?.error ?? null })),
     hosts,
     records,
     ...summary,
