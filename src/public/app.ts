@@ -7,6 +7,7 @@ type UsageRecord = { hostId?: string; date: string; provider: string; model: str
 type UsageHost = { hostId: string; generatedAt?: string | null; status: string; error?: string | null; stale?: boolean; local?: boolean; included?: boolean; complete?: boolean; usable?: boolean; disabledReason?: string | null };
 type Usage = { totalCostUsd: number; totalTokens?: number; from?: string; to?: string; providers?: string[]; daily?: UsageDay[]; byModel?: UsageModel[]; byProvider?: Array<{ provider: string; costUsd: number; totalTokens: number }>; records?: UsageRecord[]; error?: string | null; hosts?: UsageHost[]; mqtt?: { configured: boolean; connection: string } };
 type Dashboard = { version: string; providerOrder: string[]; providers: Record<string, Provider>; quotas: Record<string, { windows?: QuotaWindow[]; planType?: string; subscriptionActiveUntil?: string | null; resetCredits?: Array<{ id: string; title: string; description?: string | null; expiresAt?: string | null }>; fetchedAt?: string; error?: string | null }>; usage: Usage; serverNow: string; cache?: { fetchedAt?: string } };
+type UsageResponse = { version: string; apiVersion: number; serverNow: string; timezone: string; from: string; to: string; usage: Usage };
 type AppState = { days: number; range: string; dashboard: Dashboard | null; hostSelections: Map<string, boolean>; chartScrollLeft: number };
 const timeFormatStorageKey = "quota-dashboard.time-format";
 const storedTimeFormat = localStorage.getItem(timeFormatStorageKey);
@@ -458,13 +459,42 @@ function renderClock(): void {
   $("#now-date").textContent = new Intl.DateTimeFormat([], { weekday: "short", month: "short", day: "numeric", year: "numeric" }).format(now);
 }
 
+function usageQuery(): string {
+  return `days=${state.days}&range=${encodeURIComponent(state.range === "today" ? "relative" : state.range.startsWith("relative-") ? "relative" : state.range)}`;
+}
+
+function setUsageLoading(loading: boolean): void {
+  document.querySelector(".range-picker")?.classList.toggle("loading", loading);
+  document.querySelectorAll<HTMLButtonElement>(".range-picker button").forEach((button) => { button.disabled = loading; });
+}
+
+async function loadUsage(): Promise<void> {
+  if (!state.dashboard) return loadDashboard();
+  const scroll = document.querySelector<HTMLElement>(".chart-scroll");
+  if (scroll) state.chartScrollLeft = scroll.scrollLeft;
+  setUsageLoading(true);
+  try {
+    const response = await fetch(`/api/v1/usage?${usageQuery()}`);
+    if (!response.ok) throw new Error("Usage request failed");
+    const data = await response.json() as UsageResponse;
+    state.dashboard = { ...state.dashboard, usage: data.usage, serverNow: data.serverNow };
+    renderUsage(data.usage, "preserve");
+    renderStatus(state.dashboard);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Usage request failed";
+    showToast(message);
+    $("#status-copy").textContent = message;
+  } finally {
+    setUsageLoading(false);
+  }
+}
+
 async function loadDashboard(refresh = false): Promise<void> {
   if (refresh) {
     const scroll = document.querySelector<HTMLElement>(".chart-scroll");
     if (scroll) state.chartScrollLeft = scroll.scrollLeft;
   }
-  document.querySelector(".range-picker")?.classList.add("loading");
-  document.querySelectorAll<HTMLButtonElement>(".range-picker button").forEach((button) => { button.disabled = true; });
+  setUsageLoading(true);
   $("#usage-total").textContent = "—";
   $("#usage-total-caption").textContent = `Estimated spend · ${usagePresetLabel(state.range)} · —`;
   $("#today-total").textContent = "—";
@@ -472,17 +502,57 @@ async function loadDashboard(refresh = false): Promise<void> {
   $("#today-metric").hidden = state.range === "today";
   $("#usage-chart").innerHTML = `<div class="chart-empty">Loading usage data…</div>`;
   $("#models-list").innerHTML = `<div class="chart-empty">Loading model data…</div>`;
-  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
   try {
-    const response = await fetch(`/api/v1/dashboard?days=${state.days}&range=${encodeURIComponent(state.range === "today" ? "relative" : state.range.startsWith("relative-") ? "relative" : state.range)}&timezone=${encodeURIComponent(timezone)}${refresh ? "&refresh=1" : ""}`);
+    const response = await fetch(`/api/v1/dashboard?${usageQuery()}${refresh ? "&refresh=1" : ""}`);
     if (!response.ok) throw new Error("Dashboard request failed");
     state.dashboard = await response.json();
     const dashboard = state.dashboard;
     if (dashboard) { providerOrder = dashboard.providerOrder; renderQuotas(dashboard); renderUsage(dashboard.usage, refresh ? "preserve" : "newest"); renderStatus(dashboard); }
   } finally {
-    document.querySelector(".range-picker")?.classList.remove("loading");
-  document.querySelectorAll<HTMLButtonElement>(".range-picker button").forEach((button) => { button.disabled = false; });
+    setUsageLoading(false);
   }
+}
+
+function shiftDate(value: string, days: number): string {
+  const date = new Date(`${value}T12:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date.toISOString().slice(0, 10);
+}
+
+function validDateInput(value: string): boolean {
+  return Boolean(localApiDate(value));
+}
+
+function renderColdUsageSettings(usage: Usage | undefined): void {
+  const end = usage?.to && validDateInput(usage.to) ? usage.to : new Date().toISOString().slice(0, 10);
+  const start = shiftDate(end, -6);
+  const hosts = usage?.hosts || [];
+  const hostOptions = [`<option value="">All usage hosts</option>`, ...hosts.map((host) => `<option value="${escapeHtml(host.hostId)}">${escapeHtml(host.hostId)}${host.local ? " (local)" : ""}</option>`)].join("");
+  $("#usage-cold-settings").innerHTML = `<p class="settings-group">COLD USAGE BACKFILL</p><p class="dialog-copy cold-copy">Backfill persisted usage for one host or all hosts. Large cold jobs can take up to 30 minutes.</p><form id="cold-usage-form" class="cold-usage-form"><label class="cold-field"><span>Host</span><select id="cold-host">${hostOptions}</select></label><div class="cold-date-row"><label class="cold-field"><span>From</span><input id="cold-from" type="date" value="${escapeHtml(start)}" required /></label><label class="cold-field"><span>To</span><input id="cold-to" type="date" value="${escapeHtml(end)}" required /></label></div><fieldset class="cold-mode"><legend>Mode</legend><label><input type="radio" name="cold-mode" value="offline" checked /> Offline</label><label><input type="radio" name="cold-mode" value="online" /> Online</label></fieldset><button class="text-button cold-submit" type="submit">Start cold backfill <span>↗</span></button></form>`;
+  const form = $("#cold-usage-form") as HTMLFormElement;
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const from = ($("#cold-from") as HTMLInputElement).value;
+    const to = ($("#cold-to") as HTMLInputElement).value;
+    if (!validDateInput(from) || !validDateInput(to) || from > to) {
+      showToast("Choose an ordered date range");
+      return;
+    }
+    const hostId = ($("#cold-host") as HTMLSelectElement).value;
+    const mode = (form.querySelector<HTMLInputElement>("input[name='cold-mode']:checked")?.value || "offline");
+    const submit = form.querySelector<HTMLButtonElement>(".cold-submit");
+    if (submit) submit.disabled = true;
+    try {
+      const response = await fetch("/api/v1/usage/cold", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...(hostId ? { hostId } : {}), from, to, mode }) });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "Cold backfill could not be started");
+      showToast("Cold backfill accepted · up to 30 minutes");
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "Cold backfill could not be started");
+    } finally {
+      if (submit) submit.disabled = false;
+    }
+  });
 }
 
 async function loadSettings(): Promise<void> {
@@ -492,20 +562,30 @@ async function loadSettings(): Promise<void> {
   const quotaSettings = providerOrder.map((id, index) => { const provider = data.providers[id]; return `<div class="setting-row" data-provider-row="${id}"><div class="setting-copy"><div class="provider-name">${provider.name}</div><div class="provider-sub">${provider.description}${provider.configured ? " · configured" : " · credentials not detected"}</div></div><div class="order-actions"><button class="order-button" type="button" data-order-direction="up" data-provider="${id}" aria-label="Move ${provider.name} up" ${index === 0 ? "disabled" : ""}>↑</button><button class="order-button" type="button" data-order-direction="down" data-provider="${id}" aria-label="Move ${provider.name} down" ${index === providerOrder.length - 1 ? "disabled" : ""}>↓</button><input class="switch" type="checkbox" data-kind="provider" data-provider="${id}" ${provider.enabled ? "checked" : ""} aria-label="Enable ${provider.name}" /></div></div>`; }).join("");
   const usageNames: Record<string, string> = usageSourceNames;
   const usageSettings = usageSourceOrder.map((id) => `<label class="setting-row"><div class="setting-copy"><div class="provider-name">${usageNames[id]} usage</div><div class="provider-sub">Provider group from shared ccusage output</div></div><input class="switch" type="checkbox" data-kind="usage" data-provider="${id}" ${data.usageSources?.[id]?.enabled ? "checked" : ""} aria-label="Enable ${usageNames[id]} usage" /></label>`).join("");
-  $("#provider-settings").innerHTML = `<p class="settings-group">DISPLAY</p><label class="setting-row"><div class="setting-copy"><div class="provider-name">12-hour clock</div><div class="provider-sub">Show times with AM and PM</div></div><input class="switch" type="checkbox" data-kind="time-format" ${state.hour12 ? "checked" : ""} aria-label="Use 12-hour clock" /></label><p class="settings-group">QUOTA PROVIDERS</p>${quotaSettings}<p class="settings-group">LOCAL USAGE SOURCES</p>${usageSettings}`;
+   $("#provider-settings").innerHTML = `<p class="settings-group">DISPLAY</p><label class="setting-row"><div class="setting-copy"><div class="provider-name">12-hour clock</div><div class="provider-sub">Show times with AM and PM</div></div><input class="switch" type="checkbox" data-kind="time-format" ${state.hour12 ? "checked" : ""} aria-label="Use 12-hour clock" /></label><p class="settings-group">QUOTA PROVIDERS</p>${quotaSettings}<p class="settings-group">LOCAL USAGE SOURCES</p>${usageSettings}`;
+   renderColdUsageSettings(state.dashboard?.usage);
   document.querySelectorAll<HTMLButtonElement>(".order-button").forEach((button) => button.addEventListener("click", async () => { const id = button.dataset.provider || ""; const index = providerOrder.indexOf(id); const nextIndex = index + (button.dataset.orderDirection === "up" ? -1 : 1); if (index < 0 || nextIndex < 0 || nextIndex >= providerOrder.length) return; const nextOrder = [...providerOrder]; [nextOrder[index], nextOrder[nextIndex]] = [nextOrder[nextIndex], nextOrder[index]]; document.querySelectorAll<HTMLButtonElement>(".order-button").forEach((item) => { item.disabled = true; }); try { const save = await fetch("/api/v1/providers/order", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ order: nextOrder }) }); if (!save.ok) throw new Error("Provider order could not be saved"); providerOrder = nextOrder; if (state.dashboard) renderQuotas(state.dashboard); await loadSettings(); showToast("Provider order saved"); } catch (error) { showToast(error instanceof Error ? error.message : "Provider order could not be saved"); await loadSettings(); } }));
   document.querySelectorAll<HTMLInputElement>(".switch").forEach((input) => input.addEventListener("change", async (event) => { const target = event.target as HTMLInputElement; const id = target.dataset.provider || ""; const kind = target.dataset.kind || ""; if (kind === "time-format") { state.hour12 = target.checked; localStorage.setItem(timeFormatStorageKey, state.hour12 ? "12" : "24"); renderClock(); if (state.dashboard) { renderQuotas(state.dashboard); renderStatus(state.dashboard); } showToast(`${state.hour12 ? "12-hour" : "24-hour"} clock enabled`); return; } const path = kind === "usage" ? `/api/v1/usage-sources/${id}/enabled` : `/api/v1/providers/${id}/enabled`; await fetch(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: target.checked }) }); showToast(`${kind === "usage" ? usageNames[id] + " usage" : data.providers[id].name} ${target.checked ? "enabled" : "disabled"}`); await loadDashboard(true); }));
 }
 
 function showToast(message: string): void { const toast = $("#toast"); toast.textContent = message; toast.classList.add("show"); setTimeout(() => toast.classList.remove("show"), 2200); }
 
-$("#refresh-button").addEventListener("click", async () => { try { await loadDashboard(true); showToast("Data refreshed"); } catch (error) { showToast(error instanceof Error ? error.message : "Refresh failed"); } });
+$("#refresh-button").addEventListener("click", async () => {
+  try {
+    const response = await fetch("/api/v1/usage/refresh", { method: "POST" });
+    if (!response.ok) throw new Error("Usage refresh could not be started");
+    await loadUsage();
+    showToast("Usage refresh started");
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : "Usage refresh failed");
+  }
+});
 $("#settings-button").addEventListener("click", async () => { await loadSettings(); $("#settings-dialog").showModal(); });
 $("#manage-button").addEventListener("click", async () => { await loadSettings(); $("#settings-dialog").showModal(); });
 $("#close-settings").addEventListener("click", () => $("#settings-dialog").close());
 $("#close-day-details").addEventListener("click", () => $("#day-details-dialog").close());
 $("#day-details-dialog").addEventListener("close", () => { $("#usage-chart").classList.remove("suppress-tooltips"); (document.activeElement as HTMLElement | null)?.blur?.(); });
-document.querySelectorAll<HTMLElement>("[data-range]").forEach((button) => button.addEventListener("click", async (event) => { const current = element(event.currentTarget); const value = current.dataset.range || "today"; state.range = value; state.days = value === "today" ? 1 : value.startsWith("relative-") ? Number(value.slice(9)) : value === "calendar-year" ? 365 : value === "calendar-month" ? 31 : 7; document.querySelectorAll<HTMLElement>(".range-tab").forEach((tab) => tab.classList.toggle("active", value === "today")); document.querySelectorAll<HTMLElement>(".range-menu-items button").forEach((item) => item.classList.toggle("active", item.dataset.range === value)); document.querySelectorAll<HTMLElement>(".range-menu-button").forEach((menuButton) => { const menu = menuButton.parentElement; if (!menu) return; const selected = menu.querySelector(`[data-range="${value}"]`); menuButton.classList.toggle("active", Boolean(selected)); menuButton.setAttribute("aria-expanded", "false"); menu.querySelector(".range-menu-items")?.classList.remove("open"); }); if (value !== "today") { const menuButton = current.closest(".range-menu")?.querySelector<HTMLElement>(".range-menu-button"); if (menuButton?.firstChild) menuButton.childNodes[0].textContent = `${current.textContent} `; } await loadDashboard(); }));
+document.querySelectorAll<HTMLElement>("[data-range]").forEach((button) => button.addEventListener("click", async (event) => { const current = element(event.currentTarget); const value = current.dataset.range || "today"; state.range = value; state.days = value === "today" ? 1 : value.startsWith("relative-") ? Number(value.slice(9)) : value === "calendar-year" ? 365 : value === "calendar-month" ? 31 : 7; document.querySelectorAll<HTMLElement>(".range-tab").forEach((tab) => tab.classList.toggle("active", value === "today")); document.querySelectorAll<HTMLElement>(".range-menu-items button").forEach((item) => item.classList.toggle("active", item.dataset.range === value)); document.querySelectorAll<HTMLElement>(".range-menu-button").forEach((menuButton) => { const menu = menuButton.parentElement; if (!menu) return; const selected = menu.querySelector(`[data-range="${value}"]`); menuButton.classList.toggle("active", Boolean(selected)); menuButton.setAttribute("aria-expanded", "false"); menu.querySelector(".range-menu-items")?.classList.remove("open"); }); if (value !== "today") { const menuButton = current.closest(".range-menu")?.querySelector<HTMLElement>(".range-menu-button"); if (menuButton?.firstChild) menuButton.childNodes[0].textContent = `${current.textContent} `; } await loadUsage(); }));
 document.querySelectorAll<HTMLElement>(".range-menu-button").forEach((button) => button.addEventListener("click", (event) => { const parent = element(event.currentTarget).parentElement; if (!parent) return; const menu = parent.querySelector<HTMLElement>(".range-menu-items"); if (!menu) return; const open = menu.classList.toggle("open"); element(event.currentTarget).setAttribute("aria-expanded", String(open)); }));
 function closeRangeMenus() { document.querySelectorAll(".range-menu-items").forEach((menu) => menu.classList.remove("open")); document.querySelectorAll(".range-menu-button").forEach((button) => button.setAttribute("aria-expanded", "false")); }
 document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeRangeMenus(); });

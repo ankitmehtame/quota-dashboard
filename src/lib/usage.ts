@@ -193,6 +193,11 @@ function selectedProviders(enabledProviders: string[]): Set<string> {
   return selected;
 }
 
+export function filterUsageRecords(enabledProviders: string[], records: UsageRecord[]): UsageRecord[] {
+  const selected = selectedProviders(enabledProviders);
+  return records.filter((record) => selected.has(record.provider));
+}
+
 export function mergeUsageRecords(
   enabledProviders: string[],
   range: { from: string; to: string; timeZone: string },

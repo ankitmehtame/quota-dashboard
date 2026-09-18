@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
@@ -8,7 +9,10 @@ import { fileURLToPath } from "node:url";
 import { type AppConfig, type ProviderId, type UsageSourceId, DEFAULT_CONFIG, PROVIDER_IDS, USAGE_SOURCE_IDS, localDateRange, normalizeConfig, normalizeProviderOrder, providerStatus } from "./lib/core.js";
 import type { ProviderResult } from "./lib/core.js";
 import { isProviderConfigured, PROVIDER_FETCHERS } from "./lib/providers.js";
-import { readUsageSources } from "./lib/usage.js";
+import { filterUsageRecords, summarizeUsage } from "./lib/usage.js";
+import { FilesystemUsageStore } from "./lib/usage-store.js";
+import { ccusageErrorMessage, DEFAULT_CCUSAGE_MAX_BUFFER, DEFAULT_COLD_CCUSAGE_TIMEOUT_MS, DEFAULT_HOT_CCUSAGE_TIMEOUT_MS, DEFAULT_ROLLING_DAYS, rollingDateRange, runCcusage } from "./remote/ccusage.js";
+import { DEFAULT_COLD_INTERVAL_MS, DEFAULT_PUBLISH_INTERVAL_MS } from "./remote/publisher.js";
 import { sanitizeHostId } from "./remote/protocol.js";
 import { RemoteMqttStore, readRemoteMqttSubscriberConfig } from "./remote/subscriber.js";
 
@@ -32,13 +36,70 @@ const root = dirname(fileURLToPath(import.meta.url));
 const publicRoot = join(root, "public");
 const port = Number(process.env.PORT || 4173);
 const configPath = process.env.CONFIG_PATH || join(homedir(), ".config", "quota-dashboard", "config.json");
+function validatedTimezone(value: string): string {
+  try {
+    new Intl.DateTimeFormat("en-CA", { timeZone: value }).format();
+    return value;
+  } catch {
+    throw new Error(`Invalid USAGE_TIMEZONE: ${value}`);
+  }
+}
+
+const usageTimezone = validatedTimezone(process.env.USAGE_TIMEZONE?.trim() || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
+const usageDataRoot = resolve(process.env.USAGE_DATA_DIR?.trim() || join(homedir(), ".local", "share", "quota-dashboard", "usage"));
+const usageStore = new FilesystemUsageStore({ dataRoot: usageDataRoot });
+function positiveNumber(value: string | undefined, fallback: number): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+const localCcusageBinary = process.env.CCUSAGE_BIN?.trim() || "ccusage";
+const localCcusageMaxBuffer = positiveNumber(process.env.CCUSAGE_MAX_BUFFER, DEFAULT_CCUSAGE_MAX_BUFFER);
+const localHotTimeoutMs = positiveNumber(process.env.CCUSAGE_HOT_TIMEOUT_MS, positiveNumber(process.env.CCUSAGE_TIMEOUT_MS, DEFAULT_HOT_CCUSAGE_TIMEOUT_MS));
+const localColdTimeoutMs = positiveNumber(process.env.CCUSAGE_COLD_TIMEOUT_MS, DEFAULT_COLD_CCUSAGE_TIMEOUT_MS);
+const localColdMode = process.env.CCUSAGE_COLD_MODE?.trim().toLowerCase() === "online" ? "online" : "offline";
+const localRollingDays = Math.max(3, Math.trunc(positiveNumber(process.env.CCUSAGE_DAYS, DEFAULT_ROLLING_DAYS)));
+const localHotIntervalMs = positiveNumber(process.env.CCUSAGE_HOT_INTERVAL_MS, DEFAULT_PUBLISH_INTERVAL_MS);
+const localColdIntervalMs = positiveNumber(process.env.CCUSAGE_COLD_INTERVAL_MS, DEFAULT_COLD_INTERVAL_MS);
 const quotaCache = new Map<ProviderId, { cachedAt: number; value: ProviderResult }>();
 const dashboardCache = new Map<string, { cachedAt: number; fetchedAt: string; value: DashboardValue }>();
 const localHostId = sanitizeHostId(process.env.LOCAL_HOST_ID?.trim() || hostname());
-const remoteUsageStore = new RemoteMqttStore(readRemoteMqttSubscriberConfig());
+const remotePersistenceErrors = new Map<string, string>();
+const remotePersistenceChains = new Map<string, Promise<void>>();
+let localHotPromise: Promise<void> | null = null;
+let localColdPromise: Promise<void> | null = null;
+let localHotSchedulePromise: Promise<void> | null = null;
+let localColdSchedulePromise: Promise<void> | null = null;
+let localHotTimer: NodeJS.Timeout | null = null;
+let localColdTimer: NodeJS.Timeout | null = null;
+let localUsageError: string | null = null;
+const remoteUsageStore = new RemoteMqttStore({
+  ...readRemoteMqttSubscriberConfig(),
+  usageTimezone,
+  onUsage: (message) => {
+    const key = `${message.hostId}/${message.date}`;
+    const previous = remotePersistenceChains.get(key) || Promise.resolve();
+    const next = previous.catch(() => undefined).then(() => usageStore.ingest({ ...message, hostId: message.hostId })).then(() => {
+      remotePersistenceErrors.delete(message.hostId);
+      dashboardCache.clear();
+    });
+    remotePersistenceChains.set(key, next);
+    void next.then(
+      () => { if (remotePersistenceChains.get(key) === next) remotePersistenceChains.delete(key); },
+      () => { if (remotePersistenceChains.get(key) === next) remotePersistenceChains.delete(key); },
+    );
+    return next;
+  },
+  onUsageError: (message, error) => {
+    remotePersistenceErrors.set(message.hostId, error instanceof Error ? error.message : String(error));
+    dashboardCache.clear();
+  },
+});
 remoteUsageStore.addChangeListener(() => dashboardCache.clear());
 void remoteUsageStore.start().catch((error) => console.error(`Remote MQTT subscriber failed: ${error instanceof Error ? error.message : String(error)}`));
 const buildInfo = await loadBuildInfo();
+startLocalHotScheduler();
+startLocalColdScheduler();
 
 type BuildInfo = { version: string; commit: string | null };
 
@@ -63,7 +124,7 @@ type DashboardValue = {
   usage: Record<string, unknown>;
 };
 
-type RequestBody = { enabled?: unknown; order?: unknown };
+type RequestBody = { enabled?: unknown; order?: unknown; hostId?: unknown; from?: unknown; to?: unknown; mode?: unknown };
 
 async function loadConfig(): Promise<AppConfig> {
   try {
@@ -87,47 +148,221 @@ async function getQuota(id: ProviderId, force = false): Promise<ProviderResult> 
   return value;
 }
 
+function dateList(from: string, to: string): string[] {
+  const dates: string[] = [];
+  for (let cursor = from; cursor <= to;) {
+    dates.push(cursor);
+    const date = new Date(`${cursor}T12:00:00.000Z`);
+    date.setUTCDate(date.getUTCDate() + 1);
+    cursor = date.toISOString().slice(0, 10);
+  }
+  return dates;
+}
+
+function ccusageVersion(): string | undefined {
+  const value = process.env.CCUSAGE_VERSION?.trim();
+  return value || undefined;
+}
+
+function documentMatchesDate(document: unknown, date: string): boolean {
+  if (!document || typeof document !== "object" || !Array.isArray((document as { daily?: unknown }).daily)) return true;
+  return (document as { daily: unknown[] }).daily.every((row) => {
+    if (!row || typeof row !== "object") return false;
+    const value = row as { date?: unknown; period?: unknown };
+    return (value.date === undefined || value.date === date) && (value.period === undefined || value.period === date);
+  });
+}
+
+async function runLocalUsageJob(range: { from: string; to: string }, category: "hot" | "cold", offline: boolean, timeoutMs: number): Promise<void> {
+  for (const date of dateList(range.from, range.to)) {
+    const result = await runCcusage({
+      binary: localCcusageBinary,
+      range: { from: date, to: date, timezone: usageTimezone },
+      offline,
+      timeoutMs,
+      maxBuffer: localCcusageMaxBuffer,
+    });
+    if (!documentMatchesDate(result.document, date)) throw new Error(`ccusage returned data outside ${date}`);
+    await usageStore.ingest({
+      schemaVersion: 2,
+      hostId: localHostId,
+      date,
+      timezone: usageTimezone,
+      category,
+      runId: randomUUID(),
+      generatedAt: new Date().toISOString(),
+      ...(ccusageVersion() ? { ccusageVersion: ccusageVersion() } : {}),
+      range,
+      data: result.document,
+    });
+  }
+  dashboardCache.clear();
+}
+
+function queueLocalHot(): void {
+  if (localHotPromise) return;
+  const range = localDateRange(2, usageTimezone);
+  localHotPromise = runLocalUsageJob(range, "hot", false, localHotTimeoutMs)
+    .then(() => { localUsageError = null; })
+    .catch((error) => {
+      localUsageError = ccusageErrorMessage(error, localCcusageBinary);
+      dashboardCache.clear();
+      console.error(`Local hot usage refresh failed: ${localUsageError}`);
+    })
+    .finally(() => { localHotPromise = null; });
+}
+
+function startLocalHotScheduler(): void {
+  if (localHotTimer) return;
+  const trigger = () => {
+    if (localHotSchedulePromise) return;
+    localHotSchedulePromise = loadConfig()
+      .then((config) => {
+        if (USAGE_SOURCE_IDS.some((id) => config.usageSources[id].enabled)) queueLocalHot();
+      })
+      .catch((error) => console.error(`Local hot scheduler failed: ${error instanceof Error ? error.message : String(error)}`))
+      .finally(() => { localHotSchedulePromise = null; });
+  };
+  localHotTimer = setInterval(trigger, localHotIntervalMs);
+  trigger();
+}
+
+function queueLocalCold(from: string, to: string, offline: boolean): void {
+  if (localColdPromise) return;
+  localColdPromise = runLocalUsageJob({ from, to }, "cold", offline, localColdTimeoutMs)
+    .then(() => { localUsageError = null; })
+    .catch((error) => {
+      localUsageError = ccusageErrorMessage(error, localCcusageBinary);
+      dashboardCache.clear();
+      console.error(`Local cold usage refresh failed: ${localUsageError}`);
+    })
+    .finally(() => { localColdPromise = null; });
+}
+
+function isCalendarDate(value: unknown): value is string {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const date = new Date(`${value}T00:00:00.000Z`);
+  return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+}
+
+function localHotIsStale(files: Array<{ hostId: string; category: string; generatedAt: string }>): boolean {
+  const latest = files
+    .filter((file) => file.hostId === localHostId && file.category === "hot")
+    .map((file) => Date.parse(file.generatedAt))
+    .filter(Number.isFinite)
+    .sort((a, b) => b - a)[0];
+  return latest === undefined || Date.now() - latest > 10 * 60 * 1000;
+}
+
+function previousDate(value: string): string {
+  const date = new Date(`${value}T12:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() - 1);
+  return date.toISOString().slice(0, 10);
+}
+
+async function scheduleLocalColdDate(): Promise<void> {
+  if (localColdPromise) return;
+  const config = await loadConfig();
+  if (!USAGE_SOURCE_IDS.some((id) => config.usageSources[id].enabled)) return;
+  const rolling = rollingDateRange(usageTimezone, new Date(), localRollingDays);
+  const newestColdDate = previousDate(localDateRange(2, usageTimezone).from);
+  const files = await usageStore.readNormalized(localHostId, rolling.from, newestColdDate);
+  const coveredDates = new Set(files.filter((file) => file.timezone === usageTimezone).map((file) => file.date));
+  for (let date = newestColdDate; date >= rolling.from; date = previousDate(date)) {
+    if (!coveredDates.has(date)) {
+      queueLocalCold(date, date, localColdMode === "offline");
+      return;
+    }
+  }
+}
+
+function startLocalColdScheduler(): void {
+  if (localColdTimer) return;
+  const trigger = () => {
+    if (localColdSchedulePromise) return;
+    localColdSchedulePromise = scheduleLocalColdDate()
+      .catch((error) => console.error(`Local cold scheduler failed: ${error instanceof Error ? error.message : String(error)}`))
+      .finally(() => { localColdSchedulePromise = null; });
+  };
+  localColdTimer = setInterval(trigger, localColdIntervalMs);
+  trigger();
+}
+
+async function buildUsage(url: URL, config: AppConfig) {
+  const range = localDateRange(Number(url.searchParams.get("days") || 30), usageTimezone, url.searchParams.get("range") || "relative");
+  const usageSources = USAGE_SOURCE_IDS.filter((id) => config.usageSources[id].enabled);
+  const normalizedFiles = usageSources.length ? await usageStore.readNormalizedAll(range.from, range.to) : [];
+  if (usageSources.length && localHotIsStale(normalizedFiles)) queueLocalHot();
+  const remoteState = remoteUsageStore.getSnapshot();
+  const configuredStaleSeconds = Number(process.env.MQTT_STALE_AFTER_SECONDS || 900);
+  const staleAfterMs = (Number.isFinite(configuredStaleSeconds) && configuredStaleSeconds > 0 ? configuredStaleSeconds : 900) * 1000;
+  const storedFiles = normalizedFiles.filter((file) => file.timezone === usageTimezone);
+  const storedRecords = storedFiles.flatMap((file) => file.records.map((record) => ({ ...record, hostId: file.hostId })));
+  const records = filterUsageRecords(usageSources, storedRecords);
+  const summary = summarizeUsage(records);
+  const hostIds = new Set<string>([localHostId, ...storedFiles.map((file) => file.hostId), ...Object.keys(remoteState.hosts)]);
+  const hosts = [...hostIds].map((hostId) => {
+    const state = remoteState.hosts[hostId];
+    const files = storedFiles.filter((file) => file.hostId === hostId);
+    const latest = [...files].sort((a, b) => Date.parse(b.generatedAt) - Date.parse(a.generatedAt))[0];
+    const generatedAt = latest?.generatedAt ?? state?.usage?.generatedAt ?? null;
+    const generatedTime = generatedAt ? Date.parse(generatedAt) : NaN;
+    const hostRecords = records.filter((record) => record.hostId === hostId);
+    const isLocal = hostId === localHostId;
+    const ingestError = remotePersistenceErrors.get(hostId) || state?.ingestError || null;
+    const error = ingestError || (isLocal ? localUsageError : null) || state?.error?.error || state?.status?.error || null;
+    const coveredDates = new Set(files.map((file) => file.date));
+    const complete = dateList(range.from, range.to).every((date) => coveredDates.has(date));
+    const stale = !Number.isFinite(generatedTime) || generatedTime > Date.now() + 60_000 || Date.now() - generatedTime > (isLocal ? 10 * 60 * 1000 : staleAfterMs);
+    const status = error ? "error" : state?.status?.status || (hostRecords.length ? "ok" : "unknown");
+    return {
+      hostId,
+      generatedAt,
+      timezone: latest?.timezone ?? state?.usage?.timezone ?? state?.status?.timezone ?? usageTimezone,
+      range: latest?.range ?? state?.usage?.range ?? { from: range.from, to: range.to },
+      status,
+      error,
+      stale,
+      local: isLocal,
+      included: !error && (latest?.timezone ?? state?.usage?.timezone ?? usageTimezone) === usageTimezone,
+      complete,
+      usable: hostRecords.length > 0,
+      disabledReason: error || (hostRecords.length ? null : `No usable usage data reported by ${hostId}`),
+    };
+  });
+  const localUsable = records.some((record) => record.hostId === localHostId);
+  const hostProblem = hosts.some((host) => Boolean(host.error) || host.stale || !host.included || (!host.local && !host.complete)
+    || (!host.local && !["ok", "online"].includes(host.status)));
+  const usageStatus = usageSources.length === 0 ? "disabled" : hostProblem ? (records.length ? "partial" : "error") : "ok";
+  const usageResult = usageSources.length ? {
+    status: usageStatus,
+    error: hosts.find((host) => host.error)?.error ?? null,
+    source: "filesystem",
+    sources: usageSources.map((provider) => ({ provider, status: usageStatus, error: hosts.find((host) => host.error)?.error ?? null })),
+    hosts,
+    records,
+    ...summary,
+  } : { status: "disabled", daily: [], byModel: [], byProvider: [], totalCostUsd: 0, totalTokens: 0, error: null, source: null, sources: [], hosts: [], records: [] };
+  const usage = {
+    ...usageResult,
+    mqtt: { configured: remoteState.configured, connection: remoteState.connection },
+    hosts: usageSources.length ? hosts : [],
+  };
+  return { range, usage: { ...usage, from: range.from, to: range.to, providers: usageSources } };
+}
+
 async function dashboard(url: URL, config: AppConfig) {
-  const range = localDateRange(Number(url.searchParams.get("days") || 30), url.searchParams.get("timezone") || undefined, url.searchParams.get("range") || "relative");
+  const range = localDateRange(Number(url.searchParams.get("days") || 30), usageTimezone, url.searchParams.get("range") || "relative");
   const cacheKey = `${range.from}:${range.to}:${range.timeZone}`;
   const forceRefresh = url.searchParams.get("refresh") === "1";
   const cached = dashboardCache.get(cacheKey);
   if (!forceRefresh && cached && Date.now() - cached.cachedAt < 300_000) return { ...cached.value, cache: { fetchedAt: cached.fetchedAt, expiresAt: new Date(cached.cachedAt + 300_000).toISOString() } };
+  const { usage } = await buildUsage(url, config);
   const enabled = config.providerOrder.filter((id) => config.providers[id].enabled);
-  const quotaEntries = await Promise.all(enabled.map(async (id) => [id, await getQuota(id, true)]));
+  const quotaEntries = await Promise.all(enabled.map(async (id) => [id, await getQuota(id, forceRefresh)]));
   const quotas = Object.fromEntries(quotaEntries);
-  const usageSources = USAGE_SOURCE_IDS.filter((id) => config.usageSources[id].enabled);
-  const remoteState = remoteUsageStore.getSnapshot();
-  const configuredStaleSeconds = Number(process.env.MQTT_STALE_AFTER_SECONDS || 900);
-  const staleAfterMs = (Number.isFinite(configuredStaleSeconds) && configuredStaleSeconds > 0 ? configuredStaleSeconds : 900) * 1000;
-  const remoteInputs = Object.entries(remoteState.hosts)
-    .filter(([hostId]) => hostId !== localHostId)
-    .map(([hostId, state]) => {
-      const generatedAt = state.usage?.generatedAt ?? null;
-      const generatedTime = generatedAt ? Date.parse(generatedAt) : NaN;
-      return {
-        hostId,
-        generatedAt,
-        timezone: state.usage?.timezone ?? state.status?.timezone ?? null,
-        range: state.usage?.range ?? null,
-        status: state.status?.status ?? "unknown",
-        error: state.error?.error ?? state.status?.error ?? null,
-        stale: !Number.isFinite(generatedTime) || generatedTime > Date.now() + 60_000 || Date.now() - generatedTime > staleAfterMs,
-        data: state.usage?.data ?? null,
-      };
-    });
-  const usageResult = usageSources.length ? await readUsageSources(usageSources, range, remoteInputs, localHostId) : { status: "disabled", daily: [], byModel: [], byProvider: [], totalCostUsd: 0, totalTokens: 0, error: null, source: null, sources: [], hosts: [], records: [] };
-  const localUsable = usageResult.records.some((record) => record.hostId === localHostId);
-  const usage = {
-    ...usageResult,
-    mqtt: { configured: remoteState.configured, connection: remoteState.connection },
-    hosts: [
-      { hostId: localHostId, generatedAt: new Date().toISOString(), timezone: range.timeZone, range: { from: range.from, to: range.to }, status: usageResult.error ? "error" : "ok", error: usageResult.error, stale: false, local: true, included: true, complete: true, usable: localUsable, disabledReason: localUsable ? null : usageResult.error || "No usable usage data collected" },
-      ...usageResult.hosts,
-    ],
-  };
   const statuses = Object.fromEntries(await Promise.all(config.providerOrder.map(async (id) => [id, providerStatus({ id, config: config.providers[id], result: quotas[id] ?? { configured: await isProviderConfigured(id) } })])));
-  const value = { version: buildInfo.version, apiVersion: 1, serverNow: new Date().toISOString(), timezone: range.timeZone, providerOrder: config.providerOrder, providers: statuses, quotas, usage: { ...usage, from: range.from, to: range.to, providers: usageSources } };
+  const value = { version: buildInfo.version, apiVersion: 1, serverNow: new Date().toISOString(), timezone: range.timeZone, providerOrder: config.providerOrder, providers: statuses, quotas, usage };
   dashboardCache.set(cacheKey, { cachedAt: Date.now(), fetchedAt: value.serverNow, value });
   return { ...value, cache: { fetchedAt: value.serverNow, expiresAt: new Date(Date.now() + 300_000).toISOString() } };
 }
@@ -144,13 +379,45 @@ async function body(request: import("node:http").IncomingMessage): Promise<Reque
   return value ? JSON.parse(value) : {};
 }
 
+function publishRemoteRefresh(category: "hot" | "cold", from: string, to: string, mode: "online" | "offline"): void {
+  for (const hostId of Object.keys(remoteUsageStore.getSnapshot().hosts)) {
+    if (hostId === localHostId) continue;
+    void remoteUsageStore.publishCommand(hostId, { requestId: randomUUID(), category, from, to, mode });
+  }
+}
+
 async function handleApi(request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse, url: URL): Promise<void> {
   const config = await loadConfig();
   if (request.method === "GET" && url.pathname === "/api/v1/providers") {
     const statuses = Object.fromEntries(await Promise.all(config.providerOrder.map(async (id) => [id, providerStatus({ id, config: config.providers[id], result: { configured: await isProviderConfigured(id) } })])));
     return json(response, 200, { version: buildInfo.version, apiVersion: 1, providerOrder: config.providerOrder, providers: statuses, usageSources: config.usageSources });
   }
+  if (request.method === "GET" && url.pathname === "/api/v1/usage") {
+    const { range, usage } = await buildUsage(url, config);
+    return json(response, 200, { version: buildInfo.version, apiVersion: 1, serverNow: new Date().toISOString(), timezone: usageTimezone, from: range.from, to: range.to, usage });
+  }
   if (request.method === "GET" && url.pathname === "/api/v1/dashboard") return json(response, 200, await dashboard(url, config));
+  if (request.method === "POST" && url.pathname === "/api/v1/usage/refresh") {
+    const range = localDateRange(2, usageTimezone);
+    queueLocalHot();
+    publishRemoteRefresh("hot", range.from, range.to, "online");
+    return json(response, 202, { accepted: true, category: "hot", from: range.from, to: range.to });
+  }
+  if (request.method === "POST" && url.pathname === "/api/v1/usage/cold") {
+    const input = await body(request);
+    const defaultRange = rollingDateRange(usageTimezone);
+    const from = input.from === undefined ? defaultRange.from : input.from;
+    const to = input.to === undefined ? defaultRange.to : input.to;
+    if (!isCalendarDate(from) || !isCalendarDate(to) || from > to) return json(response, 400, { error: "from and to must be an ordered YYYY-MM-DD range" });
+    const mode = input.mode === undefined ? "offline" : input.mode;
+    if (mode !== "online" && mode !== "offline") return json(response, 400, { error: "mode must be online or offline" });
+    if (input.hostId !== undefined && (typeof input.hostId !== "string" || sanitizeHostId(input.hostId) !== input.hostId)) return json(response, 400, { error: "hostId is invalid" });
+    const hostId = input.hostId as string | undefined;
+    if (!hostId || hostId === localHostId) queueLocalCold(from, to, mode === "offline");
+    if (hostId && hostId !== localHostId) void remoteUsageStore.publishCommand(hostId, { requestId: randomUUID(), category: "cold", from, to, mode });
+    if (!hostId) publishRemoteRefresh("cold", from, to, mode);
+    return json(response, 202, { accepted: true, category: "cold", from, to, mode, hostId: hostId || "all" });
+  }
   if (request.method === "GET" && url.pathname === "/api/v1/quotas") {
     const enabled = config.providerOrder.filter((id) => config.providers[id].enabled);
     const entries = await Promise.all(enabled.map(async (id) => [id, await getQuota(id, url.searchParams.get("refresh") === "1")]));
@@ -236,6 +503,13 @@ let shuttingDown = false;
 async function shutdown(): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
+  if (localHotTimer) clearInterval(localHotTimer);
+  if (localColdTimer) clearInterval(localColdTimer);
+  localHotTimer = null;
+  localColdTimer = null;
+  await localHotSchedulePromise?.catch(() => undefined);
+  await localColdSchedulePromise?.catch(() => undefined);
+  await Promise.all([localHotPromise, localColdPromise].map((job) => job?.catch(() => undefined)));
   await remoteUsageStore.stop().catch((error) => console.error(`Remote MQTT shutdown failed: ${error instanceof Error ? error.message : String(error)}`));
   server.close(() => process.exit(0));
 }

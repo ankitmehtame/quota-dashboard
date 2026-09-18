@@ -4,27 +4,36 @@ import { createHash, randomUUID } from "node:crypto";
 import mqtt, { type IClientOptions, type MqttClient } from "mqtt";
 
 import {
+  makeCommandTopic,
   makeErrorMessage,
   makeMqttTopics,
   makeStatusMessage,
   makeUsageSnapshot,
+  makeUsageTopic,
+  parseMqttCommand,
   sanitizeHostId,
-  type MqttDateRange,
+  type MqttCategory,
+  type MqttCommandMode,
   type MqttMetadata,
+  type MqttDateRange,
+  type ParsedMqttCommand,
 } from "./protocol.js";
 import {
   ccusageErrorMessage,
+  DEFAULT_COLD_CCUSAGE_TIMEOUT_MS,
   DEFAULT_CCUSAGE_MAX_BUFFER,
-  DEFAULT_CCUSAGE_TIMEOUT_MS,
-  DEFAULT_ROLLING_DAYS,
+  DEFAULT_HOT_CCUSAGE_TIMEOUT_MS,
   rollingDateRange,
   runCcusage,
+  type CcusageRange,
   type ExecFileRunner,
 } from "./ccusage.js";
 
 export const DEFAULT_MQTT_URL = "mqtt://127.0.0.1:1883";
 export const DEFAULT_MQTT_PREFIX = "quota-dashboard/v1";
-export const DEFAULT_PUBLISH_INTERVAL_MS = 5 * 60 * 1000;
+export const DEFAULT_PUBLISH_INTERVAL_MS = 10 * 60 * 1000;
+export const DEFAULT_COLD_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const MAX_ACTIVE_COMMANDS = 256;
 
 export type RemotePublisherConfig = {
   mqttUrl: string;
@@ -34,11 +43,23 @@ export type RemotePublisherConfig = {
   ccusageBinary: string;
   rollingDays: number;
   publishIntervalMs: number;
-  ccusageTimeoutMs: number;
+  /** Kept as an optional compatibility input. New callers should use hotTimeoutMs. */
+  ccusageTimeoutMs?: number;
+  hotTimeoutMs?: number;
+  coldTimeoutMs?: number;
+  coldIntervalMs?: number;
   ccusageMaxBuffer: number;
+  coldMode?: MqttCommandMode;
   username?: string;
   password?: string;
   ccusageVersion?: string;
+};
+
+type NormalizedPublisherConfig = Omit<RemotePublisherConfig, "hotTimeoutMs" | "coldTimeoutMs" | "coldIntervalMs" | "coldMode"> & {
+  hotTimeoutMs: number;
+  coldTimeoutMs: number;
+  coldIntervalMs: number;
+  coldMode: MqttCommandMode;
 };
 
 export type PublisherDependencies = {
@@ -47,6 +68,17 @@ export type PublisherDependencies = {
   now?: () => Date;
   execFileRunner?: ExecFileRunner;
   log?: (message: string) => void;
+  /** Injectable observation seam for command handling without touching MQTT callbacks. */
+  onCommand?: (command: ParsedMqttCommand) => void;
+};
+
+type UsageJob = {
+  range: MqttDateRange;
+  category: MqttCategory;
+  mode: MqttCommandMode;
+  runId: string;
+  commandRequestId?: string;
+  scheduledDate?: string;
 };
 
 /** Redact credentials, query parameters, and path from an MQTT URL for safe logging. */
@@ -60,9 +92,7 @@ export function sanitizeMqttUrl(rawUrl: string): string {
     return `${parsed.protocol}//${parsed.host}`;
   } catch {
     const schemeMatch = trimmed.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):\/\//);
-    if (schemeMatch) {
-      return `${schemeMatch[1].toLowerCase()}://[redacted]`;
-    }
+    if (schemeMatch) return `${schemeMatch[1].toLowerCase()}://[redacted]`;
     return "[redacted-url]";
   }
 }
@@ -76,6 +106,7 @@ export function readRemotePublisherConfig(env: NodeJS.ProcessEnv = process.env):
   const hostId = sanitizeHostId(env.MQTT_HOST_ID?.trim() || env.HOST_ID?.trim() || os.hostname());
   const timezone = env.CCUSAGE_TIMEZONE?.trim() || env.MQTT_TIMEZONE?.trim() || env.TIMEZONE?.trim() || env.TZ?.trim() || Intl.DateTimeFormat().resolvedOptions().timeZone;
   new Intl.DateTimeFormat("en-CA", { timeZone: timezone }).format();
+  const legacyTimeout = positiveNumber(env.CCUSAGE_TIMEOUT_MS, DEFAULT_HOT_CCUSAGE_TIMEOUT_MS);
 
   return {
     mqttUrl: env.MQTT_URL?.trim() || env.MQTT_BROKER_URL?.trim() || env.MQTT_BROKER?.trim() || DEFAULT_MQTT_URL,
@@ -83,17 +114,20 @@ export function readRemotePublisherConfig(env: NodeJS.ProcessEnv = process.env):
     hostId,
     timezone,
     ccusageBinary: env.CCUSAGE_BIN?.trim() || "ccusage",
-    rollingDays: Math.max(1, Math.trunc(positiveNumber(env.CCUSAGE_DAYS, DEFAULT_ROLLING_DAYS))),
+    rollingDays: Math.max(1, Math.trunc(positiveNumber(env.CCUSAGE_DAYS, 370))),
     publishIntervalMs: positiveNumber(env.MQTT_INTERVAL_MS || env.MQTT_PUBLISH_INTERVAL_MS, DEFAULT_PUBLISH_INTERVAL_MS),
-    ccusageTimeoutMs: positiveNumber(env.CCUSAGE_TIMEOUT_MS, DEFAULT_CCUSAGE_TIMEOUT_MS),
+    hotTimeoutMs: positiveNumber(env.CCUSAGE_HOT_TIMEOUT_MS, legacyTimeout),
+    coldTimeoutMs: positiveNumber(env.CCUSAGE_COLD_TIMEOUT_MS, DEFAULT_COLD_CCUSAGE_TIMEOUT_MS),
+    coldIntervalMs: positiveNumber(env.CCUSAGE_COLD_INTERVAL_MS, DEFAULT_COLD_INTERVAL_MS),
     ccusageMaxBuffer: positiveNumber(env.CCUSAGE_MAX_BUFFER, DEFAULT_CCUSAGE_MAX_BUFFER),
+    coldMode: env.CCUSAGE_COLD_MODE?.trim().toLowerCase() === "online" ? "online" : "offline",
     ...(env.MQTT_USERNAME !== undefined && env.MQTT_USERNAME !== "" ? { username: env.MQTT_USERNAME } : {}),
     ...(env.MQTT_PASSWORD !== undefined && env.MQTT_PASSWORD !== "" ? { password: env.MQTT_PASSWORD } : {}),
     ...(env.CCUSAGE_VERSION?.trim() ? { ccusageVersion: env.CCUSAGE_VERSION.trim() } : {}),
   };
 }
 
-function mqttOptions(config: RemotePublisherConfig, will: string, topics: ReturnType<typeof makeMqttTopics>): IClientOptions {
+function mqttOptions(config: NormalizedPublisherConfig, will: string): IClientOptions {
   const hostHash = createHash("sha256").update(config.hostId).digest("hex").slice(0, 12);
   const options: IClientOptions = {
     clientId: `quota-dashboard-remote-${config.hostId.slice(0, 80)}-${hostHash}`,
@@ -101,7 +135,7 @@ function mqttOptions(config: RemotePublisherConfig, will: string, topics: Return
     connectTimeout: 30_000,
     clean: true,
     will: {
-      topic: topics.status,
+      topic: makeMqttTopics(config.mqttPrefix, config.hostId).status,
       payload: will,
       qos: 1,
       retain: true,
@@ -118,9 +152,23 @@ function publish(client: MqttClient, topic: string, payload: string, retain = tr
   });
 }
 
-function metadata(config: RemotePublisherConfig, range: MqttDateRange, now: Date, publisherId: string, connectionId: string, sequence: number): MqttMetadata {
+function subscribe(client: MqttClient, topic: string): Promise<void> {
+  const candidate = client as MqttClient & { subscribe?: MqttClient["subscribe"] };
+  if (typeof candidate.subscribe !== "function") return Promise.resolve();
+  return new Promise((resolve, reject) => candidate.subscribe(topic, { qos: 1 }, (error) => error ? reject(error) : resolve()));
+}
+
+function metadata(
+  config: NormalizedPublisherConfig,
+  date: string,
+  category: MqttCategory,
+  runId: string,
+  now: Date,
+  publisherId: string,
+  connectionId: string,
+  sequence: number,
+): Omit<MqttMetadata, "schemaVersion"> {
   return {
-    schemaVersion: 1,
     publisherId,
     connectionId,
     sequence,
@@ -128,12 +176,52 @@ function metadata(config: RemotePublisherConfig, range: MqttDateRange, now: Date
     generatedAt: now.toISOString(),
     ...(config.ccusageVersion ? { ccusageVersion: config.ccusageVersion } : {}),
     timezone: config.timezone,
-    range,
+    date,
+    category,
+    runId,
   };
 }
 
+function dateList(range: MqttDateRange): string[] {
+  const dates: string[] = [];
+  const cursor = new Date(`${range.from}T12:00:00.000Z`);
+  const end = new Date(`${range.to}T12:00:00.000Z`);
+  while (cursor <= end) {
+    dates.push(cursor.toISOString().slice(0, 10));
+    cursor.setUTCDate(cursor.getUTCDate() + 1);
+  }
+  return dates;
+}
+
+function previousDate(value: string): string {
+  const date = new Date(`${value}T12:00:00.000Z`);
+  date.setUTCDate(date.getUTCDate() - 1);
+  return date.toISOString().slice(0, 10);
+}
+
+function validDateRange(range: MqttDateRange): boolean {
+  const valid = (value: string) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const date = new Date(`${value}T00:00:00.000Z`);
+    return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
+  };
+  return valid(range.from) && valid(range.to) && range.from <= range.to;
+}
+
+function documentMatchesDate(document: unknown, date: string): boolean {
+  if (!document || typeof document !== "object" || Array.isArray(document)) return false;
+  const daily = (document as Record<string, unknown>).daily;
+  if (daily === undefined) return true;
+  if (!Array.isArray(daily)) return false;
+  return daily.every((row) => {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return false;
+    const rowDate = (row as Record<string, unknown>).date ?? (row as Record<string, unknown>).period;
+    return rowDate === undefined || rowDate === date;
+  });
+}
+
 export class RemoteMqttPublisher {
-  private readonly config: RemotePublisherConfig;
+  private readonly config: NormalizedPublisherConfig;
   private readonly dependencies: Required<Pick<PublisherDependencies, "connect" | "runCcusage" | "now" | "log">> & PublisherDependencies;
   private readonly topics;
   private readonly publisherId = randomUUID();
@@ -141,13 +229,26 @@ export class RemoteMqttPublisher {
   private sequence = 0;
   private client: MqttClient | null = null;
   private timer: NodeJS.Timeout | null = null;
-  private inFlight: Promise<void> | null = null;
+  private coldTimer: NodeJS.Timeout | null = null;
+  private hotInFlight: Promise<void> | null = null;
+  private coldInFlight: Promise<void> | null = null;
+  private readonly hotQueue: UsageJob[] = [];
+  private readonly coldQueue: UsageJob[] = [];
+  private readonly commandRequestIds = new Set<string>();
+  private readonly scheduledColdDates = new Set<string>();
   private stopped = false;
   private stopPromise: Promise<void> | null = null;
   private connected = false;
 
   constructor(config = readRemotePublisherConfig(), dependencies: PublisherDependencies = {}) {
-    this.config = { ...config, hostId: sanitizeHostId(config.hostId) };
+    this.config = {
+      ...config,
+      hostId: sanitizeHostId(config.hostId),
+      hotTimeoutMs: config.hotTimeoutMs ?? config.ccusageTimeoutMs ?? DEFAULT_HOT_CCUSAGE_TIMEOUT_MS,
+      coldTimeoutMs: config.coldTimeoutMs ?? DEFAULT_COLD_CCUSAGE_TIMEOUT_MS,
+      coldIntervalMs: config.coldIntervalMs ?? DEFAULT_COLD_INTERVAL_MS,
+      coldMode: config.coldMode ?? "offline",
+    };
     this.dependencies = {
       connect: mqtt.connect,
       runCcusage,
@@ -159,8 +260,7 @@ export class RemoteMqttPublisher {
   }
 
   private log(message: string): void {
-    const timestamp = this.dependencies.now().toISOString();
-    this.dependencies.log(`[${timestamp}] ${message}`);
+    this.dependencies.log(`[${this.dependencies.now().toISOString()}] ${message}`);
   }
 
   get mqttTopics(): ReturnType<typeof makeMqttTopics> {
@@ -170,32 +270,82 @@ export class RemoteMqttPublisher {
   async start(): Promise<void> {
     if (this.client) return;
     this.stopped = false;
-    const range = this.range();
-    const now = this.dependencies.now();
-    const offline = makeStatusMessage(this.nextMetadata(range, now), "offline");
-    const client = this.dependencies.connect(this.config.mqttUrl, mqttOptions(this.config, JSON.stringify(offline), this.topics));
+    const today = rollingDateRange(this.config.timezone, this.dependencies.now(), 1).to;
+    const offline = makeStatusMessage(this.nextMetadata(today, "hot", "lifecycle"), "offline");
+    const client = this.dependencies.connect(this.config.mqttUrl, mqttOptions(this.config, JSON.stringify(offline)));
     this.client = client;
     client.on("connect", this.onConnect);
+    client.on("message", this.onMessage);
     client.on("reconnect", this.onReconnect);
     client.on("offline", this.onOffline);
     client.on("error", this.onError);
   }
 
-  /** Publish one snapshot, returning false when another run already owns the slot. */
-  async publishSnapshot(): Promise<boolean> {
-    if (this.inFlight || this.stopped || !this.client) return false;
-    const client = this.client;
-    const task = this.publishSnapshotNow(client);
-    this.inFlight = task;
+  /** Run today's and yesterday's hot jobs, with at most one hot job in flight. */
+  async publishHot(): Promise<boolean> {
+    if (this.hotInFlight || this.stopped || !this.client) return false;
+    const range = rollingDateRange(this.config.timezone, this.dependencies.now(), 2);
+    const task = this.startJob({ range, category: "hot", mode: "online", runId: randomUUID() }, this.config.hotTimeoutMs);
+    this.hotInFlight = task;
     try {
       await task;
       return true;
     } catch (error) {
-      this.log(`MQTT publish failed: ${error instanceof Error ? error.message : String(error)}`);
+      this.log(`Hot ccusage job failed: ${error instanceof Error ? error.message : String(error)}`);
       return false;
     } finally {
-      if (this.inFlight === task) this.inFlight = null;
+      if (this.hotInFlight === task) this.hotInFlight = null;
+      void this.drainHotQueue();
     }
+  }
+
+  /** Compatibility name for callers that used the host-wide snapshot method. */
+  async publishSnapshot(): Promise<boolean> {
+    return this.publishHot();
+  }
+
+  /** Queue a cold date range. The default is offline mode and one cold job runs at a time. */
+  requestCold(from: string, to = from, mode: MqttCommandMode = this.config.coldMode, requestId: string = randomUUID()): boolean {
+    if (!validDateRange({ from, to })) return false;
+    return this.enqueueJob({ range: { from, to }, category: "cold", mode, runId: requestId }, false);
+  }
+
+  /** Run one cold job immediately when the cold slot is free. */
+  async publishCold(from: string, to = from, mode: MqttCommandMode = this.config.coldMode): Promise<boolean> {
+    if (!validDateRange({ from, to }) || this.coldInFlight || this.stopped || !this.client) return false;
+    const task = this.startJob({ range: { from, to }, category: "cold", mode, runId: randomUUID() }, this.config.coldTimeoutMs);
+    this.coldInFlight = task;
+    try {
+      await task;
+      return true;
+    } finally {
+      if (this.coldInFlight === task) this.coldInFlight = null;
+      void this.drainColdQueue();
+    }
+  }
+
+  /** Queue the older part of the configured rolling history for a scheduled cold pass. */
+  scheduleColdHistory(): boolean {
+    if (this.config.rollingDays <= 2) return false;
+    const yesterday = rollingDateRange(this.config.timezone, this.dependencies.now(), 2).from;
+    const staleDate = previousDate(yesterday);
+    if (this.scheduledColdDates.has(staleDate)) return false;
+    return this.enqueueJob({ range: { from: staleDate, to: staleDate }, category: "cold", mode: this.config.coldMode, runId: `scheduled-${staleDate}`, scheduledDate: staleDate }, false);
+  }
+
+  /** Feed a command from MQTT without doing async work in the MQTT callback. */
+  processCommand(topic: string, payload: Buffer | Uint8Array | string): boolean {
+    const command = parseMqttCommand(topic, payload, this.config.mqttPrefix);
+    if (!command || command.hostId !== this.config.hostId || this.commandRequestIds.has(command.requestId) || this.commandRequestIds.size >= MAX_ACTIVE_COMMANDS) return false;
+    this.commandRequestIds.add(command.requestId);
+    try {
+      this.dependencies.onCommand?.(command);
+    } catch (error) {
+      this.log(`Command handler failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const accepted = this.enqueueJob({ range: { from: command.from, to: command.to }, category: command.category, mode: command.mode, runId: command.requestId, commandRequestId: command.requestId }, command.category === "hot");
+    if (!accepted) this.commandRequestIds.delete(command.requestId);
+    return accepted;
   }
 
   async stop(): Promise<void> {
@@ -204,23 +354,103 @@ export class RemoteMqttPublisher {
     return this.stopPromise;
   }
 
+  private enqueueJob(job: UsageJob, hot: boolean): boolean {
+    if (this.stopped && !this.client) return false;
+    const queue = hot ? this.hotQueue : this.coldQueue;
+    if (queue.some((entry) => entry.runId === job.runId)) return false;
+    if (job.scheduledDate && this.scheduledColdDates.has(job.scheduledDate)) return false;
+    if (job.scheduledDate) this.scheduledColdDates.add(job.scheduledDate);
+    queue.push(job);
+    if (hot) void this.drainHotQueue();
+    else void this.drainColdQueue();
+    return true;
+  }
+
+  private async drainHotQueue(): Promise<void> {
+    if (this.hotInFlight || this.stopped || !this.client) return;
+    const job = this.hotQueue.shift();
+    if (!job) return;
+    const task = this.startJob(job, this.config.hotTimeoutMs);
+    this.hotInFlight = task;
+    await task.catch((error) => this.log(`Hot ccusage job failed: ${error instanceof Error ? error.message : String(error)}`));
+    if (this.hotInFlight === task) this.hotInFlight = null;
+    if (job.commandRequestId) this.commandRequestIds.delete(job.commandRequestId);
+    void this.drainHotQueue();
+  }
+
+  private async drainColdQueue(): Promise<void> {
+    if (this.coldInFlight || this.stopped || !this.client) return;
+    const job = this.coldQueue.shift();
+    if (!job) return;
+    const task = this.startJob(job, this.config.coldTimeoutMs);
+    this.coldInFlight = task;
+    await task.catch((error) => this.log(`Cold ccusage job failed: ${error instanceof Error ? error.message : String(error)}`));
+    if (this.coldInFlight === task) this.coldInFlight = null;
+    if (job.scheduledDate) this.scheduledColdDates.delete(job.scheduledDate);
+    if (job.commandRequestId) this.commandRequestIds.delete(job.commandRequestId);
+    void this.drainColdQueue();
+  }
+
+  private async startJob(job: UsageJob, timeoutMs: number): Promise<void> {
+    if (!this.client) return;
+    let currentDate = job.range.from;
+    try {
+      for (const date of dateList(job.range)) {
+        currentDate = date;
+        const range: CcusageRange = { from: date, to: date, timezone: this.config.timezone };
+        const result = await this.dependencies.runCcusage({
+          binary: this.config.ccusageBinary,
+          range,
+          timeoutMs,
+          maxBuffer: this.config.ccusageMaxBuffer,
+          offline: job.mode === "offline",
+          runner: this.dependencies.execFileRunner,
+        });
+        if (!documentMatchesDate(result.document, date)) throw new Error(`ccusage returned data outside ${date}`);
+        if (this.stopped || !this.client) return;
+        const message = makeUsageSnapshot(this.nextMetadata(date, job.category, job.runId), result.document);
+        await publish(this.client, makeUsageTopic(this.config.mqttPrefix, this.config.hostId, date), JSON.stringify(message));
+      }
+      if (!this.stopped && this.client) {
+        const statusMetadata = this.nextMetadata(job.range.to, job.category, job.runId);
+        await publish(this.client, this.topics.status, JSON.stringify(makeStatusMessage(statusMetadata, "ok")));
+        await publish(this.client, this.topics.error, JSON.stringify(makeErrorMessage(statusMetadata, null)));
+      }
+    } catch (error) {
+      if (this.stopped || !this.client) return;
+      const message = ccusageErrorMessage(error, this.config.ccusageBinary).slice(0, 16_384);
+      const errorMetadata = this.nextMetadata(currentDate, job.category, job.runId);
+      await publish(this.client, this.topics.status, JSON.stringify(makeStatusMessage(errorMetadata, "error", message)));
+      await publish(this.client, this.topics.error, JSON.stringify(makeErrorMessage(errorMetadata, message)));
+    }
+  }
+
+  private nextMetadata(date: string, category: MqttCategory, runId: string, now = this.dependencies.now()): Omit<MqttMetadata, "schemaVersion"> {
+    this.sequence += 1;
+    return metadata(this.config, date, category, runId, now, this.publisherId, this.connectionId, this.sequence);
+  }
+
   private async stopNow(): Promise<void> {
     this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
-    if (this.inFlight) await this.inFlight.catch(() => undefined);
+    if (this.coldTimer) clearInterval(this.coldTimer);
+    this.coldTimer = null;
+    await Promise.all([this.hotInFlight?.catch(() => undefined), this.coldInFlight?.catch(() => undefined)]);
     const client = this.client;
     this.client = null;
     const wasConnected = this.connected;
     this.connected = false;
     if (!client) return;
     client.off("connect", this.onConnect);
+    client.off("message", this.onMessage);
     client.off("reconnect", this.onReconnect);
     client.off("offline", this.onOffline);
     client.off("error", this.onError);
     if (wasConnected) {
       try {
-        await publish(client, this.topics.status, JSON.stringify(makeStatusMessage(this.nextMetadata(this.range()), "offline")));
+        const date = rollingDateRange(this.config.timezone, this.dependencies.now(), 1).to;
+        await publish(client, this.topics.status, JSON.stringify(makeStatusMessage(this.nextMetadata(date, "hot", "lifecycle"), "offline")));
       } catch (error) {
         this.log(`MQTT offline status failed: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -228,55 +458,24 @@ export class RemoteMqttPublisher {
     await new Promise<void>((resolve, reject) => client.end(false, {}, (error) => error ? reject(error) : resolve()));
   }
 
-  private range(): MqttDateRange {
-    const range = rollingDateRange(this.config.timezone, this.dependencies.now(), this.config.rollingDays);
-    return { from: range.from, to: range.to };
-  }
-
-  private nextMetadata(range: MqttDateRange, now = this.dependencies.now()): MqttMetadata {
-    this.sequence += 1;
-    return metadata(this.config, range, now, this.publisherId, this.connectionId, this.sequence);
-  }
-
-  private async publishSnapshotNow(client: MqttClient): Promise<void> {
-    const commandRange = rollingDateRange(this.config.timezone, this.dependencies.now(), this.config.rollingDays);
-    const range = { from: commandRange.from, to: commandRange.to };
-    try {
-      const result = await this.dependencies.runCcusage({
-        binary: this.config.ccusageBinary,
-        range: commandRange,
-        timeoutMs: this.config.ccusageTimeoutMs,
-        maxBuffer: this.config.ccusageMaxBuffer,
-        runner: this.dependencies.execFileRunner,
-      });
-      if (this.stopped) return;
-      const snapshotMetadata = this.nextMetadata(range);
-      await publish(client, this.topics.usage, JSON.stringify(makeUsageSnapshot(snapshotMetadata, result.document)));
-      await publish(client, this.topics.status, JSON.stringify(makeStatusMessage(snapshotMetadata, "ok")));
-      await publish(client, this.topics.error, JSON.stringify(makeErrorMessage(snapshotMetadata, null)));
-    } catch (error) {
-      if (this.stopped) return;
-      const message = ccusageErrorMessage(error, this.config.ccusageBinary).slice(0, 16_384);
-      const errorMetadata = this.nextMetadata(range);
-      await publish(client, this.topics.status, JSON.stringify(makeStatusMessage(errorMetadata, "error", message)));
-      await publish(client, this.topics.error, JSON.stringify(makeErrorMessage(errorMetadata, message)));
-    }
-  }
-
   private readonly onConnect = (): void => {
     if (this.stopped || !this.client || this.connected) return;
     this.connected = true;
     this.log(`MQTT connected to ${sanitizeMqttUrl(this.config.mqttUrl)}`);
     const client = this.client;
-    if (!this.timer) {
-      this.timer = setInterval(() => {
-        void this.publishSnapshot();
-      }, this.config.publishIntervalMs);
-    }
-    const status = makeStatusMessage(this.nextMetadata(this.range()), "online");
-    void publish(client, this.topics.status, JSON.stringify(status))
-      .then(() => this.publishSnapshot())
+    if (!this.timer) this.timer = setInterval(() => void this.publishHot(), this.config.publishIntervalMs);
+    if (!this.coldTimer) this.coldTimer = setInterval(() => this.scheduleColdHistory(), this.config.coldIntervalMs);
+    void subscribe(client, makeCommandTopic(this.config.mqttPrefix, this.config.hostId))
+      .then(() => publish(client, this.topics.status, JSON.stringify(makeStatusMessage(this.nextMetadata(rollingDateRange(this.config.timezone, this.dependencies.now(), 1).to, "hot", "lifecycle"), "online"))))
+      .then(() => {
+        this.scheduleColdHistory();
+        return this.publishHot();
+      })
       .catch((error: unknown) => this.log(`MQTT reconnect publish failed: ${error instanceof Error ? error.message : String(error)}`));
+  };
+
+  private readonly onMessage = (topic: string, payload: Buffer): void => {
+    this.processCommand(topic, payload);
   };
 
   private readonly onError = (error: Error): void => {
@@ -293,10 +492,10 @@ export class RemoteMqttPublisher {
     this.connected = false;
     this.log("MQTT reconnecting...");
     this.connectionId = randomUUID();
-    const offline = makeStatusMessage(this.nextMetadata(this.range()), "offline");
+    const date = rollingDateRange(this.config.timezone, this.dependencies.now(), 1).to;
     this.client.options.will = {
       topic: this.topics.status,
-      payload: JSON.stringify(offline),
+      payload: JSON.stringify(makeStatusMessage(this.nextMetadata(date, "hot", "lifecycle"), "offline")),
       qos: 1,
       retain: true,
     };

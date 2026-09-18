@@ -9,6 +9,12 @@ test("uses daily JSON by-agent with the configured date range and timezone", () 
   ]);
 });
 
+test("adds offline mode only when requested", () => {
+  const range = { from: "2026-09-13", to: "2026-09-13", timezone: "UTC" };
+  assert.equal(ccusageArgs(range).at(-1), "UTC");
+  assert.equal(ccusageArgs(range, { offline: true }).at(-1), "--offline");
+});
+
 test("calculates an inclusive rolling 370-day range in the configured timezone", () => {
   assert.deepEqual(rollingDateRange("Asia/Singapore", new Date("2026-09-13T00:30:00.000Z")), {
     from: "2025-09-09",
@@ -30,4 +36,20 @@ test("parses stdout without modifying the JSON document", async () => {
     },
   });
   assert.deepEqual(result.document, JSON.parse(stdout));
+});
+
+test("passes offline mode and the caller timeout through to ccusage", async () => {
+  await runCcusage({
+    binary: "ccusage-test",
+    range: { from: "2026-09-13", to: "2026-09-13", timezone: "UTC" },
+    timeoutMs: 30 * 60 * 1000,
+    maxBuffer: 1234,
+    offline: true,
+    runner: (_file, args, options, callback) => {
+      assert.equal(args.at(-1), "--offline");
+      assert.equal(options.timeout, 30 * 60 * 1000);
+      assert.equal(options.maxBuffer, 1234);
+      callback(null, "{}", "");
+    },
+  });
 });

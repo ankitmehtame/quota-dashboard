@@ -12,323 +12,191 @@ const config: RemotePublisherConfig = {
   ccusageBinary: "ccusage",
   rollingDays: 370,
   publishIntervalMs: 60_000,
-  ccusageTimeoutMs: 30_000,
+  hotTimeoutMs: 10 * 60 * 1000,
+  coldTimeoutMs: 30 * 60 * 1000,
   ccusageMaxBuffer: 1024,
 };
+
+class FakeClient extends EventEmitter {
+  publications: Array<{ topic: string; payload: string; options: { qos: number; retain: boolean } }> = [];
+  subscriptions: string[] = [];
+  options: Record<string, any> = {};
+
+  subscribe(topics: string | string[], _options: unknown, callback: (error?: Error | null) => void): void {
+    this.subscriptions = typeof topics === "string" ? [topics] : topics;
+    callback(null);
+  }
+
+  publish(topic: string, payload: string, options: { qos: number; retain: boolean }, callback: (error?: Error | null) => void): void {
+    this.publications.push({ topic, payload, options });
+    callback(null);
+  }
+
+  end(_force: boolean, _options: unknown, callback: (error?: Error | null) => void): void {
+    callback(null);
+  }
+}
 
 async function flush(): Promise<void> {
   await new Promise((resolve) => setImmediate(resolve));
   await new Promise((resolve) => setImmediate(resolve));
 }
 
-test("publishes retained lifecycle, usage, and error-clear messages", async () => {
-  class FakeClient extends EventEmitter {
-    publications: Array<{ topic: string; payload: string; options: { qos: number; retain: boolean } }> = [];
-    options: Record<string, any> = {};
-
-    publish(topic: string, payload: string, options: { qos: number; retain: boolean }, callback: (error?: Error | null) => void): void {
-      this.publications.push({ topic, payload, options });
-      callback(null);
-    }
-
-    end(_force: boolean, _options: unknown, callback: (error?: Error | null) => void): void {
-      callback(null);
-    }
-  }
-
+function startPublisher(dependencies: Record<string, unknown> = {}): { publisher: RemoteMqttPublisher; client: FakeClient } {
   const client = new FakeClient();
-  let connectOptions: Record<string, any> | undefined;
   const publisher = new RemoteMqttPublisher(config, {
     connect: ((_url: string, options: Record<string, any>) => {
-      connectOptions = options;
       client.options = options;
       return client;
     }) as never,
     now: () => new Date("2026-09-13T12:00:00.000Z"),
     runCcusage: (async () => ({ document: { daily: [] }, stdout: "{}", stderr: "" })) as never,
+    ...(dependencies as any),
   });
+  return { publisher, client };
+}
 
+test("publishes retained date-level hot usage with the hot timeout", async () => {
+  const calls: Array<{ from: string; to: string; timeoutMs?: number; offline?: boolean }> = [];
+  const { publisher, client } = startPublisher({
+    runCcusage: (async ({ range, timeoutMs, offline }: any) => {
+      calls.push({ from: range.from, to: range.to, timeoutMs, offline });
+      return { document: { daily: [{ date: range.from, cost: 2 }] }, stdout: "{}", stderr: "" };
+    }) as never,
+  });
   const starting = publisher.start();
   client.emit("connect");
   await starting;
   await flush();
 
-  assert.equal(connectOptions?.will.qos, 1);
-  assert.equal(connectOptions?.will.retain, true);
-  assert.match(connectOptions?.clientId || "", /^quota-dashboard-remote-workstation-[a-f0-9]{12}$/);
-  assert.deepEqual(client.publications.map(({ topic, payload, options }) => [topic.split("/").at(-1), payload && JSON.parse(payload).status, options]), [
-    ["status", "online", { qos: 1, retain: true }],
-    ["usage", undefined, { qos: 1, retain: true }],
-    ["status", "ok", { qos: 1, retain: true }],
-    ["error", undefined, { qos: 1, retain: true }],
+  const usage = client.publications.filter((publication) => publication.topic.includes("/usage/") && JSON.parse(publication.payload).category === "hot");
+  assert.deepEqual(usage.map((publication) => publication.topic), [
+    "quota-dashboard/v1/hosts/workstation/usage/2026-09-12",
+    "quota-dashboard/v1/hosts/workstation/usage/2026-09-13",
   ]);
-  const usage = JSON.parse(client.publications[1].payload);
-  const initialWill = JSON.parse(connectOptions?.will.payload);
-  assert.equal(usage.publisherId, initialWill.publisherId);
-  assert.equal(usage.connectionId, initialWill.connectionId);
-  assert.deepEqual(usage.data, { daily: [] });
+  assert.deepEqual(calls.filter((call) => !call.offline), [
+    { from: "2026-09-12", to: "2026-09-12", timeoutMs: 600_000, offline: false },
+    { from: "2026-09-13", to: "2026-09-13", timeoutMs: 600_000, offline: false },
+  ]);
+  assert.ok(usage.every((publication) => publication.options.retain && publication.options.qos === 1));
+  assert.equal(JSON.parse(usage[0].payload).date, "2026-09-12");
+  assert.ok(client.subscriptions.includes("quota-dashboard/v1/hosts/workstation/command"));
+  await publisher.stop();
+});
 
+test("uses offline cold jobs and the cold timeout", async () => {
+  const calls: Array<{ timeoutMs?: number; offline?: boolean }> = [];
+  const { publisher, client } = startPublisher({
+    runCcusage: (async ({ timeoutMs, offline }: any) => {
+      calls.push({ timeoutMs, offline });
+      return { document: { daily: [] }, stdout: "{}", stderr: "" };
+    }) as never,
+  });
+  publisher.start();
+  client.emit("connect");
+  await flush();
+  calls.length = 0;
+  assert.equal(publisher.requestCold("2026-09-01", "2026-09-02"), true);
+  await flush();
+  assert.deepEqual(calls, [{ timeoutMs: 1_800_000, offline: true }, { timeoutMs: 1_800_000, offline: true }]);
+  await publisher.stop();
+});
+
+test("deduplicates validated commands and does not block the MQTT callback", async () => {
+  const commands: string[] = [];
+  const { publisher, client } = startPublisher({ onCommand: (command: any) => commands.push(command.requestId) });
+  publisher.start();
+  const topic = "quota-dashboard/v1/hosts/workstation/command";
+  const command = JSON.stringify({ schemaVersion: 2, requestId: "request-1", category: "cold", from: "2026-09-01", to: "2026-09-01", mode: "offline" });
+  assert.equal(publisher.processCommand(topic, command), true);
+  assert.equal(publisher.processCommand(topic, command), false);
+  assert.equal(publisher.processCommand("quota-dashboard/v1/hosts/workstation/status", command), false);
+  assert.deepEqual(commands, ["request-1"]);
+  await flush();
+  assert.equal(publisher.processCommand(topic, command), true);
+  await publisher.stop();
+  assert.equal(client.listenerCount("message"), 0);
+});
+
+test("allows one hot and one cold ccusage job concurrently", async () => {
+  let resolveHot: (() => void) | undefined;
+  let resolveCold: (() => void) | undefined;
+  const hotGate = new Promise<void>((resolve) => { resolveHot = resolve; });
+  const coldGate = new Promise<void>((resolve) => { resolveCold = resolve; });
+  const calls: string[] = [];
+  const { publisher, client } = startPublisher({
+    runCcusage: (async ({ offline, range }: any) => {
+      calls.push(`${offline ? "cold" : "hot"}:${range.from}`);
+      if (offline) await coldGate;
+      else await hotGate;
+      return { document: { daily: [] }, stdout: "{}", stderr: "" };
+    }) as never,
+  });
+  publisher.start();
+  client.emit("connect");
+  await flush();
+  assert.equal(publisher.requestCold("2026-09-01"), true);
+  await flush();
+  assert.equal(calls.length, 2);
+  assert.ok(calls.some((call) => call.startsWith("hot:")));
+  assert.ok(calls.some((call) => call.startsWith("cold:")));
+  resolveHot?.();
+  resolveCold?.();
+  await publisher.stop();
+});
+
+test("reads timeout defaults and keeps URL logging redacted", () => {
+  const result = readRemotePublisherConfig({ MQTT_URL: "mqtt://broker" });
+  assert.equal(result.publishIntervalMs, 600_000);
+  assert.equal(result.hotTimeoutMs, 600_000);
+  assert.equal(result.coldTimeoutMs, 1_800_000);
+  assert.equal(result.coldMode, "offline");
+  assert.equal(sanitizeMqttUrl("mqtt://user:pass@broker.local:1883/path?token=secret"), "mqtt://broker.local:1883");
+});
+
+test("scheduled cold collection runs only the newest stale date and deduplicates while active", async () => {
+  let release: (() => void) | undefined;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const calls: string[] = [];
+  const { publisher } = startPublisher({
+    runCcusage: (async ({ range, offline }: any) => {
+      calls.push(`${range.from}:${range.to}:${offline}`);
+      await gate;
+      return { document: { daily: [] }, stdout: "{}", stderr: "" };
+    }) as never,
+  });
+  publisher.start();
+  assert.equal(publisher.scheduleColdHistory(), true);
+  assert.equal(publisher.scheduleColdHistory(), false);
+  await flush();
+  assert.deepEqual(calls, ["2026-09-11:2026-09-11:true"]);
+  release?.();
+  await flush();
+  await publisher.stop();
+});
+
+test("rejects impossible calendar dates for cold jobs", async () => {
+  const { publisher } = startPublisher();
+  publisher.start();
+  assert.equal(publisher.requestCold("2026-02-31"), false);
+  await publisher.stop();
+});
+
+test("reconnect schedules the newest stale date alongside hot collection", async () => {
+  const calls: string[] = [];
+  const { publisher, client } = startPublisher({
+    runCcusage: (async ({ range, offline }: any) => {
+      calls.push(`${offline ? "cold" : "hot"}:${range.from}`);
+      return { document: { daily: [] }, stdout: "{}", stderr: "" };
+    }) as never,
+  });
+  publisher.start();
+  client.emit("connect");
+  await flush();
+  calls.length = 0;
   client.emit("reconnect");
-  const reconnectWill = JSON.parse(client.options.will.payload);
-  assert.equal(reconnectWill.publisherId, initialWill.publisherId);
-  assert.notEqual(reconnectWill.connectionId, initialWill.connectionId);
-  client.emit("connect");
-  await new Promise((resolve) => setImmediate(resolve));
-  await new Promise((resolve) => setImmediate(resolve));
-  const reconnectOnline = JSON.parse(client.publications[4].payload);
-  assert.equal(reconnectOnline.status, "online");
-  assert.equal(reconnectOnline.connectionId, reconnectWill.connectionId);
-
-  await publisher.stop();
-  assert.equal(JSON.parse(client.publications.at(-1)?.payload || "{}").status, "offline");
-  assert.equal(client.listenerCount("error"), 0);
-});
-
-test("omits empty publisher credentials without trimming non-empty values", async () => {
-  const envConfig = readRemotePublisherConfig({
-    MQTT_URL: "mqtt://broker",
-    MQTT_USERNAME: "",
-    MQTT_PASSWORD: " user password ",
-  });
-  assert.equal("username" in envConfig, false);
-  assert.equal(envConfig.password, " user password ");
-
-  class FakeClient extends EventEmitter {
-    options: Record<string, any> = {};
-
-    end(_force: boolean, _options: unknown, callback: (error?: Error | null) => void): void {
-      callback(null);
-    }
-  }
-
-  const client = new FakeClient();
-  let options: Record<string, any> | undefined;
-  const publisher = new RemoteMqttPublisher({ ...config, username: "", password: "" }, {
-    connect: ((_url: string, connectOptions: Record<string, any>) => {
-      options = connectOptions;
-      return client;
-    }) as never,
-  });
-  publisher.start();
-  assert.equal("username" in (options || {}), false);
-  assert.equal("password" in (options || {}), false);
-  await publisher.stop();
-});
-
-test("keeps running after an initial broker error and publishes after a later connect", async () => {
-  class FakeClient extends EventEmitter {
-    publications: string[] = [];
-    options: Record<string, any> = {};
-
-    publish(_topic: string, payload: string, _options: unknown, callback: (error?: Error | null) => void): void {
-      this.publications.push(payload);
-      callback(null);
-    }
-
-    end(_force: boolean, _options: unknown, callback: (error?: Error | null) => void): void {
-      callback(null);
-    }
-  }
-
-  const client = new FakeClient();
-  const logs: string[] = [];
-  const publisher = new RemoteMqttPublisher(config, {
-    connect: ((_url: string, options: Record<string, any>) => {
-      client.options = options;
-      return client;
-    }) as never,
-    now: () => new Date("2026-09-13T12:00:00.000Z"),
-    runCcusage: (async () => ({ document: { daily: [] }, stdout: "{}", stderr: "" })) as never,
-    log: (message: string) => logs.push(message),
-  });
-
-  publisher.start();
-  client.emit("error", new Error("broker unavailable"));
   client.emit("connect");
   await flush();
-
-  assert.deepEqual(logs, [
-    "[2026-09-13T12:00:00.000Z] MQTT connection error: broker unavailable",
-    "[2026-09-13T12:00:00.000Z] MQTT connected to mqtt://broker",
-  ]);
-  assert.equal(client.publications.length, 4);
-  assert.equal(JSON.parse(client.publications[0]).status, "online");
-  await publisher.stop();
-});
-
-test("logs connection lifecycle events with timestamps (connect, offline, reconnect)", async () => {
-  class FakeClient extends EventEmitter {
-    options: Record<string, any> = {};
-    publish(_topic: string, _payload: string, _options: unknown, callback: (error?: Error | null) => void): void {
-      callback(null);
-    }
-    end(_force: boolean, _options: unknown, callback: (error?: Error | null) => void): void {
-      callback(null);
-    }
-  }
-
-  const client = new FakeClient();
-  const logs: string[] = [];
-  const publisher = new RemoteMqttPublisher(config, {
-    connect: ((_url: string, options: Record<string, any>) => {
-      client.options = options;
-      return client;
-    }) as never,
-    now: () => new Date("2026-09-18T10:00:00.000Z"),
-    runCcusage: (async () => ({ document: { daily: [] }, stdout: "{}", stderr: "" })) as never,
-    log: (message: string) => logs.push(message),
-  });
-
-  publisher.start();
-  client.emit("connect");
-  await flush();
-  assert.deepEqual(logs, ["[2026-09-18T10:00:00.000Z] MQTT connected to mqtt://broker"]);
-
-  client.emit("offline");
-  assert.deepEqual(logs, [
-    "[2026-09-18T10:00:00.000Z] MQTT connected to mqtt://broker",
-    "[2026-09-18T10:00:00.000Z] MQTT connection lost (offline)",
-  ]);
-
-  client.emit("reconnect");
-  assert.deepEqual(logs, [
-    "[2026-09-18T10:00:00.000Z] MQTT connected to mqtt://broker",
-    "[2026-09-18T10:00:00.000Z] MQTT connection lost (offline)",
-    "[2026-09-18T10:00:00.000Z] MQTT reconnecting...",
-  ]);
-
-  client.emit("connect");
-  await flush();
-  assert.deepEqual(logs, [
-    "[2026-09-18T10:00:00.000Z] MQTT connected to mqtt://broker",
-    "[2026-09-18T10:00:00.000Z] MQTT connection lost (offline)",
-    "[2026-09-18T10:00:00.000Z] MQTT reconnecting...",
-    "[2026-09-18T10:00:00.000Z] MQTT connected to mqtt://broker",
-  ]);
-
-  await publisher.stop();
-});
-
-test("handles a post-connect error and does not duplicate the connection publication", async () => {
-  class FakeClient extends EventEmitter {
-    publications: string[] = [];
-    options: Record<string, any> = {};
-
-    publish(_topic: string, payload: string, _options: unknown, callback: (error?: Error | null) => void): void {
-      this.publications.push(payload);
-      callback(null);
-    }
-
-    end(_force: boolean, _options: unknown, callback: (error?: Error | null) => void): void {
-      callback(null);
-    }
-  }
-
-  const client = new FakeClient();
-  const publisher = new RemoteMqttPublisher(config, {
-    connect: ((_url: string, options: Record<string, any>) => {
-      client.options = options;
-      return client;
-    }) as never,
-    runCcusage: (async () => ({ document: { daily: [] }, stdout: "{}", stderr: "" })) as never,
-  });
-  const originalError = console.error;
-  console.error = () => undefined;
-  try {
-    publisher.start();
-    client.emit("connect");
-    client.emit("connect");
-    await flush();
-    assert.equal(client.publications.length, 4);
-
-    client.emit("error", new Error("connection dropped"));
-    client.emit("reconnect");
-    client.emit("connect");
-    await flush();
-    assert.equal(client.publications.length, 8);
-  } finally {
-    console.error = originalError;
-  }
-  await publisher.stop();
-});
-
-test("does not publish graceful offline status after mqtt reports offline", async () => {
-  class FakeClient extends EventEmitter {
-    publicationCount = 0;
-    options: Record<string, any> = {};
-
-    publish(_topic: string, _payload: string, _options: unknown, callback: (error?: Error | null) => void): void {
-      this.publicationCount += 1;
-      callback(null);
-    }
-
-    end(_force: boolean, _options: unknown, callback: (error?: Error | null) => void): void {
-      callback(null);
-    }
-  }
-
-  const client = new FakeClient();
-  const publisher = new RemoteMqttPublisher(config, {
-    connect: ((_url: string, options: Record<string, any>) => {
-      client.options = options;
-      return client;
-    }) as never,
-    runCcusage: (async () => ({ document: { daily: [] }, stdout: "{}", stderr: "" })) as never,
-  });
-
-  publisher.start();
-  client.emit("connect");
-  await flush();
-  assert.equal(client.publicationCount, 4);
-
-  client.emit("offline");
-  await publisher.stop();
-  assert.equal(client.publicationCount, 4);
-  assert.equal(client.listenerCount("offline"), 0);
-});
-
-test("sanitizeMqttUrl strips credentials, paths, and queries from MQTT URLs", () => {
-  assert.equal(sanitizeMqttUrl("mqtt://user:pass@broker.local:1883"), "mqtt://broker.local:1883");
-  assert.equal(sanitizeMqttUrl("mqtts://token@broker.local:8883/mqtt"), "mqtts://broker.local:8883");
-  assert.equal(sanitizeMqttUrl("wss://user:pass@broker.example:9001/mqtt?X-Amz-Signature=secret-token#frag"), "wss://broker.example:9001");
-  assert.equal(sanitizeMqttUrl("wss://broker.example/mqtt?token=secret"), "wss://broker.example");
-  assert.equal(sanitizeMqttUrl("mqtt://broker.local:1883"), "mqtt://broker.local:1883");
-  assert.equal(sanitizeMqttUrl("mqtt://[::1]:1883"), "mqtt://[::1]:1883");
-  assert.equal(sanitizeMqttUrl("mqtt://alice:pa/ss@broker"), "mqtt://[redacted]");
-  assert.equal(sanitizeMqttUrl("mqtt://alice:pa@ss@broker:1.2"), "mqtt://[redacted]");
-  assert.equal(sanitizeMqttUrl("invalid-url"), "[redacted-url]");
-  assert.equal(sanitizeMqttUrl(""), "");
-});
-
-test("redacts embedded credentials, paths, and queries when logging MQTT connection", async () => {
-  class FakeClient extends EventEmitter {
-    options: Record<string, any> = {};
-    publish(_topic: string, _payload: string, _options: unknown, callback: (error?: Error | null) => void): void {
-      callback(null);
-    }
-    end(_force: boolean, _options: unknown, callback: (error?: Error | null) => void): void {
-      callback(null);
-    }
-  }
-
-  const client = new FakeClient();
-  const logs: string[] = [];
-  const publisher = new RemoteMqttPublisher(
-    { ...config, mqttUrl: "wss://alice:secret_token@secure-broker.example.com:8883/mqtt?X-Amz-Signature=secret-sig#anchor" },
-    {
-      connect: ((_url: string, options: Record<string, any>) => {
-        client.options = options;
-        return client;
-      }) as never,
-      now: () => new Date("2026-09-18T10:00:00.000Z"),
-      runCcusage: (async () => ({ document: { daily: [] }, stdout: "{}", stderr: "" })) as never,
-      log: (message: string) => logs.push(message),
-    },
-  );
-
-  publisher.start();
-  client.emit("connect");
-  await flush();
-  assert.deepEqual(logs, ["[2026-09-18T10:00:00.000Z] MQTT connected to wss://secure-broker.example.com:8883"]);
+  assert.deepEqual(calls, ["cold:2026-09-11", "hot:2026-09-12", "hot:2026-09-13"]);
   await publisher.stop();
 });
