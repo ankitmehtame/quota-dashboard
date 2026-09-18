@@ -34,7 +34,7 @@ export type PublisherStatus = "offline" | "online" | "ok" | "error";
 
 export type StatusMessage = MqttMetadata & {
   status: PublisherStatus;
-  error?: string;
+  error?: string | null;
 };
 
 export type ErrorMessage = MqttMetadata & {

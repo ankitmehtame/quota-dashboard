@@ -50,6 +50,12 @@ test("rejects old schema payloads and malformed date-level envelopes", () => {
   assert.equal(parseRemoteMqttMessage(topic, usage({}, { daily: [{ agents: Array(65).fill({}) }] })), null);
 });
 
+test("accepts a null status error", () => {
+  const topic = "quota-dashboard/v1/hosts/workstation/status";
+  const message = { ...JSON.parse(usage()), status: "ok", error: null };
+  assert.ok(parseRemoteMqttMessage(topic, JSON.stringify(message)));
+});
+
 test("keeps timezone and exact data untouched", () => {
   const data = { daily: [{ date: "2026-09-13", nullValue: null, nested: { keep: true } }], extra: [1, false] };
   const parsed = parseRemoteMqttMessage("quota-dashboard/v1/hosts/workstation/usage/2026-09-13", usage({}, data));
@@ -132,7 +138,7 @@ test("publishes validated commands without retaining them", async () => {
   await store.stop();
 });
 
-test("connects to usage, lifecycle, and command topics", async () => {
+test("connects to usage and lifecycle topics, but not commands", async () => {
   class FakeClient extends EventEmitter {
     subscriptions: string[] = [];
     subscribe(topics: string[], _options: unknown, callback: (error?: Error | null) => void): void { this.subscriptions = topics; callback(null); }
@@ -144,6 +150,10 @@ test("connects to usage, lifecycle, and command topics", async () => {
   client.emit("connect");
   await started;
   await new Promise((resolve) => setImmediate(resolve));
-  assert.deepEqual(client.subscriptions, [...makeMqttSubscriptionTopics().all]);
+  assert.deepEqual(client.subscriptions, [
+    makeMqttSubscriptionTopics().usage,
+    makeMqttSubscriptionTopics().status,
+    makeMqttSubscriptionTopics().error,
+  ]);
   await store.stop();
 });

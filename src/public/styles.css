@@ -155,3 +155,10 @@ dialog { color: var(--text); background: var(--surface-raised); border: 1px soli
   .usage-metric + .usage-metric { border-left: 0; border-top: 1px solid var(--line); padding: 14px 0 0; }
   .chart-card { height: auto; }
 }
+
+.usage-controls { display: flex; align-items: center; gap: 13px; }
+.usage-refresh-button { white-space: nowrap; }
+
+@media (max-width: 560px) {
+  .usage-controls { justify-content: space-between; margin-top: 17px; }
+}

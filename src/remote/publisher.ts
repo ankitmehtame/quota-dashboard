@@ -411,7 +411,7 @@ export class RemoteMqttPublisher {
         const message = makeUsageSnapshot(this.nextMetadata(date, job.category, job.runId), result.document);
         await publish(this.client, makeUsageTopic(this.config.mqttPrefix, this.config.hostId, date), JSON.stringify(message));
       }
-      if (!this.stopped && this.client) {
+      if (!this.stopped && this.client && job.category === "hot") {
         const statusMetadata = this.nextMetadata(job.range.to, job.category, job.runId);
         await publish(this.client, this.topics.status, JSON.stringify(makeStatusMessage(statusMetadata, "ok")));
         await publish(this.client, this.topics.error, JSON.stringify(makeErrorMessage(statusMetadata, null)));
@@ -419,6 +419,10 @@ export class RemoteMqttPublisher {
     } catch (error) {
       if (this.stopped || !this.client) return;
       const message = ccusageErrorMessage(error, this.config.ccusageBinary).slice(0, 16_384);
+      if (job.category === "cold") {
+        this.log(`Cold ccusage job failed: ${message}`);
+        return;
+      }
       const errorMetadata = this.nextMetadata(currentDate, job.category, job.runId);
       await publish(this.client, this.topics.status, JSON.stringify(makeStatusMessage(errorMetadata, "error", message)));
       await publish(this.client, this.topics.error, JSON.stringify(makeErrorMessage(errorMetadata, message)));

@@ -6,6 +6,7 @@ import { sanitizeHostId } from "../remote/protocol.js";
 import { parseCcusage, type UsageRecord } from "./usage.js";
 
 const MAX_ID_LENGTH = 128;
+const MAX_RAW_ARCHIVES = 3;
 
 export type RawUsageContainer = {
   schemaVersion: number;
@@ -40,6 +41,7 @@ export type UsageStoreOptions = {
   dataRoot: string;
   /** Used for archive names. Injecting it keeps archive tests deterministic. */
   now?: () => Date;
+  log?: (message: string) => void;
 };
 
 export type IngestResult = {
@@ -263,6 +265,8 @@ async function archiveRaw(rawPath: string, directory: string, now: Date): Promis
     const temp = await writeTempFile(directory, await readFile(rawPath, "utf8"));
     try {
       await renameTempFile(temp, target);
+      const archives = (await readdir(directory)).filter((name) => /^raw\..+\.json$/.test(name)).sort((a, b) => b.localeCompare(a));
+      await Promise.all(archives.slice(MAX_RAW_ARCHIVES).map((name) => rm(join(directory, name), { force: true })));
       return name;
     } catch (error) {
       await rm(temp, { force: true }).catch(() => undefined);
@@ -274,11 +278,13 @@ async function archiveRaw(rawPath: string, directory: string, now: Date): Promis
 export class FilesystemUsageStore {
   readonly dataRoot: string;
   private readonly now: () => Date;
+  private readonly log: (message: string) => void;
 
   constructor(options: UsageStoreOptions) {
     if (!options || typeof options.dataRoot !== "string" || options.dataRoot.trim() === "") throw new Error("dataRoot is required");
     this.dataRoot = options.dataRoot;
     this.now = options.now || (() => new Date());
+    this.log = options.log || ((message) => console.error(message));
   }
 
   /** Store one complete host/date result. Missing messages and dates do nothing. */
@@ -355,13 +361,47 @@ export class FilesystemUsageStore {
         throw error;
       }
       for (const name of names.filter((entry) => entry.endsWith(".json") && entry !== "raw.json" && !entry.startsWith("raw."))) {
-        const value = await readJson(join(directory, name));
-        if (!isObject(value) || !Array.isArray(value.records)) throw new Error(`Invalid normalized usage file: ${name}`);
-        result.push(value as unknown as NormalizedToolUsage);
+        try {
+          const value = await readJson(join(directory, name));
+          if (!isObject(value) || !Array.isArray(value.records)) throw new Error(`Invalid normalized usage file: ${name}`);
+          result.push(value as unknown as NormalizedToolUsage);
+        } catch (error) {
+          this.log(`Skipping unreadable normalized usage file ${join(directory, name)}: ${error instanceof Error ? error.message : String(error)}`);
+        }
       }
       cursor = nextDate(cursor);
     }
     return result.sort((a, b) => a.date.localeCompare(b.date) || a.toolId.localeCompare(b.toolId));
+  }
+
+  /** Read the newest normalized record for a host, independent of a query range. */
+  async readLatest(hostId: string): Promise<NormalizedToolUsage | null> {
+    const safeHostId = sanitizeHostId(hostId);
+    const hostRoot = join(this.dataRoot, safeHostId);
+    let years;
+    try {
+      years = await readdir(hostRoot, { withFileTypes: true });
+    } catch (error) {
+      if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
+      throw error;
+    }
+    const dates: string[] = [];
+    for (const year of years) {
+      if (!year.isDirectory() || !/^\d{4}$/.test(year.name)) continue;
+      const months = await readdir(join(hostRoot, year.name), { withFileTypes: true });
+      for (const month of months) {
+        if (!month.isDirectory() || !/^\d{2}$/.test(month.name)) continue;
+        const days = await readdir(join(hostRoot, year.name, month.name), { withFileTypes: true });
+        for (const day of days) {
+          if (day.isDirectory() && /^\d{2}$/.test(day.name)) dates.push(`${year.name}-${month.name}-${day.name}`);
+        }
+      }
+    }
+    const values = (await Promise.all(dates.filter((date) => isCalendarDate(date)).map((date) => this.readNormalized(safeHostId, date, date)))).flat();
+    return values.reduce<NormalizedToolUsage | null>((latest, value) => {
+      if (!latest) return value;
+      return Date.parse(value.generatedAt) > Date.parse(latest.generatedAt) ? value : latest;
+    }, null);
   }
 
   async listHostIds(): Promise<string[]> {

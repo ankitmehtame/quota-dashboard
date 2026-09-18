@@ -28,7 +28,7 @@ const MAX_ERROR_LENGTH = 16_384;
 const MAX_REMOTE_HOSTS = 64;
 const STATUS_VALUES: readonly PublisherStatus[] = ["offline", "online", "ok", "error"];
 
-export type MqttSubscriptionTopics = Omit<MqttTopics, "usage"> & { usage: string; all: readonly [string, string, string, string] };
+export type MqttSubscriptionTopics = Omit<MqttTopics, "usage"> & { usage: string; all: readonly [string, string, string] };
 
 export type RemoteMqttConnectionState = "disabled" | "disconnected" | "connecting" | "reconnecting" | "connected";
 
@@ -154,7 +154,7 @@ export function makeMqttSubscriptionTopics(prefix = DEFAULT_MQTT_PREFIX): MqttSu
     error: `${base}/error`,
     command: `${base}/command`,
   };
-  return { ...topics, all: [topics.usage, topics.status, topics.error, topics.command] };
+  return { ...topics, all: [topics.usage, topics.status, topics.error] };
 }
 
 export function parseMqttSubscriptionTopic(topic: string, prefix = DEFAULT_MQTT_PREFIX): ParsedRemoteMqttTopic | null {
@@ -220,7 +220,7 @@ export function parseRemoteMqttMessage(
   if (parsedTopic.kind === "status") {
     if (!STATUS_VALUES.includes((value as Record<string, unknown>).status as PublisherStatus)) return null;
     const error = (value as Record<string, unknown>).error;
-    if (error !== undefined && (typeof error !== "string" || error.length > MAX_ERROR_LENGTH)) return null;
+    if (error !== undefined && error !== null && (typeof error !== "string" || error.length > MAX_ERROR_LENGTH)) return null;
     return { topic: parsedTopic, message: value as StatusMessage };
   }
   const error = (value as Record<string, unknown>).error;
