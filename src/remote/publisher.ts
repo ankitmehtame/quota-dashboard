@@ -49,6 +49,18 @@ export type PublisherDependencies = {
   log?: (message: string) => void;
 };
 
+/** Redact credentials from an MQTT URL for safe logging. */
+export function sanitizeMqttUrl(rawUrl: string): string {
+  try {
+    const parsed = new URL(rawUrl);
+    parsed.username = "";
+    parsed.password = "";
+    return parsed.href;
+  } catch {
+    return rawUrl.replace(/\/\/[^/@]+@/, "//");
+  }
+}
+
 function positiveNumber(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -248,7 +260,7 @@ export class RemoteMqttPublisher {
   private readonly onConnect = (): void => {
     if (this.stopped || !this.client || this.connected) return;
     this.connected = true;
-    this.log(`MQTT connected to ${this.config.mqttUrl}`);
+    this.log(`MQTT connected to ${sanitizeMqttUrl(this.config.mqttUrl)}`);
     const client = this.client;
     if (!this.timer) {
       this.timer = setInterval(() => {

@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 
-import { readRemotePublisherConfig, RemoteMqttPublisher, type RemotePublisherConfig } from "./publisher.js";
+import { readRemotePublisherConfig, RemoteMqttPublisher, sanitizeMqttUrl, type RemotePublisherConfig } from "./publisher.js";
 
 const config: RemotePublisherConfig = {
   mqttUrl: "mqtt://broker",
@@ -285,4 +285,44 @@ test("does not publish graceful offline status after mqtt reports offline", asyn
   await publisher.stop();
   assert.equal(client.publicationCount, 4);
   assert.equal(client.listenerCount("offline"), 0);
+});
+
+test("sanitizeMqttUrl strips credentials from MQTT URLs", () => {
+  assert.equal(sanitizeMqttUrl("mqtt://user:pass@broker.local:1883"), "mqtt://broker.local:1883");
+  assert.equal(sanitizeMqttUrl("mqtts://token@broker.local:8883/mqtt"), "mqtts://broker.local:8883/mqtt");
+  assert.equal(sanitizeMqttUrl("mqtt://broker.local:1883"), "mqtt://broker.local:1883");
+  assert.equal(sanitizeMqttUrl("invalid-url"), "invalid-url");
+});
+
+test("redacts embedded credentials when logging MQTT connection", async () => {
+  class FakeClient extends EventEmitter {
+    options: Record<string, any> = {};
+    publish(_topic: string, _payload: string, _options: unknown, callback: (error?: Error | null) => void): void {
+      callback(null);
+    }
+    end(_force: boolean, _options: unknown, callback: (error?: Error | null) => void): void {
+      callback(null);
+    }
+  }
+
+  const client = new FakeClient();
+  const logs: string[] = [];
+  const publisher = new RemoteMqttPublisher(
+    { ...config, mqttUrl: "mqtts://alice:secret_token@secure-broker.example.com:8883" },
+    {
+      connect: ((_url: string, options: Record<string, any>) => {
+        client.options = options;
+        return client;
+      }) as never,
+      now: () => new Date("2026-09-18T10:00:00.000Z"),
+      runCcusage: (async () => ({ document: { daily: [] }, stdout: "{}", stderr: "" })) as never,
+      log: (message: string) => logs.push(message),
+    },
+  );
+
+  publisher.start();
+  client.emit("connect");
+  await flush();
+  assert.deepEqual(logs, ["[2026-09-18T10:00:00.000Z] MQTT connected to mqtts://secure-broker.example.com:8883"]);
+  await publisher.stop();
 });
