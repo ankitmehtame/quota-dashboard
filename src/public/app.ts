@@ -4,7 +4,7 @@ type ModelUsageItem = { model: string; costUsd: number; totalTokens?: number };
 type UsageModel = ModelUsageItem & { provider: string };
 type UsageDay = { date: string; costUsd: number; totalTokens: number; byProvider?: Record<string, { costUsd: number; totalTokens: number }>; byModel?: Array<{ provider: string; models: ModelUsageItem[] }> };
 type UsageRecord = { hostId?: string; date: string; provider: string; model: string; inputTokens: number; cachedInputTokens: number; cacheCreationTokens: number; outputTokens: number; reasoningTokens: number; costUsd: number };
-type UsageHost = { hostId: string; generatedAt?: string | null; category?: string | null; status: string; error?: string | null; stale?: boolean; local?: boolean; included?: boolean; complete?: boolean; usable?: boolean; disabledReason?: string | null };
+type UsageHost = { hostId: string; generatedAt?: string | null; category?: string | null; status: string; error?: string | null; stale?: boolean; local?: boolean; active?: boolean; included?: boolean; complete?: boolean; usable?: boolean; disabledReason?: string | null };
 type Usage = { totalCostUsd: number; totalTokens?: number; from?: string; to?: string; providers?: string[]; daily?: UsageDay[]; byModel?: UsageModel[]; byProvider?: Array<{ provider: string; costUsd: number; totalTokens: number }>; records?: UsageRecord[]; error?: string | null; hosts?: UsageHost[]; mqtt?: { configured: boolean; connection: string } };
 type Dashboard = { version: string; providerOrder: string[]; providers: Record<string, Provider>; quotas: Record<string, { windows?: QuotaWindow[]; planType?: string; subscriptionActiveUntil?: string | null; resetCredits?: Array<{ id: string; title: string; description?: string | null; expiresAt?: string | null }>; fetchedAt?: string; error?: string | null }>; usage: Usage; serverNow: string; cache?: { fetchedAt?: string } };
 type UsageResponse = { version: string; apiVersion: number; serverNow: string; timezone: string; from: string; to: string; usage: Usage };
@@ -24,7 +24,7 @@ const HOT_USAGE_POLL_TIMEOUT_MS = 2 * 60 * 1000;
 let activeChartTooltip: { anchor: HTMLElement; tooltip: HTMLElement } | null = null;
 let activeQuotaTooltip: { anchor: HTMLElement; tooltip: HTMLElement } | null = null;
 type HotUsageBaseline = Map<string, { generatedAt: number; error: string | null }>;
-let hotUsagePoller: { timer: number; startedAt: number; baseline: HotUsageBaseline; requestInFlight: boolean } | null = null;
+let hotUsagePoller: { timer: number; startedAt: number; baseline: HotUsageBaseline; targetHostIds: Set<string>; requestInFlight: boolean } | null = null;
 
 function positionChartTooltip(anchor: HTMLElement, tooltip: HTMLElement): void {
   const margin = 8;
@@ -484,6 +484,10 @@ function usageHotBaseline(usage: Usage | undefined): HotUsageBaseline {
   }]));
 }
 
+function usageHotTargetIds(usage: Usage | undefined): Set<string> {
+  return new Set((usage?.hosts || []).filter((host) => host.active !== false).map((host) => host.hostId));
+}
+
 function stopHotUsagePolling(): void {
   if (!hotUsagePoller) return;
   window.clearTimeout(hotUsagePoller.timer);
@@ -493,7 +497,8 @@ function stopHotUsagePolling(): void {
 function evaluateHotUsagePoll(poller: NonNullable<typeof hotUsagePoller>, usage: Usage | null): boolean {
   if (hotUsagePoller !== poller) return true;
   const hosts = usage?.hosts || [];
-  const errorHost = hosts.find((host) => host.error && host.error !== poller.baseline.get(host.hostId)?.error);
+  const targetHosts = [...poller.targetHostIds].map((hostId) => hosts.find((host) => host.hostId === hostId));
+  const errorHost = targetHosts.find((host) => host?.error && host.error !== poller.baseline.get(host.hostId)?.error);
   if (errorHost?.error) {
     stopHotUsagePolling();
     const message = `Hot usage refresh failed: ${errorHost.error}`;
@@ -501,11 +506,11 @@ function evaluateHotUsagePoll(poller: NonNullable<typeof hotUsagePoller>, usage:
     $("#status-copy").textContent = message;
     return true;
   }
-  const freshHotUsage = hosts.some((host) => {
-    if (host.category !== "hot" || !host.generatedAt) return false;
+  const freshHotUsage = targetHosts.length > 0 && targetHosts.every((host) => {
+    if (!host || host.category !== "hot" || !host.generatedAt) return false;
     const generatedAt = Date.parse(host.generatedAt);
     const previous = poller.baseline.get(host.hostId);
-    return Number.isFinite(generatedAt) && generatedAt >= poller.startedAt - 1_000 && (!previous || !Number.isFinite(previous.generatedAt) || generatedAt > previous.generatedAt);
+    return Number.isFinite(generatedAt) && (!previous || !Number.isFinite(previous.generatedAt) || generatedAt > previous.generatedAt);
   });
   if (freshHotUsage) {
     stopHotUsagePolling();
@@ -537,9 +542,9 @@ async function pollHotUsage(): Promise<void> {
   }
 }
 
-function startHotUsagePolling(baseline: HotUsageBaseline, initialUsage: Usage | null | undefined, startedAt: number): void {
+function startHotUsagePolling(baseline: HotUsageBaseline, initialUsage: Usage | null | undefined, startedAt: number, targetHostIds: Set<string>): void {
   stopHotUsagePolling();
-  const poller = { timer: 0, startedAt, baseline, requestInFlight: false };
+  const poller = { timer: 0, startedAt, baseline, targetHostIds, requestInFlight: false };
   hotUsagePoller = poller;
   if (evaluateHotUsagePoll(poller, initialUsage || null)) return;
   poller.timer = window.setTimeout(() => void pollHotUsage(), HOT_USAGE_POLL_INTERVAL_MS);
@@ -564,8 +569,10 @@ async function loadUsage(silent = false): Promise<Usage | null> {
     return data.usage;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Usage request failed";
-    showToast(message);
-    $("#status-copy").textContent = message;
+    if (!silent) {
+      showToast(message);
+      $("#status-copy").textContent = message;
+    }
     return null;
   } finally {
     if (!silent) setUsageLoading(false);
@@ -657,6 +664,7 @@ $("#refresh-button").addEventListener("click", async () => {
   const button = $("#refresh-button") as HTMLButtonElement;
   stopHotUsagePolling();
   const baseline = usageHotBaseline(state.dashboard?.usage);
+  const targetHostIds = usageHotTargetIds(state.dashboard?.usage);
   const startedAt = Date.now();
   let refreshStarted = false;
   button.disabled = true;
@@ -669,13 +677,14 @@ $("#refresh-button").addEventListener("click", async () => {
     showToast(error instanceof Error ? error.message : "Refresh failed");
   } finally {
     button.disabled = false;
-    if (refreshStarted) startHotUsagePolling(baseline, state.dashboard?.usage, startedAt);
+    if (refreshStarted) startHotUsagePolling(baseline, state.dashboard?.usage, startedAt, targetHostIds);
   }
 });
 $("#usage-refresh-button").addEventListener("click", async () => {
   const button = $("#usage-refresh-button") as HTMLButtonElement;
   stopHotUsagePolling();
   const baseline = usageHotBaseline(state.dashboard?.usage);
+  const targetHostIds = usageHotTargetIds(state.dashboard?.usage);
   const startedAt = Date.now();
   let refreshStarted = false;
   let initialUsage: Usage | null = null;
@@ -689,7 +698,7 @@ $("#usage-refresh-button").addEventListener("click", async () => {
     showToast(error instanceof Error ? error.message : "Usage refresh failed");
   } finally {
     button.disabled = false;
-    if (refreshStarted) startHotUsagePolling(baseline, initialUsage || state.dashboard?.usage, startedAt);
+    if (refreshStarted) startHotUsagePolling(baseline, initialUsage || state.dashboard?.usage, startedAt, targetHostIds);
   }
 });
 $("#settings-button").addEventListener("click", async () => { await loadSettings(); $("#settings-dialog").showModal(); });

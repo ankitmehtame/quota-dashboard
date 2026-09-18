@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -178,6 +178,15 @@ test("reads only normalized files across an inclusive date range", async () => {
     await writeFile(join(root, "my-laptop", "2026", "09", "18", "raw.json"), "not json");
     const records = await store.readRecords("my-laptop", "2026-09-18", "2026-09-19");
     assert.deepEqual(records.map((record) => record.costUsd), [1, 2]);
+  });
+});
+
+test("readLatest checks newest date directories first and skips empty dates", async () => {
+  await withStore(async (store, root) => {
+    await store.ingest(container({ daily: [{ ...row("codex", 1), date: "2026-09-16" }] }, { date: "2026-09-16", generatedAt: "2026-09-16T12:00:00.000Z" }));
+    const emptyDate = join(root, "my-laptop", "2026", "09", "18");
+    await mkdir(emptyDate, { recursive: true });
+    assert.equal((await store.readLatest("my-laptop"))?.date, "2026-09-16");
   });
 });
 
