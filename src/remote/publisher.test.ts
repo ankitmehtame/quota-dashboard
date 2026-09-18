@@ -131,28 +131,81 @@ test("keeps running after an initial broker error and publishes after a later co
   }
 
   const client = new FakeClient();
+  const logs: string[] = [];
   const publisher = new RemoteMqttPublisher(config, {
     connect: ((_url: string, options: Record<string, any>) => {
       client.options = options;
       return client;
     }) as never,
+    now: () => new Date("2026-09-13T12:00:00.000Z"),
     runCcusage: (async () => ({ document: { daily: [] }, stdout: "{}", stderr: "" })) as never,
+    log: (message: string) => logs.push(message),
   });
-  const errors: string[] = [];
-  const originalError = console.error;
-  console.error = (message?: unknown) => errors.push(String(message));
-  try {
-    publisher.start();
-    client.emit("error", new Error("broker unavailable"));
-    client.emit("connect");
-    await flush();
-  } finally {
-    console.error = originalError;
-  }
 
-  assert.equal(errors.length, 1);
+  publisher.start();
+  client.emit("error", new Error("broker unavailable"));
+  client.emit("connect");
+  await flush();
+
+  assert.deepEqual(logs, [
+    "[2026-09-13T12:00:00.000Z] MQTT connection error: broker unavailable",
+    "[2026-09-13T12:00:00.000Z] MQTT connected to mqtt://broker",
+  ]);
   assert.equal(client.publications.length, 4);
   assert.equal(JSON.parse(client.publications[0]).status, "online");
+  await publisher.stop();
+});
+
+test("logs connection lifecycle events with timestamps (connect, offline, reconnect)", async () => {
+  class FakeClient extends EventEmitter {
+    options: Record<string, any> = {};
+    publish(_topic: string, _payload: string, _options: unknown, callback: (error?: Error | null) => void): void {
+      callback(null);
+    }
+    end(_force: boolean, _options: unknown, callback: (error?: Error | null) => void): void {
+      callback(null);
+    }
+  }
+
+  const client = new FakeClient();
+  const logs: string[] = [];
+  const publisher = new RemoteMqttPublisher(config, {
+    connect: ((_url: string, options: Record<string, any>) => {
+      client.options = options;
+      return client;
+    }) as never,
+    now: () => new Date("2026-09-18T10:00:00.000Z"),
+    runCcusage: (async () => ({ document: { daily: [] }, stdout: "{}", stderr: "" })) as never,
+    log: (message: string) => logs.push(message),
+  });
+
+  publisher.start();
+  client.emit("connect");
+  await flush();
+  assert.deepEqual(logs, ["[2026-09-18T10:00:00.000Z] MQTT connected to mqtt://broker"]);
+
+  client.emit("offline");
+  assert.deepEqual(logs, [
+    "[2026-09-18T10:00:00.000Z] MQTT connected to mqtt://broker",
+    "[2026-09-18T10:00:00.000Z] MQTT connection lost (offline)",
+  ]);
+
+  client.emit("reconnect");
+  assert.deepEqual(logs, [
+    "[2026-09-18T10:00:00.000Z] MQTT connected to mqtt://broker",
+    "[2026-09-18T10:00:00.000Z] MQTT connection lost (offline)",
+    "[2026-09-18T10:00:00.000Z] MQTT reconnecting...",
+  ]);
+
+  client.emit("connect");
+  await flush();
+  assert.deepEqual(logs, [
+    "[2026-09-18T10:00:00.000Z] MQTT connected to mqtt://broker",
+    "[2026-09-18T10:00:00.000Z] MQTT connection lost (offline)",
+    "[2026-09-18T10:00:00.000Z] MQTT reconnecting...",
+    "[2026-09-18T10:00:00.000Z] MQTT connected to mqtt://broker",
+  ]);
+
   await publisher.stop();
 });
 

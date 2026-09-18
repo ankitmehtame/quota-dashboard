@@ -6,7 +6,7 @@ let shuttingDown = false;
 const shutdown = async (signal: string) => {
   if (shuttingDown) return;
   shuttingDown = true;
-  console.error(`remote MQTT publisher stopping on ${signal}`);
+  console.error(`[${new Date().toISOString()}] remote MQTT publisher stopping on ${signal}`);
   await publisher.stop();
 };
 
