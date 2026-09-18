@@ -287,14 +287,20 @@ test("does not publish graceful offline status after mqtt reports offline", asyn
   assert.equal(client.listenerCount("offline"), 0);
 });
 
-test("sanitizeMqttUrl strips credentials from MQTT URLs", () => {
+test("sanitizeMqttUrl strips credentials, paths, and queries from MQTT URLs", () => {
   assert.equal(sanitizeMqttUrl("mqtt://user:pass@broker.local:1883"), "mqtt://broker.local:1883");
-  assert.equal(sanitizeMqttUrl("mqtts://token@broker.local:8883/mqtt"), "mqtts://broker.local:8883/mqtt");
+  assert.equal(sanitizeMqttUrl("mqtts://token@broker.local:8883/mqtt"), "mqtts://broker.local:8883");
+  assert.equal(sanitizeMqttUrl("wss://user:pass@broker.example:9001/mqtt?X-Amz-Signature=secret-token#frag"), "wss://broker.example:9001");
+  assert.equal(sanitizeMqttUrl("wss://broker.example/mqtt?token=secret"), "wss://broker.example");
   assert.equal(sanitizeMqttUrl("mqtt://broker.local:1883"), "mqtt://broker.local:1883");
-  assert.equal(sanitizeMqttUrl("invalid-url"), "invalid-url");
+  assert.equal(sanitizeMqttUrl("mqtt://[::1]:1883"), "mqtt://[::1]:1883");
+  assert.equal(sanitizeMqttUrl("mqtt://alice:pa/ss@broker"), "mqtt://[redacted]");
+  assert.equal(sanitizeMqttUrl("mqtt://alice:pa@ss@broker:1.2"), "mqtt://[redacted]");
+  assert.equal(sanitizeMqttUrl("invalid-url"), "[redacted-url]");
+  assert.equal(sanitizeMqttUrl(""), "");
 });
 
-test("redacts embedded credentials when logging MQTT connection", async () => {
+test("redacts embedded credentials, paths, and queries when logging MQTT connection", async () => {
   class FakeClient extends EventEmitter {
     options: Record<string, any> = {};
     publish(_topic: string, _payload: string, _options: unknown, callback: (error?: Error | null) => void): void {
@@ -308,7 +314,7 @@ test("redacts embedded credentials when logging MQTT connection", async () => {
   const client = new FakeClient();
   const logs: string[] = [];
   const publisher = new RemoteMqttPublisher(
-    { ...config, mqttUrl: "mqtts://alice:secret_token@secure-broker.example.com:8883" },
+    { ...config, mqttUrl: "wss://alice:secret_token@secure-broker.example.com:8883/mqtt?X-Amz-Signature=secret-sig#anchor" },
     {
       connect: ((_url: string, options: Record<string, any>) => {
         client.options = options;
@@ -323,6 +329,6 @@ test("redacts embedded credentials when logging MQTT connection", async () => {
   publisher.start();
   client.emit("connect");
   await flush();
-  assert.deepEqual(logs, ["[2026-09-18T10:00:00.000Z] MQTT connected to mqtts://secure-broker.example.com:8883"]);
+  assert.deepEqual(logs, ["[2026-09-18T10:00:00.000Z] MQTT connected to wss://secure-broker.example.com:8883"]);
   await publisher.stop();
 });
