@@ -73,10 +73,10 @@ let localColdSchedulePromise: Promise<void> | null = null;
 let localHotTimer: NodeJS.Timeout | null = null;
 let localColdTimer: NodeJS.Timeout | null = null;
 let localHotUsageError: string | null = null;
-let localColdUsageError: string | null = null;
 const localColdQueue: Array<{ from: string; to: string; offline: boolean }> = [];
 const localColdQueued = new Set<string>();
 const localDateChains = new Map<string, Promise<void>>();
+const MAX_LOCAL_COLD_QUEUE = 10;
 const remoteUsageStore = new RemoteMqttStore({
   ...readRemoteMqttSubscriberConfig(),
   usageTimezone,
@@ -178,6 +178,7 @@ function documentMatchesDate(document: unknown, date: string): boolean {
 }
 
 async function runLocalUsageJob(range: { from: string; to: string }, category: "hot" | "cold", offline: boolean, timeoutMs: number): Promise<void> {
+  const failures: string[] = [];
   for (const date of dateList(range.from, range.to)) {
     const previous = localDateChains.get(date) || Promise.resolve();
     const current = previous.catch(() => undefined).then(async () => {
@@ -205,11 +206,14 @@ async function runLocalUsageJob(range: { from: string; to: string }, category: "
     localDateChains.set(date, current);
     try {
       await current;
+    } catch (error) {
+      failures.push(`${date}: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       if (localDateChains.get(date) === current) localDateChains.delete(date);
     }
   }
   dashboardCache.clear();
+  if (failures.length > 0) throw new Error(failures.join("; "));
 }
 
 function queueLocalHot(): void {
@@ -240,29 +244,32 @@ function startLocalHotScheduler(): void {
   trigger();
 }
 
-function queueLocalCold(from: string, to: string, offline: boolean): void {
+type LocalColdQueueResult = "accepted" | "duplicate" | "full" | "shutdown";
+
+function queueLocalCold(from: string, to: string, offline: boolean): LocalColdQueueResult {
+  if (shuttingDown) return "shutdown";
   const key = `${from}:${to}:${offline ? "offline" : "online"}`;
-  if (localColdQueued.has(key)) return;
+  if (localColdQueued.has(key)) return "duplicate";
+  if (localColdQueue.length >= MAX_LOCAL_COLD_QUEUE) return "full";
   localColdQueued.add(key);
   localColdQueue.push({ from, to, offline });
   void drainLocalColdQueue();
+  return "accepted";
 }
 
 async function drainLocalColdQueue(): Promise<void> {
-  if (localColdPromise) return;
+  if (localColdPromise || shuttingDown) return;
   const job = localColdQueue.shift();
   if (!job) return;
   const key = `${job.from}:${job.to}:${job.offline ? "offline" : "online"}`;
   localColdPromise = runLocalUsageJob({ from: job.from, to: job.to }, "cold", job.offline, localColdTimeoutMs)
-    .then(() => { localColdUsageError = null; })
     .catch((error) => {
-      localColdUsageError = ccusageErrorMessage(error, localCcusageBinary);
       dashboardCache.clear();
-      console.error(`Local cold usage refresh failed: ${localColdUsageError}`);
+      console.error(`Local cold usage refresh failed: ${ccusageErrorMessage(error, localCcusageBinary)}`);
     })
     .finally(() => { localColdPromise = null; localColdQueued.delete(key); });
   await localColdPromise;
-  void drainLocalColdQueue();
+  if (!shuttingDown) void drainLocalColdQueue();
 }
 
 function isCalendarDate(value: unknown): value is string {
@@ -340,7 +347,7 @@ async function buildUsage(url: URL, config: AppConfig) {
     const hostRecords = records.filter((record) => record.hostId === hostId);
     const isLocal = hostId === localHostId;
     const ingestError = remotePersistenceErrors.get(hostId) || state?.ingestError || null;
-    const error = ingestError || (isLocal ? localHotUsageError || localColdUsageError : null) || state?.error?.error || state?.status?.error || null;
+    const error = ingestError || (isLocal ? localHotUsageError : null) || state?.error?.error || state?.status?.error || null;
     const coveredDates = new Set(files.map((file) => file.date));
     const complete = dateList(range.from, range.to).every((date) => coveredDates.has(date));
     const stale = !Number.isFinite(generatedTime) || generatedTime > Date.now() + 60_000 || Date.now() - generatedTime > (isLocal ? 10 * 60 * 1000 : staleAfterMs);
@@ -349,6 +356,7 @@ async function buildUsage(url: URL, config: AppConfig) {
       hostId,
       generatedAt,
       timezone: latest?.timezone ?? state?.usage?.timezone ?? state?.status?.timezone ?? usageTimezone,
+      category: latest?.category ?? state?.usage?.category ?? state?.status?.category ?? null,
       range: latest?.range ?? state?.usage?.range ?? { from: range.from, to: range.to },
       status,
       error,
@@ -360,8 +368,13 @@ async function buildUsage(url: URL, config: AppConfig) {
       disabledReason: error || (hostRecords.length ? null : `No usable usage data reported by ${hostId}`),
     };
   });
-  const hostProblem = hosts.some((host) => Boolean(host.error) || host.stale || !host.included || (!host.local && !host.complete)
-    || (!host.local && !["ok", "online"].includes(host.status)));
+  const activeHostIds = new Set<string>([localHostId, ...Object.keys(remoteState.hosts)]);
+  const hostProblem = hosts.some((host) => {
+    const hasSelectedRecords = records.some((record) => record.hostId === host.hostId);
+    if (!activeHostIds.has(host.hostId) && !hasSelectedRecords) return false;
+    return Boolean(host.error) || host.stale || !host.included || (!host.local && !host.complete)
+      || (!host.local && !["ok", "online"].includes(host.status));
+  });
   const usageStatus = usageSources.length === 0 ? "disabled" : hostProblem ? (records.length ? "partial" : "error") : "ok";
   const usageResult = usageSources.length ? {
     status: usageStatus,
@@ -445,7 +458,10 @@ async function handleApi(request: import("node:http").IncomingMessage, response:
     if (mode !== "online" && mode !== "offline") return json(response, 400, { error: "mode must be online or offline" });
     if (input.hostId !== undefined && (typeof input.hostId !== "string" || sanitizeHostId(input.hostId) !== input.hostId)) return json(response, 400, { error: "hostId is invalid" });
     const hostId = input.hostId as string | undefined;
-    if (!hostId || hostId === localHostId) queueLocalCold(from, to, mode === "offline");
+    if (!hostId || hostId === localHostId) {
+      const queueResult = queueLocalCold(from, to, mode === "offline");
+      if (queueResult === "shutdown") return json(response, 503, { error: "Server is shutting down" });
+    }
     if (hostId && hostId !== localHostId) void remoteUsageStore.publishCommand(hostId, { requestId: randomUUID(), category: "cold", from, to, mode });
     if (!hostId) publishRemoteRefresh("cold", from, to, mode);
     return json(response, 202, { accepted: true, category: "cold", from, to, mode, hostId: hostId || "all" });

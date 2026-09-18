@@ -252,7 +252,7 @@ function archiveTimestamp(now: Date): string {
   return now.toISOString().replace(/[.:]/g, "-");
 }
 
-async function archiveRaw(rawPath: string, directory: string, now: Date): Promise<string> {
+async function archiveRaw(rawPath: string, directory: string, now: Date, log: (message: string) => void): Promise<string> {
   const stamp = archiveTimestamp(now);
   let suffix = 0;
   while (true) {
@@ -265,13 +265,17 @@ async function archiveRaw(rawPath: string, directory: string, now: Date): Promis
     const temp = await writeTempFile(directory, await readFile(rawPath, "utf8"));
     try {
       await renameTempFile(temp, target);
-      const archives = (await readdir(directory)).filter((name) => /^raw\..+\.json$/.test(name)).sort((a, b) => b.localeCompare(a));
-      await Promise.all(archives.slice(MAX_RAW_ARCHIVES).map((name) => rm(join(directory, name), { force: true })));
-      return name;
     } catch (error) {
       await rm(temp, { force: true }).catch(() => undefined);
       throw error;
     }
+    try {
+      const archives = (await readdir(directory)).filter((name) => /^raw\..+\.json$/.test(name)).sort((a, b) => b.localeCompare(a));
+      await Promise.all(archives.slice(MAX_RAW_ARCHIVES).map((archive) => rm(join(directory, archive), { force: true })));
+    } catch (error) {
+      log(`Raw archive pruning failed in ${directory}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    return name;
   }
 }
 
@@ -324,7 +328,7 @@ export class FilesystemUsageStore {
 
       let archivedRawFile: string | undefined;
       if (shouldArchive) {
-        archivedRawFile = await archiveRaw(rawPath, directory, this.now());
+        archivedRawFile = await archiveRaw(rawPath, directory, this.now(), this.log);
         for (const toolId of missingToolIds) {
           const target = join(directory, `${toolId}.json`);
           if (!(await fileExists(target))) continue;
@@ -388,20 +392,36 @@ export class FilesystemUsageStore {
     const dates: string[] = [];
     for (const year of years) {
       if (!year.isDirectory() || !/^\d{4}$/.test(year.name)) continue;
-      const months = await readdir(join(hostRoot, year.name), { withFileTypes: true });
+      let months;
+      try {
+        months = await readdir(join(hostRoot, year.name), { withFileTypes: true });
+      } catch (error) {
+        if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") continue;
+        throw error;
+      }
       for (const month of months) {
         if (!month.isDirectory() || !/^\d{2}$/.test(month.name)) continue;
-        const days = await readdir(join(hostRoot, year.name, month.name), { withFileTypes: true });
+        let days;
+        try {
+          days = await readdir(join(hostRoot, year.name, month.name), { withFileTypes: true });
+        } catch (error) {
+          if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") continue;
+          throw error;
+        }
         for (const day of days) {
           if (day.isDirectory() && /^\d{2}$/.test(day.name)) dates.push(`${year.name}-${month.name}-${day.name}`);
         }
       }
     }
-    const values = (await Promise.all(dates.filter((date) => isCalendarDate(date)).map((date) => this.readNormalized(safeHostId, date, date)))).flat();
-    return values.reduce<NormalizedToolUsage | null>((latest, value) => {
-      if (!latest) return value;
-      return Date.parse(value.generatedAt) > Date.parse(latest.generatedAt) ? value : latest;
-    }, null);
+    dates.sort().reverse();
+    for (const date of dates.filter((value) => isCalendarDate(value))) {
+      const values = await this.readNormalized(safeHostId, date, date);
+      if (values.length === 0) continue;
+      let latest = values[0];
+      for (const value of values.slice(1)) if (Date.parse(value.generatedAt) > Date.parse(latest.generatedAt)) latest = value;
+      return latest;
+    }
+    return null;
   }
 
   async listHostIds(): Promise<string[]> {

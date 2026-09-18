@@ -4,7 +4,7 @@ type ModelUsageItem = { model: string; costUsd: number; totalTokens?: number };
 type UsageModel = ModelUsageItem & { provider: string };
 type UsageDay = { date: string; costUsd: number; totalTokens: number; byProvider?: Record<string, { costUsd: number; totalTokens: number }>; byModel?: Array<{ provider: string; models: ModelUsageItem[] }> };
 type UsageRecord = { hostId?: string; date: string; provider: string; model: string; inputTokens: number; cachedInputTokens: number; cacheCreationTokens: number; outputTokens: number; reasoningTokens: number; costUsd: number };
-type UsageHost = { hostId: string; generatedAt?: string | null; status: string; error?: string | null; stale?: boolean; local?: boolean; included?: boolean; complete?: boolean; usable?: boolean; disabledReason?: string | null };
+type UsageHost = { hostId: string; generatedAt?: string | null; category?: string | null; status: string; error?: string | null; stale?: boolean; local?: boolean; included?: boolean; complete?: boolean; usable?: boolean; disabledReason?: string | null };
 type Usage = { totalCostUsd: number; totalTokens?: number; from?: string; to?: string; providers?: string[]; daily?: UsageDay[]; byModel?: UsageModel[]; byProvider?: Array<{ provider: string; costUsd: number; totalTokens: number }>; records?: UsageRecord[]; error?: string | null; hosts?: UsageHost[]; mqtt?: { configured: boolean; connection: string } };
 type Dashboard = { version: string; providerOrder: string[]; providers: Record<string, Provider>; quotas: Record<string, { windows?: QuotaWindow[]; planType?: string; subscriptionActiveUntil?: string | null; resetCredits?: Array<{ id: string; title: string; description?: string | null; expiresAt?: string | null }>; fetchedAt?: string; error?: string | null }>; usage: Usage; serverNow: string; cache?: { fetchedAt?: string } };
 type UsageResponse = { version: string; apiVersion: number; serverNow: string; timezone: string; from: string; to: string; usage: Usage };
@@ -19,8 +19,12 @@ const escapeHtml = (value: unknown): string => String(value ?? "").replace(/[&<>
 let providerOrder = ["codex", "openrouter", "opencode-go", "ollama"];
 const usageSourceOrder = ["codex", "opencode", "hermes", "antigravity"];
 const usageSourceNames: Record<string, string> = { codex: "Codex", opencode: "OpenCode", hermes: "Hermes", antigravity: "Antigravity" };
+const HOT_USAGE_POLL_INTERVAL_MS = 10_000;
+const HOT_USAGE_POLL_TIMEOUT_MS = 2 * 60 * 1000;
 let activeChartTooltip: { anchor: HTMLElement; tooltip: HTMLElement } | null = null;
 let activeQuotaTooltip: { anchor: HTMLElement; tooltip: HTMLElement } | null = null;
+type HotUsageBaseline = Map<string, { generatedAt: number; error: string | null }>;
+let hotUsagePoller: { timer: number; startedAt: number; baseline: HotUsageBaseline; requestInFlight: boolean } | null = null;
 
 function positionChartTooltip(anchor: HTMLElement, tooltip: HTMLElement): void {
   const margin = 8;
@@ -473,11 +477,78 @@ async function startUsageRefresh(): Promise<void> {
   if (!response.ok) throw new Error("Usage refresh could not be started");
 }
 
-async function loadUsage(): Promise<void> {
-  if (!state.dashboard) return loadDashboard();
+function usageHotBaseline(usage: Usage | undefined): HotUsageBaseline {
+  return new Map((usage?.hosts || []).map((host) => [host.hostId, {
+    generatedAt: host.generatedAt ? Date.parse(host.generatedAt) : NaN,
+    error: host.error || null,
+  }]));
+}
+
+function stopHotUsagePolling(): void {
+  if (!hotUsagePoller) return;
+  window.clearInterval(hotUsagePoller.timer);
+  hotUsagePoller = null;
+}
+
+function evaluateHotUsagePoll(poller: NonNullable<typeof hotUsagePoller>, usage: Usage | null): boolean {
+  if (hotUsagePoller !== poller) return true;
+  const hosts = usage?.hosts || [];
+  const errorHost = hosts.find((host) => host.error && host.error !== poller.baseline.get(host.hostId)?.error);
+  if (errorHost?.error) {
+    stopHotUsagePolling();
+    const message = `Hot usage refresh failed: ${errorHost.error}`;
+    showToast(message);
+    $("#status-copy").textContent = message;
+    return true;
+  }
+  const freshHotUsage = hosts.some((host) => {
+    if (host.category !== "hot" || !host.generatedAt) return false;
+    const generatedAt = Date.parse(host.generatedAt);
+    const previous = poller.baseline.get(host.hostId);
+    return Number.isFinite(generatedAt) && generatedAt >= poller.startedAt - 1_000 && (!previous || !Number.isFinite(previous.generatedAt) || generatedAt > previous.generatedAt);
+  });
+  if (freshHotUsage) {
+    stopHotUsagePolling();
+    showToast("Hot usage refresh complete");
+    return true;
+  }
+  if (Date.now() - poller.startedAt >= HOT_USAGE_POLL_TIMEOUT_MS) {
+    stopHotUsagePolling();
+    showToast("Hot usage refresh is still running");
+    return true;
+  }
+  return false;
+}
+
+async function pollHotUsage(): Promise<void> {
+  const poller = hotUsagePoller;
+  if (!poller || poller.requestInFlight) return;
+  poller.requestInFlight = true;
+  try {
+    const usage = await loadUsage(true);
+    evaluateHotUsagePoll(poller, usage);
+  } finally {
+    if (hotUsagePoller === poller) poller.requestInFlight = false;
+  }
+}
+
+function startHotUsagePolling(baseline: HotUsageBaseline, initialUsage: Usage | null | undefined, startedAt: number): void {
+  stopHotUsagePolling();
+  const poller = { timer: 0, startedAt, baseline, requestInFlight: false };
+  hotUsagePoller = poller;
+  if (evaluateHotUsagePoll(poller, initialUsage || null)) return;
+  poller.timer = window.setInterval(() => void pollHotUsage(), HOT_USAGE_POLL_INTERVAL_MS);
+}
+
+async function loadUsage(silent = false): Promise<Usage | null> {
+  if (!state.dashboard) {
+    await loadDashboard();
+    const refreshedDashboard = state.dashboard as Dashboard | null;
+    return refreshedDashboard ? refreshedDashboard.usage : null;
+  }
   const scroll = document.querySelector<HTMLElement>(".chart-scroll");
   if (scroll) state.chartScrollLeft = scroll.scrollLeft;
-  setUsageLoading(true);
+  if (!silent) setUsageLoading(true);
   try {
     const response = await fetch(`/api/v1/usage?${usageQuery()}`);
     if (!response.ok) throw new Error("Usage request failed");
@@ -485,12 +556,14 @@ async function loadUsage(): Promise<void> {
     state.dashboard = { ...state.dashboard, usage: data.usage, serverNow: data.serverNow };
     renderUsage(data.usage, "preserve");
     renderStatus(state.dashboard);
+    return data.usage;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Usage request failed";
     showToast(message);
     $("#status-copy").textContent = message;
+    return null;
   } finally {
-    setUsageLoading(false);
+    if (!silent) setUsageLoading(false);
   }
 }
 
@@ -577,28 +650,41 @@ function showToast(message: string): void { const toast = $("#toast"); toast.tex
 
 $("#refresh-button").addEventListener("click", async () => {
   const button = $("#refresh-button") as HTMLButtonElement;
+  stopHotUsagePolling();
+  const baseline = usageHotBaseline(state.dashboard?.usage);
+  const startedAt = Date.now();
+  let refreshStarted = false;
   button.disabled = true;
   try {
     await startUsageRefresh();
+    refreshStarted = true;
     await loadDashboard(true);
     showToast("Quotas and usage refresh started");
   } catch (error) {
     showToast(error instanceof Error ? error.message : "Refresh failed");
   } finally {
     button.disabled = false;
+    if (refreshStarted) startHotUsagePolling(baseline, state.dashboard?.usage, startedAt);
   }
 });
 $("#usage-refresh-button").addEventListener("click", async () => {
   const button = $("#usage-refresh-button") as HTMLButtonElement;
+  stopHotUsagePolling();
+  const baseline = usageHotBaseline(state.dashboard?.usage);
+  const startedAt = Date.now();
+  let refreshStarted = false;
+  let initialUsage: Usage | null = null;
   button.disabled = true;
   try {
     await startUsageRefresh();
-    if (state.dashboard) await loadUsage();
+    refreshStarted = true;
+    initialUsage = await loadUsage();
     showToast("Usage refresh started");
   } catch (error) {
     showToast(error instanceof Error ? error.message : "Usage refresh failed");
   } finally {
     button.disabled = false;
+    if (refreshStarted) startHotUsagePolling(baseline, initialUsage || state.dashboard?.usage, startedAt);
   }
 });
 $("#settings-button").addEventListener("click", async () => { await loadSettings(); $("#settings-dialog").showModal(); });
@@ -622,3 +708,4 @@ function repositionActiveChartTooltip(): void {
 
 window.addEventListener("resize", repositionActiveChartTooltip);
 window.addEventListener("scroll", repositionActiveChartTooltip, { passive: true });
+window.addEventListener("beforeunload", stopHotUsagePolling);
