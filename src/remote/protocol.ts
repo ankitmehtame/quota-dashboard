@@ -129,7 +129,7 @@ export function makeUsageSnapshot(metadata: Omit<MqttMetadata, "schemaVersion">,
 export function makeStatusMessage(
   metadata: Omit<MqttMetadata, "schemaVersion">,
   status: PublisherStatus,
-  error?: string,
+  error?: string | null,
 ): StatusMessage {
   return {
     schemaVersion: MQTT_SCHEMA_VERSION,
