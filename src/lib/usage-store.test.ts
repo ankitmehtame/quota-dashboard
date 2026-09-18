@@ -103,7 +103,7 @@ test("archives and retargets retained provenance when an equal-size tool set cha
   });
 });
 
-test("does not archive when only values inside a present tool change, and permits multiple backups", async () => {
+test("does not archive when only values inside a present tool change, and rotates backups", async () => {
   await withStore(async (store, root) => {
     await store.ingest(container({ daily: [row("codex", 1)] }));
     await store.ingest(container({ daily: [row("codex", 2)] }, { runId: "run-2" }));
@@ -116,6 +116,19 @@ test("does not archive when only values inside a present tool change, and permit
     await store.ingest(container({ daily: [row("codex", 10)] }, { runId: "run-6" }));
     names = await readdir(join(root, "my-laptop", "2026", "09", "18"));
     assert.equal(names.filter((name) => /^raw\..+\.json$/.test(name)).length, 2);
+    await store.ingest(container({ daily: [row("codex", 11), row("opencode", 12)] }, { runId: "run-7" }));
+    await store.ingest(container({ daily: [row("codex", 13)] }, { runId: "run-8" }));
+    names = await readdir(join(root, "my-laptop", "2026", "09", "18"));
+    assert.equal(names.filter((name) => /^raw\..+\.json$/.test(name)).length, 3);
+  });
+});
+
+test("skips corrupted normalized files while reading the remaining records", async () => {
+  await withStore(async (store, root) => {
+    await store.ingest(container({ daily: [row("codex", 1)] }));
+    await writeFile(join(root, "my-laptop", "2026", "09", "18", "broken.json"), "not json");
+    const records = await store.readRecords("my-laptop", "2026-09-18", "2026-09-18");
+    assert.deepEqual(records.map((record) => record.costUsd), [1]);
   });
 });
 

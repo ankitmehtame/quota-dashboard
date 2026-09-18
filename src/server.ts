@@ -72,7 +72,11 @@ let localHotSchedulePromise: Promise<void> | null = null;
 let localColdSchedulePromise: Promise<void> | null = null;
 let localHotTimer: NodeJS.Timeout | null = null;
 let localColdTimer: NodeJS.Timeout | null = null;
-let localUsageError: string | null = null;
+let localHotUsageError: string | null = null;
+let localColdUsageError: string | null = null;
+const localColdQueue: Array<{ from: string; to: string; offline: boolean }> = [];
+const localColdQueued = new Set<string>();
+const localDateChains = new Map<string, Promise<void>>();
 const remoteUsageStore = new RemoteMqttStore({
   ...readRemoteMqttSubscriberConfig(),
   usageTimezone,
@@ -175,26 +179,35 @@ function documentMatchesDate(document: unknown, date: string): boolean {
 
 async function runLocalUsageJob(range: { from: string; to: string }, category: "hot" | "cold", offline: boolean, timeoutMs: number): Promise<void> {
   for (const date of dateList(range.from, range.to)) {
-    const result = await runCcusage({
-      binary: localCcusageBinary,
-      range: { from: date, to: date, timezone: usageTimezone },
-      offline,
-      timeoutMs,
-      maxBuffer: localCcusageMaxBuffer,
+    const previous = localDateChains.get(date) || Promise.resolve();
+    const current = previous.catch(() => undefined).then(async () => {
+      const result = await runCcusage({
+        binary: localCcusageBinary,
+        range: { from: date, to: date, timezone: usageTimezone },
+        offline,
+        timeoutMs,
+        maxBuffer: localCcusageMaxBuffer,
+      });
+      if (!documentMatchesDate(result.document, date)) throw new Error(`ccusage returned data outside ${date}`);
+      await usageStore.ingest({
+        schemaVersion: 2,
+        hostId: localHostId,
+        date,
+        timezone: usageTimezone,
+        category,
+        runId: randomUUID(),
+        generatedAt: new Date().toISOString(),
+        ...(ccusageVersion() ? { ccusageVersion: ccusageVersion() } : {}),
+        range,
+        data: result.document,
+      });
     });
-    if (!documentMatchesDate(result.document, date)) throw new Error(`ccusage returned data outside ${date}`);
-    await usageStore.ingest({
-      schemaVersion: 2,
-      hostId: localHostId,
-      date,
-      timezone: usageTimezone,
-      category,
-      runId: randomUUID(),
-      generatedAt: new Date().toISOString(),
-      ...(ccusageVersion() ? { ccusageVersion: ccusageVersion() } : {}),
-      range,
-      data: result.document,
-    });
+    localDateChains.set(date, current);
+    try {
+      await current;
+    } finally {
+      if (localDateChains.get(date) === current) localDateChains.delete(date);
+    }
   }
   dashboardCache.clear();
 }
@@ -203,11 +216,11 @@ function queueLocalHot(): void {
   if (localHotPromise) return;
   const range = localDateRange(2, usageTimezone);
   localHotPromise = runLocalUsageJob(range, "hot", false, localHotTimeoutMs)
-    .then(() => { localUsageError = null; })
+    .then(() => { localHotUsageError = null; })
     .catch((error) => {
-      localUsageError = ccusageErrorMessage(error, localCcusageBinary);
+      localHotUsageError = ccusageErrorMessage(error, localCcusageBinary);
       dashboardCache.clear();
-      console.error(`Local hot usage refresh failed: ${localUsageError}`);
+      console.error(`Local hot usage refresh failed: ${localHotUsageError}`);
     })
     .finally(() => { localHotPromise = null; });
 }
@@ -228,15 +241,28 @@ function startLocalHotScheduler(): void {
 }
 
 function queueLocalCold(from: string, to: string, offline: boolean): void {
+  const key = `${from}:${to}:${offline ? "offline" : "online"}`;
+  if (localColdQueued.has(key)) return;
+  localColdQueued.add(key);
+  localColdQueue.push({ from, to, offline });
+  void drainLocalColdQueue();
+}
+
+async function drainLocalColdQueue(): Promise<void> {
   if (localColdPromise) return;
-  localColdPromise = runLocalUsageJob({ from, to }, "cold", offline, localColdTimeoutMs)
-    .then(() => { localUsageError = null; })
+  const job = localColdQueue.shift();
+  if (!job) return;
+  const key = `${job.from}:${job.to}:${job.offline ? "offline" : "online"}`;
+  localColdPromise = runLocalUsageJob({ from: job.from, to: job.to }, "cold", job.offline, localColdTimeoutMs)
+    .then(() => { localColdUsageError = null; })
     .catch((error) => {
-      localUsageError = ccusageErrorMessage(error, localCcusageBinary);
+      localColdUsageError = ccusageErrorMessage(error, localCcusageBinary);
       dashboardCache.clear();
-      console.error(`Local cold usage refresh failed: ${localUsageError}`);
+      console.error(`Local cold usage refresh failed: ${localColdUsageError}`);
     })
-    .finally(() => { localColdPromise = null; });
+    .finally(() => { localColdPromise = null; localColdQueued.delete(key); });
+  await localColdPromise;
+  void drainLocalColdQueue();
 }
 
 function isCalendarDate(value: unknown): value is string {
@@ -261,7 +287,6 @@ function previousDate(value: string): string {
 }
 
 async function scheduleLocalColdDate(): Promise<void> {
-  if (localColdPromise) return;
   const config = await loadConfig();
   if (!USAGE_SOURCE_IDS.some((id) => config.usageSources[id].enabled)) return;
   const rolling = rollingDateRange(usageTimezone, new Date(), localRollingDays);
@@ -292,7 +317,12 @@ async function buildUsage(url: URL, config: AppConfig) {
   const range = localDateRange(Number(url.searchParams.get("days") || 30), usageTimezone, url.searchParams.get("range") || "relative");
   const usageSources = USAGE_SOURCE_IDS.filter((id) => config.usageSources[id].enabled);
   const normalizedFiles = usageSources.length ? await usageStore.readNormalizedAll(range.from, range.to) : [];
-  if (usageSources.length && localHotIsStale(normalizedFiles)) queueLocalHot();
+  const today = localDateRange(1, usageTimezone).to;
+  const localHotFiles = usageSources.length ? await usageStore.readNormalized(localHostId, today, today) : [];
+  if (usageSources.length && localHotIsStale(localHotFiles)) queueLocalHot();
+  const persistedHostIds = usageSources.length ? await usageStore.listHostIds() : [];
+  const latestByHost = new Map<string, Awaited<ReturnType<typeof usageStore.readLatest>>>();
+  await Promise.all(persistedHostIds.map(async (hostId) => { latestByHost.set(hostId, await usageStore.readLatest(hostId)); }));
   const remoteState = remoteUsageStore.getSnapshot();
   const configuredStaleSeconds = Number(process.env.MQTT_STALE_AFTER_SECONDS || 900);
   const staleAfterMs = (Number.isFinite(configuredStaleSeconds) && configuredStaleSeconds > 0 ? configuredStaleSeconds : 900) * 1000;
@@ -300,17 +330,17 @@ async function buildUsage(url: URL, config: AppConfig) {
   const storedRecords = storedFiles.flatMap((file) => file.records.map((record) => ({ ...record, hostId: file.hostId })));
   const records = filterUsageRecords(usageSources, storedRecords);
   const summary = summarizeUsage(records);
-  const hostIds = new Set<string>([localHostId, ...storedFiles.map((file) => file.hostId), ...Object.keys(remoteState.hosts)]);
+  const hostIds = new Set<string>([localHostId, ...persistedHostIds, ...storedFiles.map((file) => file.hostId), ...Object.keys(remoteState.hosts)]);
   const hosts = [...hostIds].map((hostId) => {
     const state = remoteState.hosts[hostId];
     const files = storedFiles.filter((file) => file.hostId === hostId);
-    const latest = [...files].sort((a, b) => Date.parse(b.generatedAt) - Date.parse(a.generatedAt))[0];
+    const latest = latestByHost.get(hostId) || null;
     const generatedAt = latest?.generatedAt ?? state?.usage?.generatedAt ?? null;
     const generatedTime = generatedAt ? Date.parse(generatedAt) : NaN;
     const hostRecords = records.filter((record) => record.hostId === hostId);
     const isLocal = hostId === localHostId;
     const ingestError = remotePersistenceErrors.get(hostId) || state?.ingestError || null;
-    const error = ingestError || (isLocal ? localUsageError : null) || state?.error?.error || state?.status?.error || null;
+    const error = ingestError || (isLocal ? localHotUsageError || localColdUsageError : null) || state?.error?.error || state?.status?.error || null;
     const coveredDates = new Set(files.map((file) => file.date));
     const complete = dateList(range.from, range.to).every((date) => coveredDates.has(date));
     const stale = !Number.isFinite(generatedTime) || generatedTime > Date.now() + 60_000 || Date.now() - generatedTime > (isLocal ? 10 * 60 * 1000 : staleAfterMs);
@@ -330,7 +360,6 @@ async function buildUsage(url: URL, config: AppConfig) {
       disabledReason: error || (hostRecords.length ? null : `No usable usage data reported by ${hostId}`),
     };
   });
-  const localUsable = records.some((record) => record.hostId === localHostId);
   const hostProblem = hosts.some((host) => Boolean(host.error) || host.stale || !host.included || (!host.local && !host.complete)
     || (!host.local && !["ok", "online"].includes(host.status)));
   const usageStatus = usageSources.length === 0 ? "disabled" : hostProblem ? (records.length ? "partial" : "error") : "ok";
@@ -404,11 +433,14 @@ async function handleApi(request: import("node:http").IncomingMessage, response:
     return json(response, 202, { accepted: true, category: "hot", from: range.from, to: range.to });
   }
   if (request.method === "POST" && url.pathname === "/api/v1/usage/cold") {
+    const maxColdRangeDays = 370;
     const input = await body(request);
     const defaultRange = rollingDateRange(usageTimezone);
     const from = input.from === undefined ? defaultRange.from : input.from;
     const to = input.to === undefined ? defaultRange.to : input.to;
     if (!isCalendarDate(from) || !isCalendarDate(to) || from > to) return json(response, 400, { error: "from and to must be an ordered YYYY-MM-DD range" });
+    const rangeDays = Math.floor((Date.parse(`${to}T12:00:00.000Z`) - Date.parse(`${from}T12:00:00.000Z`)) / 86_400_000) + 1;
+    if (rangeDays > maxColdRangeDays) return json(response, 400, { error: `cold range must not exceed ${maxColdRangeDays} days` });
     const mode = input.mode === undefined ? "offline" : input.mode;
     if (mode !== "online" && mode !== "offline") return json(response, 400, { error: "mode must be online or offline" });
     if (input.hostId !== undefined && (typeof input.hostId !== "string" || sanitizeHostId(input.hostId) !== input.hostId)) return json(response, 400, { error: "hostId is invalid" });

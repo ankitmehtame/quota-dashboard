@@ -468,6 +468,11 @@ function setUsageLoading(loading: boolean): void {
   document.querySelectorAll<HTMLButtonElement>(".range-picker button").forEach((button) => { button.disabled = loading; });
 }
 
+async function startUsageRefresh(): Promise<void> {
+  const response = await fetch("/api/v1/usage/refresh", { method: "POST" });
+  if (!response.ok) throw new Error("Usage refresh could not be started");
+}
+
 async function loadUsage(): Promise<void> {
   if (!state.dashboard) return loadDashboard();
   const scroll = document.querySelector<HTMLElement>(".chart-scroll");
@@ -571,13 +576,29 @@ async function loadSettings(): Promise<void> {
 function showToast(message: string): void { const toast = $("#toast"); toast.textContent = message; toast.classList.add("show"); setTimeout(() => toast.classList.remove("show"), 2200); }
 
 $("#refresh-button").addEventListener("click", async () => {
+  const button = $("#refresh-button") as HTMLButtonElement;
+  button.disabled = true;
   try {
-    const response = await fetch("/api/v1/usage/refresh", { method: "POST" });
-    if (!response.ok) throw new Error("Usage refresh could not be started");
-    await loadUsage();
+    await startUsageRefresh();
+    await loadDashboard(true);
+    showToast("Quotas and usage refresh started");
+  } catch (error) {
+    showToast(error instanceof Error ? error.message : "Refresh failed");
+  } finally {
+    button.disabled = false;
+  }
+});
+$("#usage-refresh-button").addEventListener("click", async () => {
+  const button = $("#usage-refresh-button") as HTMLButtonElement;
+  button.disabled = true;
+  try {
+    await startUsageRefresh();
+    if (state.dashboard) await loadUsage();
     showToast("Usage refresh started");
   } catch (error) {
     showToast(error instanceof Error ? error.message : "Usage refresh failed");
+  } finally {
+    button.disabled = false;
   }
 });
 $("#settings-button").addEventListener("click", async () => { await loadSettings(); $("#settings-dialog").showModal(); });
