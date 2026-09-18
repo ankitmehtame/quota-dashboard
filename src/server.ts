@@ -338,6 +338,8 @@ async function buildUsage(url: URL, config: AppConfig) {
   const records = filterUsageRecords(usageSources, storedRecords);
   const summary = summarizeUsage(records);
   const hostIds = new Set<string>([localHostId, ...persistedHostIds, ...storedFiles.map((file) => file.hostId), ...Object.keys(remoteState.hosts)]);
+  const activeHostIds = new Set<string>([localHostId, ...Object.keys(remoteState.hosts)]);
+  const storageErrorsByHost = new Map<string, string | null>();
   const hosts = [...hostIds].map((hostId) => {
     const state = remoteState.hosts[hostId];
     const files = storedFiles.filter((file) => file.hostId === hostId);
@@ -347,7 +349,9 @@ async function buildUsage(url: URL, config: AppConfig) {
     const hostRecords = records.filter((record) => record.hostId === hostId);
     const isLocal = hostId === localHostId;
     const ingestError = remotePersistenceErrors.get(hostId) || state?.ingestError || null;
-    const error = ingestError || (isLocal ? localHotUsageError : null) || state?.error?.error || state?.status?.error || null;
+    const storageError = ingestError || (isLocal ? localHotUsageError : null) || null;
+    storageErrorsByHost.set(hostId, storageError);
+    const error = storageError || state?.error?.error || state?.status?.error || null;
     const coveredDates = new Set(files.map((file) => file.date));
     const complete = dateList(range.from, range.to).every((date) => coveredDates.has(date));
     const stale = !Number.isFinite(generatedTime) || generatedTime > Date.now() + 60_000 || Date.now() - generatedTime > (isLocal ? 10 * 60 * 1000 : staleAfterMs);
@@ -360,6 +364,7 @@ async function buildUsage(url: URL, config: AppConfig) {
       range: latest?.range ?? state?.usage?.range ?? { from: range.from, to: range.to },
       status,
       error,
+      active: activeHostIds.has(hostId),
       stale,
       local: isLocal,
       included: !error && (latest?.timezone ?? state?.usage?.timezone ?? usageTimezone) === usageTimezone,
@@ -368,10 +373,9 @@ async function buildUsage(url: URL, config: AppConfig) {
       disabledReason: error || (hostRecords.length ? null : `No usable usage data reported by ${hostId}`),
     };
   });
-  const activeHostIds = new Set<string>([localHostId, ...Object.keys(remoteState.hosts)]);
   const hostProblem = hosts.some((host) => {
     const hasSelectedRecords = records.some((record) => record.hostId === host.hostId);
-    if (!activeHostIds.has(host.hostId) && !hasSelectedRecords) return false;
+    if (!activeHostIds.has(host.hostId)) return hasSelectedRecords && Boolean(storageErrorsByHost.get(host.hostId));
     return Boolean(host.error) || host.stale || !host.included || (!host.local && !host.complete)
       || (!host.local && !["ok", "online"].includes(host.status));
   });

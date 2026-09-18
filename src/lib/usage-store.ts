@@ -389,37 +389,45 @@ export class FilesystemUsageStore {
       if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return null;
       throw error;
     }
-    const dates: string[] = [];
-    for (const year of years) {
-      if (!year.isDirectory() || !/^\d{4}$/.test(year.name)) continue;
+
+    const yearNames = years
+      .filter((entry) => entry.isDirectory() && /^\d{4}$/.test(entry.name))
+      .map((entry) => entry.name)
+      .sort((a, b) => b.localeCompare(a));
+    for (const year of yearNames) {
       let months;
       try {
-        months = await readdir(join(hostRoot, year.name), { withFileTypes: true });
+        months = await readdir(join(hostRoot, year), { withFileTypes: true });
       } catch (error) {
         if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") continue;
         throw error;
       }
-      for (const month of months) {
-        if (!month.isDirectory() || !/^\d{2}$/.test(month.name)) continue;
+      const monthNames = months
+        .filter((entry) => entry.isDirectory() && /^\d{2}$/.test(entry.name))
+        .map((entry) => entry.name)
+        .sort((a, b) => b.localeCompare(a));
+      for (const month of monthNames) {
         let days;
         try {
-          days = await readdir(join(hostRoot, year.name, month.name), { withFileTypes: true });
+          days = await readdir(join(hostRoot, year, month), { withFileTypes: true });
         } catch (error) {
           if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") continue;
           throw error;
         }
-        for (const day of days) {
-          if (day.isDirectory() && /^\d{2}$/.test(day.name)) dates.push(`${year.name}-${month.name}-${day.name}`);
+        const dayNames = days
+          .filter((entry) => entry.isDirectory() && /^\d{2}$/.test(entry.name))
+          .map((entry) => entry.name)
+          .sort((a, b) => b.localeCompare(a));
+        for (const day of dayNames) {
+          const date = `${year}-${month}-${day}`;
+          if (!isCalendarDate(date)) continue;
+          const values = await this.readNormalized(safeHostId, date, date);
+          if (values.length === 0) continue;
+          let latest = values[0];
+          for (const value of values.slice(1)) if (Date.parse(value.generatedAt) > Date.parse(latest.generatedAt)) latest = value;
+          return latest;
         }
       }
-    }
-    dates.sort().reverse();
-    for (const date of dates.filter((value) => isCalendarDate(value))) {
-      const values = await this.readNormalized(safeHostId, date, date);
-      if (values.length === 0) continue;
-      let latest = values[0];
-      for (const value of values.slice(1)) if (Date.parse(value.generatedAt) > Date.parse(latest.generatedAt)) latest = value;
-      return latest;
     }
     return null;
   }
