@@ -46,6 +46,7 @@ export type PublisherDependencies = {
   runCcusage?: typeof runCcusage;
   now?: () => Date;
   execFileRunner?: ExecFileRunner;
+  log?: (message: string) => void;
 };
 
 function positiveNumber(value: string | undefined, fallback: number): number {
@@ -115,7 +116,7 @@ function metadata(config: RemotePublisherConfig, range: MqttDateRange, now: Date
 
 export class RemoteMqttPublisher {
   private readonly config: RemotePublisherConfig;
-  private readonly dependencies: Required<Pick<PublisherDependencies, "connect" | "runCcusage" | "now">> & PublisherDependencies;
+  private readonly dependencies: Required<Pick<PublisherDependencies, "connect" | "runCcusage" | "now" | "log">> & PublisherDependencies;
   private readonly topics;
   private readonly publisherId = randomUUID();
   private connectionId = randomUUID();
@@ -133,9 +134,15 @@ export class RemoteMqttPublisher {
       connect: mqtt.connect,
       runCcusage,
       now: () => new Date(),
+      log: (message: string) => console.error(message),
       ...dependencies,
     };
     this.topics = makeMqttTopics(this.config.mqttPrefix, this.config.hostId);
+  }
+
+  private log(message: string): void {
+    const timestamp = this.dependencies.now().toISOString();
+    this.dependencies.log(`[${timestamp}] ${message}`);
   }
 
   get mqttTopics(): ReturnType<typeof makeMqttTopics> {
@@ -166,7 +173,7 @@ export class RemoteMqttPublisher {
       await task;
       return true;
     } catch (error) {
-      console.error(`MQTT publish failed: ${error instanceof Error ? error.message : String(error)}`);
+      this.log(`MQTT publish failed: ${error instanceof Error ? error.message : String(error)}`);
       return false;
     } finally {
       if (this.inFlight === task) this.inFlight = null;
@@ -197,7 +204,7 @@ export class RemoteMqttPublisher {
       try {
         await publish(client, this.topics.status, JSON.stringify(makeStatusMessage(this.nextMetadata(this.range()), "offline")));
       } catch (error) {
-        console.error(`MQTT offline status failed: ${error instanceof Error ? error.message : String(error)}`);
+        this.log(`MQTT offline status failed: ${error instanceof Error ? error.message : String(error)}`);
       }
     }
     await new Promise<void>((resolve, reject) => client.end(false, {}, (error) => error ? reject(error) : resolve()));
@@ -241,6 +248,7 @@ export class RemoteMqttPublisher {
   private readonly onConnect = (): void => {
     if (this.stopped || !this.client || this.connected) return;
     this.connected = true;
+    this.log(`MQTT connected to ${this.config.mqttUrl}`);
     const client = this.client;
     if (!this.timer) {
       this.timer = setInterval(() => {
@@ -250,20 +258,22 @@ export class RemoteMqttPublisher {
     const status = makeStatusMessage(this.nextMetadata(this.range()), "online");
     void publish(client, this.topics.status, JSON.stringify(status))
       .then(() => this.publishSnapshot())
-      .catch((error: unknown) => console.error(`MQTT reconnect publish failed: ${error instanceof Error ? error.message : String(error)}`));
+      .catch((error: unknown) => this.log(`MQTT reconnect publish failed: ${error instanceof Error ? error.message : String(error)}`));
   };
 
   private readonly onError = (error: Error): void => {
-    console.error(`MQTT connection error: ${error.message}`);
+    this.log(`MQTT connection error: ${error.message}`);
   };
 
   private readonly onOffline = (): void => {
     this.connected = false;
+    this.log("MQTT connection lost (offline)");
   };
 
   private readonly onReconnect = (): void => {
     if (this.stopped || !this.client) return;
     this.connected = false;
+    this.log("MQTT reconnecting...");
     this.connectionId = randomUUID();
     const offline = makeStatusMessage(this.nextMetadata(this.range()), "offline");
     this.client.options.will = {
