@@ -462,17 +462,20 @@ async function handleApi(request: import("node:http").IncomingMessage, response:
     if (mode !== "online" && mode !== "offline") return json(response, 400, { error: "mode must be online or offline" });
     if (input.hostId !== undefined && (typeof input.hostId !== "string" || sanitizeHostId(input.hostId) !== input.hostId)) return json(response, 400, { error: "hostId is invalid" });
     const hostId = input.hostId as string | undefined;
+    let localAccepted: boolean | undefined;
     if (!hostId || hostId === localHostId) {
       const queueResult = queueLocalCold(from, to, mode === "offline");
       if (queueResult === "shutdown") return json(response, 503, { error: "Server is shutting down" });
       if (queueResult === "full") {
         console.warn(`[server] Local cold queue full (${MAX_LOCAL_COLD_QUEUE}); dropped request for ${from}..${to} (${hostId ? `host ${hostId}` : "all hosts"})`);
         if (hostId === localHostId) return json(response, 429, { error: "Local cold backfill queue is full" });
+        localAccepted = false;
       }
+      if (!hostId && (queueResult === "accepted" || queueResult === "duplicate")) localAccepted = true;
     }
     if (hostId && hostId !== localHostId) void remoteUsageStore.publishCommand(hostId, { requestId: randomUUID(), category: "cold", from, to, mode });
     if (!hostId) publishRemoteRefresh("cold", from, to, mode);
-    return json(response, 202, { accepted: true, category: "cold", from, to, mode, hostId: hostId || "all" });
+    return json(response, 202, { accepted: true, ...(localAccepted === undefined ? {} : { localAccepted }), category: "cold", from, to, mode, hostId: hostId || "all" });
   }
   if (request.method === "GET" && url.pathname === "/api/v1/quotas") {
     const enabled = config.providerOrder.filter((id) => config.providers[id].enabled);

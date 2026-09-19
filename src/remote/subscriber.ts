@@ -4,8 +4,6 @@ import {
   MQTT_SCHEMA_VERSION,
   makeCommandMessage,
   makeCommandTopic,
-  makeMqttTopics,
-  makeUsageTopic,
   parseMqttCommand,
   sanitizeHostId,
   sanitizeTopicPrefix,

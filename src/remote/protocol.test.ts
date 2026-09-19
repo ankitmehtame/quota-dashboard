@@ -8,6 +8,7 @@ import {
   makeStatusMessage,
   makeUsageSnapshot,
   makeUsageTopic,
+  parseMqttCommand,
   sanitizeHostId,
 } from "./protocol.js";
 
@@ -51,4 +52,12 @@ test("status, usage, and commands use the new schema metadata", () => {
   assert.equal(makeStatusMessage(metadata, "ok").schemaVersion, MQTT_SCHEMA_VERSION);
   assert.equal(makeStatusMessage(metadata, "ok").status, "ok");
   assert.equal(makeCommandMessage({ requestId: "request-1", category: "cold", from: "2026-09-01", to: "2026-09-03", mode: "offline" }).schemaVersion, MQTT_SCHEMA_VERSION);
+});
+
+test("checks command payload byte length before decoding", () => {
+  const topic = "quota-dashboard/v1/hosts/workstation/command";
+  const command = JSON.stringify({ schemaVersion: 2, requestId: "request-1", category: "cold", from: "2026-09-01", to: "2026-09-03", mode: "offline" });
+  assert.equal(parseMqttCommand(topic, command, undefined, Buffer.byteLength(command, "utf8") - 1), null);
+  assert.equal(parseMqttCommand(topic, new Uint8Array(Buffer.byteLength(command, "utf8") + 1), undefined, Buffer.byteLength(command, "utf8")), null);
+  assert.deepEqual(parseMqttCommand(topic, Buffer.from(command), undefined, Buffer.byteLength(command, "utf8"))?.requestId, "request-1");
 });
