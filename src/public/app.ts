@@ -501,8 +501,11 @@ function evaluateHotUsagePoll(poller: NonNullable<typeof hotUsagePoller>, usage:
   const hosts = usage?.hosts || [];
   const targetHosts = [...poller.targetHostIds].map((hostId) => hosts.find((host) => host.hostId === hostId));
   const presentTargetHosts = targetHosts.filter((host): host is NonNullable<typeof host> => Boolean(host));
+  const completionHosts = presentTargetHosts.filter((host) => host.active !== false && host.status !== "offline" && !host.error);
+  const completionHostIds = new Set(completionHosts.map((host) => host.hostId));
+  const unresolvedRetryHosts = [...poller.retryGraceHostIds].filter((hostId) => !completionHostIds.has(hostId));
   const graceExpired = Date.now() - poller.startedAt >= HOT_USAGE_RETRY_GRACE_PERIOD_MS;
-  const retryGracePending = !graceExpired && poller.retryGraceHostIds.size > 0;
+  const retryGracePending = !graceExpired && unresolvedRetryHosts.length > 0;
   if (presentTargetHosts.length > 0) {
     const errorHost = presentTargetHosts.find((host) => host.error && host.error !== poller.baseline.get(host.hostId)?.error);
     if (errorHost?.error) {
@@ -512,7 +515,6 @@ function evaluateHotUsagePoll(poller: NonNullable<typeof hotUsagePoller>, usage:
       $("#status-copy").textContent = message;
       return true;
     }
-    const completionHosts = presentTargetHosts.filter((host) => host.active !== false && host.status !== "offline" && !host.error);
     const freshHotUsage = !retryGracePending && completionHosts.length > 0 && completionHosts.every((host) => {
       if (host.category !== "hot" || !host.generatedAt) return false;
       const generatedAt = Date.parse(host.generatedAt);
@@ -521,8 +523,6 @@ function evaluateHotUsagePoll(poller: NonNullable<typeof hotUsagePoller>, usage:
     });
     if (freshHotUsage) {
       stopHotUsagePolling();
-      const completionHostIds = new Set(completionHosts.map((host) => host.hostId));
-      const unresolvedRetryHosts = [...poller.retryGraceHostIds].filter((hostId) => !completionHostIds.has(hostId));
       const message = unresolvedRetryHosts.length > 0
         ? `Hot usage refresh partially complete: ${unresolvedRetryHosts.join(", ")} did not recover`
         : "Hot usage refresh complete";
