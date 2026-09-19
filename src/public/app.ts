@@ -20,11 +20,12 @@ let providerOrder = ["codex", "openrouter", "opencode-go", "ollama"];
 const usageSourceOrder = ["codex", "opencode", "hermes", "antigravity"];
 const usageSourceNames: Record<string, string> = { codex: "Codex", opencode: "OpenCode", hermes: "Hermes", antigravity: "Antigravity" };
 const HOT_USAGE_POLL_INTERVAL_MS = 5_000;
+const HOT_USAGE_RETRY_GRACE_PERIOD_MS = 15_000;
 const HOT_USAGE_POLL_TIMEOUT_MS = 2 * 60 * 1000;
 let activeChartTooltip: { anchor: HTMLElement; tooltip: HTMLElement } | null = null;
 let activeQuotaTooltip: { anchor: HTMLElement; tooltip: HTMLElement } | null = null;
 type HotUsageBaseline = Map<string, { generatedAt: number; error: string | null }>;
-let hotUsagePoller: { timer: number; startedAt: number; baseline: HotUsageBaseline; targetHostIds: Set<string>; requestInFlight: boolean } | null = null;
+let hotUsagePoller: { timer: number; startedAt: number; baseline: HotUsageBaseline; targetHostIds: Set<string>; retryGraceHostIds: Set<string>; requestInFlight: boolean } | null = null;
 let activeRefreshes = 0;
 
 function positionChartTooltip(anchor: HTMLElement, tooltip: HTMLElement): void {
@@ -500,6 +501,11 @@ function evaluateHotUsagePoll(poller: NonNullable<typeof hotUsagePoller>, usage:
   const hosts = usage?.hosts || [];
   const targetHosts = [...poller.targetHostIds].map((hostId) => hosts.find((host) => host.hostId === hostId));
   const presentTargetHosts = targetHosts.filter((host): host is NonNullable<typeof host> => Boolean(host));
+  const retryGracePending = Date.now() - poller.startedAt < HOT_USAGE_RETRY_GRACE_PERIOD_MS && [...poller.retryGraceHostIds].some((hostId) => {
+    const host = hosts.find((candidate) => candidate.hostId === hostId);
+    const baselineError = poller.baseline.get(hostId)?.error;
+    return Boolean(host && host.active !== false && host.status !== "offline" && baselineError && host.error === baselineError);
+  });
   if (usage && presentTargetHosts.length === 0) {
     stopHotUsagePolling();
     const message = "Hot usage refresh unavailable: no target hosts are present";
@@ -516,8 +522,8 @@ function evaluateHotUsagePoll(poller: NonNullable<typeof hotUsagePoller>, usage:
       $("#status-copy").textContent = message;
       return true;
     }
-    const completionHosts = presentTargetHosts.filter((host) => host.active !== false && host.status !== "offline" && (!host.error || host.error !== poller.baseline.get(host.hostId)?.error));
-    const freshHotUsage = completionHosts.length > 0 && completionHosts.every((host) => {
+    const completionHosts = presentTargetHosts.filter((host) => host.active !== false && host.status !== "offline" && !host.error);
+    const freshHotUsage = !retryGracePending && completionHosts.length > 0 && completionHosts.every((host) => {
       if (host.category !== "hot" || !host.generatedAt) return false;
       const generatedAt = Date.parse(host.generatedAt);
       const previous = poller.baseline.get(host.hostId);
@@ -525,7 +531,34 @@ function evaluateHotUsagePoll(poller: NonNullable<typeof hotUsagePoller>, usage:
     });
     if (freshHotUsage) {
       stopHotUsagePolling();
-      showToast("Hot usage refresh complete");
+      const unresolvedRetryHosts = [...poller.retryGraceHostIds].filter((hostId) => {
+        const host = hosts.find((candidate) => candidate.hostId === hostId);
+        const baselineError = poller.baseline.get(hostId)?.error;
+        return Boolean(host && host.active !== false && host.status !== "offline" && baselineError && host.error === baselineError);
+      });
+      const message = unresolvedRetryHosts.length > 0
+        ? `Hot usage refresh partially complete: ${unresolvedRetryHosts.join(", ")} did not recover`
+        : "Hot usage refresh complete";
+      showToast(message);
+      if (unresolvedRetryHosts.length > 0) $("#status-copy").textContent = message;
+      return true;
+    }
+  }
+  if (!retryGracePending && poller.retryGraceHostIds.size > 0) {
+    const availableHosts = presentTargetHosts.filter((host) => host.active !== false && host.status !== "offline");
+    const errorHosts = availableHosts.filter((host) => Boolean(host.error));
+    if (availableHosts.length > 0 && errorHosts.length === availableHosts.length) {
+      stopHotUsagePolling();
+      const message = `Hot usage refresh failed: ${errorHosts.map((host) => `${host.hostId}: ${host.error}`).join("; ")}`;
+      showToast(message);
+      $("#status-copy").textContent = message;
+      return true;
+    }
+    if (availableHosts.length === 0) {
+      stopHotUsagePolling();
+      const message = "Hot usage refresh failed: no eligible hosts are available";
+      showToast(message);
+      $("#status-copy").textContent = message;
       return true;
     }
   }
@@ -557,7 +590,8 @@ async function pollHotUsage(): Promise<void> {
 function startHotUsagePolling(baseline: HotUsageBaseline, initialUsage: Usage | null | undefined, startedAt: number, targetHostIds: Set<string>): void {
   stopHotUsagePolling();
   if (targetHostIds.size === 0) return;
-  const poller = { timer: 0, startedAt, baseline, targetHostIds, requestInFlight: false };
+  const retryGraceHostIds = new Set([...targetHostIds].filter((hostId) => Boolean(baseline.get(hostId)?.error)));
+  const poller = { timer: 0, startedAt, baseline, targetHostIds, retryGraceHostIds, requestInFlight: false };
   hotUsagePoller = poller;
   if (evaluateHotUsagePoll(poller, initialUsage || null)) return;
   poller.timer = window.setTimeout(() => void pollHotUsage(), HOT_USAGE_POLL_INTERVAL_MS);
