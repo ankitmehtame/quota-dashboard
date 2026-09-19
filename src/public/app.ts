@@ -517,16 +517,6 @@ function evaluateHotUsagePoll(poller: NonNullable<typeof hotUsagePoller>, usage:
       return true;
     }
     const completionHosts = presentTargetHosts.filter((host) => host.active !== false && host.status !== "offline" && (!host.error || host.error !== poller.baseline.get(host.hostId)?.error));
-    if (completionHosts.length === 0) {
-      const unchangedError = presentTargetHosts.find((host) => host.error && host.error === poller.baseline.get(host.hostId)?.error)?.error;
-      if (unchangedError) {
-        stopHotUsagePolling();
-        const message = `Hot usage refresh failed: ${unchangedError}`;
-        showToast(message);
-        $("#status-copy").textContent = message;
-        return true;
-      }
-    }
     const freshHotUsage = completionHosts.length > 0 && completionHosts.every((host) => {
       if (host.category !== "hot" || !host.generatedAt) return false;
       const generatedAt = Date.parse(host.generatedAt);
