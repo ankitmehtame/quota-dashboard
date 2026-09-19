@@ -162,8 +162,9 @@ export function parseMqttCommand(
   if (parts.length !== root.length + 3 || root.some((part, index) => parts[index] !== part) || parts[root.length] !== "hosts") return null;
   const hostId = parts[root.length + 1];
   if (!hostId || sanitizeHostId(hostId) !== hostId || parts[root.length + 2] !== "command") return null;
+  const byteLength = typeof payload === "string" ? Buffer.byteLength(payload, "utf8") : payload.byteLength;
+  if (byteLength > maxPayloadBytes) return null;
   const text = typeof payload === "string" ? payload : new TextDecoder().decode(payload);
-  if (new TextEncoder().encode(text).byteLength > maxPayloadBytes) return null;
   let value: unknown;
   try {
     value = JSON.parse(text) as unknown;
