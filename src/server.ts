@@ -465,7 +465,10 @@ async function handleApi(request: import("node:http").IncomingMessage, response:
     if (!hostId || hostId === localHostId) {
       const queueResult = queueLocalCold(from, to, mode === "offline");
       if (queueResult === "shutdown") return json(response, 503, { error: "Server is shutting down" });
-      if (queueResult === "full") console.warn(`[server] Local cold queue full (${MAX_LOCAL_COLD_QUEUE}); dropped request for ${from}..${to} (${hostId ? `host ${hostId}` : "all hosts"})`);
+      if (queueResult === "full") {
+        console.warn(`[server] Local cold queue full (${MAX_LOCAL_COLD_QUEUE}); dropped request for ${from}..${to} (${hostId ? `host ${hostId}` : "all hosts"})`);
+        if (hostId === localHostId) return json(response, 429, { error: "Local cold backfill queue is full" });
+      }
     }
     if (hostId && hostId !== localHostId) void remoteUsageStore.publishCommand(hostId, { requestId: randomUUID(), category: "cold", from, to, mode });
     if (!hostId) publishRemoteRefresh("cold", from, to, mode);

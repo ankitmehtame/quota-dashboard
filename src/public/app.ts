@@ -501,18 +501,8 @@ function evaluateHotUsagePoll(poller: NonNullable<typeof hotUsagePoller>, usage:
   const hosts = usage?.hosts || [];
   const targetHosts = [...poller.targetHostIds].map((hostId) => hosts.find((host) => host.hostId === hostId));
   const presentTargetHosts = targetHosts.filter((host): host is NonNullable<typeof host> => Boolean(host));
-  const retryGracePending = Date.now() - poller.startedAt < HOT_USAGE_RETRY_GRACE_PERIOD_MS && [...poller.retryGraceHostIds].some((hostId) => {
-    const host = hosts.find((candidate) => candidate.hostId === hostId);
-    const baselineError = poller.baseline.get(hostId)?.error;
-    return Boolean(host && host.active !== false && host.status !== "offline" && baselineError && host.error === baselineError);
-  });
-  if (usage && presentTargetHosts.length === 0) {
-    stopHotUsagePolling();
-    const message = "Hot usage refresh unavailable: no target hosts are present";
-    showToast(message);
-    $("#status-copy").textContent = message;
-    return true;
-  }
+  const graceExpired = Date.now() - poller.startedAt >= HOT_USAGE_RETRY_GRACE_PERIOD_MS;
+  const retryGracePending = !graceExpired && poller.retryGraceHostIds.size > 0;
   if (presentTargetHosts.length > 0) {
     const errorHost = presentTargetHosts.find((host) => host.error && host.error !== poller.baseline.get(host.hostId)?.error);
     if (errorHost?.error) {
@@ -531,11 +521,8 @@ function evaluateHotUsagePoll(poller: NonNullable<typeof hotUsagePoller>, usage:
     });
     if (freshHotUsage) {
       stopHotUsagePolling();
-      const unresolvedRetryHosts = [...poller.retryGraceHostIds].filter((hostId) => {
-        const host = hosts.find((candidate) => candidate.hostId === hostId);
-        const baselineError = poller.baseline.get(hostId)?.error;
-        return Boolean(host && host.active !== false && host.status !== "offline" && baselineError && host.error === baselineError);
-      });
+      const completionHostIds = new Set(completionHosts.map((host) => host.hostId));
+      const unresolvedRetryHosts = [...poller.retryGraceHostIds].filter((hostId) => !completionHostIds.has(hostId));
       const message = unresolvedRetryHosts.length > 0
         ? `Hot usage refresh partially complete: ${unresolvedRetryHosts.join(", ")} did not recover`
         : "Hot usage refresh complete";
@@ -544,7 +531,7 @@ function evaluateHotUsagePoll(poller: NonNullable<typeof hotUsagePoller>, usage:
       return true;
     }
   }
-  if (!retryGracePending && poller.retryGraceHostIds.size > 0) {
+  if (usage && graceExpired) {
     const availableHosts = presentTargetHosts.filter((host) => host.active !== false && host.status !== "offline");
     const errorHosts = availableHosts.filter((host) => Boolean(host.error));
     if (availableHosts.length > 0 && errorHosts.length === availableHosts.length) {
