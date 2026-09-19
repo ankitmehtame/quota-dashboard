@@ -355,7 +355,7 @@ export class RemoteMqttPublisher {
   }
 
   private enqueueJob(job: UsageJob, hot: boolean): boolean {
-    if (this.stopped && !this.client) return false;
+    if (this.stopped || !this.client) return false;
     const queue = hot ? this.hotQueue : this.coldQueue;
     if (queue.some((entry) => entry.runId === job.runId)) return false;
     if (job.scheduledDate && this.scheduledColdDates.has(job.scheduledDate)) return false;
