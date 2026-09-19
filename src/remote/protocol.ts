@@ -1,4 +1,6 @@
 /** The wire format shared by the remote publisher and MQTT consumers. */
+import { Buffer } from "node:buffer";
+
 export const MQTT_SCHEMA_VERSION = 2 as const;
 
 export type MqttDateRange = {
@@ -164,9 +166,9 @@ export function parseMqttCommand(
   if (!hostId || sanitizeHostId(hostId) !== hostId || parts[root.length + 2] !== "command") return null;
   const byteLength = typeof payload === "string" ? Buffer.byteLength(payload, "utf8") : payload.byteLength;
   if (byteLength > maxPayloadBytes) return null;
-  const text = typeof payload === "string" ? payload : new TextDecoder().decode(payload);
   let value: unknown;
   try {
+    const text = typeof payload === "string" ? payload : new TextDecoder().decode(payload);
     value = JSON.parse(text) as unknown;
   } catch {
     return null;
