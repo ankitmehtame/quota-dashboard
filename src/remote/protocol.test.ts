@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { Buffer } from "node:buffer";
 
 import {
   MQTT_SCHEMA_VERSION,
@@ -58,6 +59,12 @@ test("checks command payload byte length before decoding", () => {
   const topic = "quota-dashboard/v1/hosts/workstation/command";
   const command = JSON.stringify({ schemaVersion: 2, requestId: "request-1", category: "cold", from: "2026-09-01", to: "2026-09-03", mode: "offline" });
   assert.equal(parseMqttCommand(topic, command, undefined, Buffer.byteLength(command, "utf8") - 1), null);
-  assert.equal(parseMqttCommand(topic, new Uint8Array(Buffer.byteLength(command, "utf8") + 1), undefined, Buffer.byteLength(command, "utf8")), null);
+  assert.equal(parseMqttCommand(topic, Buffer.from(command), undefined, Buffer.byteLength(command, "utf8") - 1), null);
   assert.deepEqual(parseMqttCommand(topic, Buffer.from(command), undefined, Buffer.byteLength(command, "utf8"))?.requestId, "request-1");
+});
+
+test("returns null when binary command decoding throws", () => {
+  const topic = "quota-dashboard/v1/hosts/workstation/command";
+  const invalidPayload = { byteLength: 0 } as unknown as Uint8Array;
+  assert.equal(parseMqttCommand(topic, invalidPayload), null);
 });
