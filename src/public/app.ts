@@ -500,35 +500,45 @@ function evaluateHotUsagePoll(poller: NonNullable<typeof hotUsagePoller>, usage:
   const hosts = usage?.hosts || [];
   const targetHosts = [...poller.targetHostIds].map((hostId) => hosts.find((host) => host.hostId === hostId));
   const presentTargetHosts = targetHosts.filter((host): host is NonNullable<typeof host> => Boolean(host));
-  const errorHost = presentTargetHosts.find((host) => host.error && host.error !== poller.baseline.get(host.hostId)?.error);
-  if (errorHost?.error) {
+  if (usage && presentTargetHosts.length === 0) {
     stopHotUsagePolling();
-    const message = `Hot usage refresh failed: ${errorHost.error}`;
+    const message = "Hot usage refresh unavailable: no target hosts are present";
     showToast(message);
     $("#status-copy").textContent = message;
     return true;
   }
-  const completionHosts = presentTargetHosts.filter((host) => !host.error || host.error !== poller.baseline.get(host.hostId)?.error);
-  if (presentTargetHosts.length === poller.targetHostIds.size && completionHosts.length === 0) {
-    const unchangedError = presentTargetHosts.find((host) => host.error)?.error;
-    if (unchangedError) {
+  if (presentTargetHosts.length > 0) {
+    const errorHost = presentTargetHosts.find((host) => host.error && host.error !== poller.baseline.get(host.hostId)?.error);
+    if (errorHost?.error) {
       stopHotUsagePolling();
-      const message = `Hot usage refresh failed: ${unchangedError}`;
+      const message = `Hot usage refresh failed: ${errorHost.error}`;
       showToast(message);
       $("#status-copy").textContent = message;
       return true;
     }
-  }
-  const freshHotUsage = presentTargetHosts.length === poller.targetHostIds.size && completionHosts.length > 0 && completionHosts.every((host) => {
-    if (host.category !== "hot" || !host.generatedAt) return false;
-    const generatedAt = Date.parse(host.generatedAt);
-    const previous = poller.baseline.get(host.hostId);
-    return Number.isFinite(generatedAt) && (!previous || !Number.isFinite(previous.generatedAt) || generatedAt > previous.generatedAt);
-  });
-  if (freshHotUsage) {
-    stopHotUsagePolling();
-    showToast("Hot usage refresh complete");
-    return true;
+    const completionHosts = presentTargetHosts.filter((host) => hostHealthy(host) && (!host.error || host.error !== poller.baseline.get(host.hostId)?.error));
+    if (completionHosts.length === 0) {
+      const unchangedError = presentTargetHosts.find((host) => host.error && host.error === poller.baseline.get(host.hostId)?.error)?.error;
+      const unavailableHost = presentTargetHosts.find((host) => !hostHealthy(host));
+      const message = unchangedError
+        ? `Hot usage refresh failed: ${unchangedError}`
+        : `Hot usage refresh unavailable: ${unavailableHost?.error || unavailableHost?.status || "no healthy target hosts are present"}`;
+      stopHotUsagePolling();
+      showToast(message);
+      $("#status-copy").textContent = message;
+      return true;
+    }
+    const freshHotUsage = completionHosts.every((host) => {
+      if (host.category !== "hot" || !host.generatedAt) return false;
+      const generatedAt = Date.parse(host.generatedAt);
+      const previous = poller.baseline.get(host.hostId);
+      return Number.isFinite(generatedAt) && (!previous || !Number.isFinite(previous.generatedAt) || generatedAt > previous.generatedAt);
+    });
+    if (freshHotUsage) {
+      stopHotUsagePolling();
+      showToast("Hot usage refresh complete");
+      return true;
+    }
   }
   if (Date.now() - poller.startedAt >= HOT_USAGE_POLL_TIMEOUT_MS) {
     stopHotUsagePolling();
