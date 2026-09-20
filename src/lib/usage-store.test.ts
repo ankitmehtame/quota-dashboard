@@ -60,6 +60,14 @@ test("stores the raw document exactly and derives normalized tool files", async 
   });
 });
 
+test("counts an empty raw result as a stored date", async () => {
+  await withStore(async (store) => {
+    await store.ingest(container({ daily: [] }));
+    assert.deepEqual([...await store.readStoredDates("my-laptop", "2026-09-18", "2026-09-18")], ["2026-09-18"]);
+    assert.deepEqual(await store.readNormalized("my-laptop", "2026-09-18", "2026-09-18"), []);
+  });
+});
+
 test("lists hosts and reads normalized records across the configured range", async () => {
   await withStore(async (store) => {
     await store.ingest(container({ daily: [row("codex", 1)] }, { hostId: "my-laptop", date: "2026-09-18" }));

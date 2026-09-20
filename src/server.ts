@@ -382,6 +382,8 @@ async function buildUsage(url: URL, config: AppConfig) {
   const hostIds = new Set<string>([localHostId, ...persistedHostIds, ...storedFiles.map((file) => file.hostId), ...Object.keys(remoteState.hosts)]);
   const activeHostIds = new Set<string>([localHostId, ...Object.keys(remoteState.hosts)]);
   const storageErrorsByHost = new Map<string, string | null>();
+  const storedDatesByHost = new Map<string, Set<string>>();
+  if (usageSources.length) await Promise.all([...hostIds].map(async (hostId) => storedDatesByHost.set(hostId, await usageStore.readStoredDates(hostId, range.from, range.to))));
   const hosts = [...hostIds].map((hostId) => {
     const state = remoteState.hosts[hostId];
     const files = storedFiles.filter((file) => file.hostId === hostId);
@@ -394,7 +396,7 @@ async function buildUsage(url: URL, config: AppConfig) {
     const storageError = ingestError || (isLocal ? localHotUsageError : null) || null;
     storageErrorsByHost.set(hostId, storageError);
     const error = storageError || state?.error?.error || state?.status?.error || null;
-    const coveredDates = new Set(files.map((file) => file.date));
+    const coveredDates = storedDatesByHost.get(hostId) || new Set(files.map((file) => file.date));
     const complete = dateList(range.from, range.to).every((date) => coveredDates.has(date));
     const stale = !Number.isFinite(generatedTime) || generatedTime > Date.now() + 60_000 || Date.now() - generatedTime > (isLocal ? 10 * 60 * 1000 : staleAfterMs);
     const status = error ? "error" : state?.status?.status || (hostRecords.length ? "ok" : "unknown");
