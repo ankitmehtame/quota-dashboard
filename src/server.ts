@@ -385,7 +385,6 @@ async function buildUsage(url: URL, config: AppConfig) {
   if (usageSources.length) await Promise.all([...hostIds].map(async (hostId) => storedDatesByHost.set(hostId, await usageStore.readStoredDates(hostId, range.from, range.to))));
   const hosts = [...hostIds].map((hostId) => {
     const state = remoteState.hosts[hostId];
-    const files = storedFiles.filter((file) => file.hostId === hostId);
     const latest = latestByHost.get(hostId) || null;
     const generatedAt = latest?.generatedAt ?? state?.usage?.generatedAt ?? null;
     const generatedTime = generatedAt ? Date.parse(generatedAt) : NaN;
