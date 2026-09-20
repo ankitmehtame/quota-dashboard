@@ -378,6 +378,19 @@ export class FilesystemUsageStore {
     return result.sort((a, b) => a.date.localeCompare(b.date) || a.toolId.localeCompare(b.toolId));
   }
 
+  /** Return dates with a persisted raw result, including days with no tool records. */
+  async readStoredDates(hostId: string, from: string, to: string): Promise<Set<string>> {
+    const safeHostId = sanitizeHostId(hostId);
+    if (!isCalendarDate(from) || !isCalendarDate(to) || from > to) throw new Error("Invalid usage date range");
+    const result = new Set<string>();
+    for (let cursor = from; cursor <= to;) {
+      const directory = datePath(this.dataRoot, safeHostId, cursor);
+      if (await fileExists(join(directory, "raw.json"))) result.add(cursor);
+      cursor = nextDate(cursor);
+    }
+    return result;
+  }
+
   /** Read the newest normalized record for a host, independent of a query range. */
   async readLatest(hostId: string): Promise<NormalizedToolUsage | null> {
     const safeHostId = sanitizeHostId(hostId);
