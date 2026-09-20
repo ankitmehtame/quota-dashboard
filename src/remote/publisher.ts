@@ -263,6 +263,10 @@ export class RemoteMqttPublisher {
     this.dependencies.log(`[${this.dependencies.now().toISOString()}] ${message}`);
   }
 
+  private logCold(requestId: string, message: string): void {
+    this.dependencies.log(`[${this.dependencies.now().toISOString()}] [cold] [${requestId}] ${message}`);
+  }
+
   get mqttTopics(): ReturnType<typeof makeMqttTopics> {
     return this.topics;
   }
@@ -313,7 +317,9 @@ export class RemoteMqttPublisher {
   /** Run one cold job immediately when the cold slot is free. */
   async publishCold(from: string, to = from, mode: MqttCommandMode = this.config.coldMode): Promise<boolean> {
     if (!validDateRange({ from, to }) || this.coldInFlight || this.stopped || !this.client) return false;
-    const task = this.startJob({ range: { from, to }, category: "cold", mode, runId: randomUUID() }, this.config.coldTimeoutMs);
+    const runId = randomUUID();
+    this.logCold(runId, `receipt range=${from}..${to} mode=${mode}`);
+    const task = this.startJob({ range: { from, to }, category: "cold", mode, runId }, this.config.coldTimeoutMs);
     this.coldInFlight = task;
     try {
       await task;
@@ -336,7 +342,9 @@ export class RemoteMqttPublisher {
   /** Feed a command from MQTT without doing async work in the MQTT callback. */
   processCommand(topic: string, payload: Buffer | Uint8Array | string): boolean {
     const command = parseMqttCommand(topic, payload, this.config.mqttPrefix);
-    if (!command || command.hostId !== this.config.hostId || this.commandRequestIds.has(command.requestId) || this.commandRequestIds.size >= MAX_ACTIVE_COMMANDS) return false;
+    if (!command || command.hostId !== this.config.hostId) return false;
+    if (command.category === "cold") this.logCold(command.requestId, `receipt range=${command.from}..${command.to} mode=${command.mode}`);
+    if (this.commandRequestIds.has(command.requestId) || this.commandRequestIds.size >= MAX_ACTIVE_COMMANDS) return false;
     this.commandRequestIds.add(command.requestId);
     try {
       this.dependencies.onCommand?.(command);
@@ -393,6 +401,10 @@ export class RemoteMqttPublisher {
 
   private async startJob(job: UsageJob, timeoutMs: number): Promise<void> {
     if (!this.client) return;
+    if (job.category === "cold") {
+      await this.startColdJob(job, timeoutMs);
+      return;
+    }
     let currentDate = job.range.from;
     try {
       for (const date of dateList(job.range)) {
@@ -419,14 +431,46 @@ export class RemoteMqttPublisher {
     } catch (error) {
       if (this.stopped || !this.client) return;
       const message = ccusageErrorMessage(error, this.config.ccusageBinary).slice(0, 16_384);
-      if (job.category === "cold") {
-        this.log(`Cold ccusage job failed: ${message}`);
-        return;
-      }
       const errorMetadata = this.nextMetadata(currentDate, job.category, job.runId);
       await publish(this.client, this.topics.status, JSON.stringify(makeStatusMessage(errorMetadata, "error", message)));
       await publish(this.client, this.topics.error, JSON.stringify(makeErrorMessage(errorMetadata, message)));
     }
+  }
+
+  private async startColdJob(job: UsageJob, timeoutMs: number): Promise<void> {
+    const dates = dateList(job.range).reverse();
+    let succeeded = 0;
+    let failed = 0;
+    this.logCold(job.runId, `start days=${dates.length} reverse=true`);
+
+    for (const date of dates) {
+      if (this.stopped || !this.client) return;
+      const startedAt = Date.now();
+      this.logCold(job.runId, `day ${date} start`);
+      try {
+        const range: CcusageRange = { from: date, to: date, timezone: this.config.timezone };
+        const result = await this.dependencies.runCcusage({
+          binary: this.config.ccusageBinary,
+          range,
+          timeoutMs,
+          maxBuffer: this.config.ccusageMaxBuffer,
+          offline: job.mode === "offline",
+          runner: this.dependencies.execFileRunner,
+        });
+        if (!documentMatchesDate(result.document, date)) throw new Error(`ccusage returned data outside ${date}`);
+        if (this.stopped || !this.client) return;
+        const message = makeUsageSnapshot(this.nextMetadata(date, job.category, job.runId), result.document);
+        await publish(this.client, makeUsageTopic(this.config.mqttPrefix, this.config.hostId, date), JSON.stringify(message));
+        succeeded += 1;
+        this.logCold(job.runId, `day ${date} end elapsed=${((Date.now() - startedAt) / 1000).toFixed(3)}s`);
+      } catch (error) {
+        failed += 1;
+        const message = ccusageErrorMessage(error, this.config.ccusageBinary).slice(0, 16_384);
+        this.logCold(job.runId, `day ${date} failure elapsed=${((Date.now() - startedAt) / 1000).toFixed(3)}s error=${message}`);
+      }
+    }
+
+    if (!this.stopped && this.client) this.logCold(job.runId, `summary succeeded=${succeeded} failed=${failed}`);
   }
 
   private nextMetadata(date: string, category: MqttCategory, runId: string, now = this.dependencies.now()): Omit<MqttMetadata, "schemaVersion"> {

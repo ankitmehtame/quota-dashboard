@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { type AppConfig, type ProviderId, type UsageSourceId, DEFAULT_CONFIG, PROVIDER_IDS, USAGE_SOURCE_IDS, localDateRange, normalizeConfig, normalizeProviderOrder, providerStatus } from "./lib/core.js";
 import type { ProviderResult } from "./lib/core.js";
+import { processColdDays } from "./lib/cold-range.js";
 import { isProviderConfigured, PROVIDER_FETCHERS } from "./lib/providers.js";
 import { filterUsageRecords, summarizeUsage } from "./lib/usage.js";
 import { FilesystemUsageStore } from "./lib/usage-store.js";
@@ -73,7 +74,7 @@ let localColdSchedulePromise: Promise<void> | null = null;
 let localHotTimer: NodeJS.Timeout | null = null;
 let localColdTimer: NodeJS.Timeout | null = null;
 let localHotUsageError: string | null = null;
-const localColdQueue: Array<{ from: string; to: string; offline: boolean }> = [];
+const localColdQueue: LocalColdJob[] = [];
 const localColdQueued = new Set<string>();
 const localDateChains = new Map<string, Promise<void>>();
 const MAX_LOCAL_COLD_QUEUE = 10;
@@ -128,7 +129,7 @@ type DashboardValue = {
   usage: Record<string, unknown>;
 };
 
-type RequestBody = { enabled?: unknown; order?: unknown; hostId?: unknown; from?: unknown; to?: unknown; mode?: unknown };
+type RequestBody = { enabled?: unknown; order?: unknown; hostId?: unknown; from?: unknown; to?: unknown; mode?: unknown; requestId?: unknown };
 
 async function loadConfig(): Promise<AppConfig> {
   try {
@@ -177,39 +178,73 @@ function documentMatchesDate(document: unknown, date: string): boolean {
   });
 }
 
-async function runLocalUsageJob(range: { from: string; to: string }, category: "hot" | "cold", offline: boolean, timeoutMs: number): Promise<void> {
+function logColdLocal(requestId: string, message: string, error = false): void {
+  const line = `[${new Date().toISOString()}] [cold] [local] [${requestId}] ${message}`;
+  if (error) console.error(line);
+  else console.log(line);
+}
+
+function elapsedSeconds(startedAt: number): string {
+  return `${((Date.now() - startedAt) / 1000).toFixed(3)}s`;
+}
+
+type LocalColdJob = { from: string; to: string; offline: boolean; requestId: string };
+
+async function runLocalUsageJob(range: { from: string; to: string }, category: "hot" | "cold", offline: boolean, timeoutMs: number, requestId?: string): Promise<void> {
   const failures: string[] = [];
-  for (const date of dateList(range.from, range.to)) {
+  const coldRequestId = requestId || "local";
+  const runDate = async (date: string): Promise<void> => {
     const previous = localDateChains.get(date) || Promise.resolve();
     const current = previous.catch(() => undefined).then(async () => {
-      const result = await runCcusage({
-        binary: localCcusageBinary,
-        range: { from: date, to: date, timezone: usageTimezone },
-        offline,
-        timeoutMs,
-        maxBuffer: localCcusageMaxBuffer,
-      });
-      if (!documentMatchesDate(result.document, date)) throw new Error(`ccusage returned data outside ${date}`);
-      await usageStore.ingest({
-        schemaVersion: 2,
-        hostId: localHostId,
-        date,
-        timezone: usageTimezone,
-        category,
-        runId: randomUUID(),
-        generatedAt: new Date().toISOString(),
-        ...(ccusageVersion() ? { ccusageVersion: ccusageVersion() } : {}),
-        range,
-        data: result.document,
-      });
+      const startedAt = Date.now();
+      if (category === "cold") logColdLocal(coldRequestId, `day ${date} start`);
+      try {
+        const result = await runCcusage({
+          binary: localCcusageBinary,
+          range: { from: date, to: date, timezone: usageTimezone },
+          offline,
+          timeoutMs,
+          maxBuffer: localCcusageMaxBuffer,
+        });
+        if (!documentMatchesDate(result.document, date)) throw new Error(`ccusage returned data outside ${date}`);
+        await usageStore.ingest({
+          schemaVersion: 2,
+          hostId: localHostId,
+          date,
+          timezone: usageTimezone,
+          category,
+          runId: category === "cold" ? coldRequestId : randomUUID(),
+          generatedAt: new Date().toISOString(),
+          ...(ccusageVersion() ? { ccusageVersion: ccusageVersion() } : {}),
+          range,
+          data: result.document,
+        });
+        if (category === "cold") logColdLocal(coldRequestId, `day ${date} end elapsed=${elapsedSeconds(startedAt)}`);
+      } catch (error) {
+        if (category === "cold") logColdLocal(coldRequestId, `day ${date} failure elapsed=${elapsedSeconds(startedAt)} error=${error instanceof Error ? error.message : String(error)}`, true);
+        throw error;
+      }
     });
     localDateChains.set(date, current);
     try {
       await current;
-    } catch (error) {
-      failures.push(`${date}: ${error instanceof Error ? error.message : String(error)}`);
     } finally {
       if (localDateChains.get(date) === current) localDateChains.delete(date);
+    }
+  };
+
+  if (category === "cold") {
+    const result = await processColdDays({ from: range.from, to: range.to, run: runDate });
+    dashboardCache.clear();
+    logColdLocal(coldRequestId, `summary succeeded=${result.succeeded} failed=${result.failures.length}`);
+    if (result.failures.length > 0) throw new Error(result.failures.map(({ date, error }) => `${date}: ${error instanceof Error ? error.message : String(error)}`).join("; "));
+    return;
+  }
+  for (const date of dateList(range.from, range.to)) {
+    try {
+      await runDate(date);
+    } catch (error) {
+      failures.push(`${date}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   dashboardCache.clear();
@@ -246,13 +281,14 @@ function startLocalHotScheduler(): void {
 
 type LocalColdQueueResult = "accepted" | "duplicate" | "full" | "shutdown";
 
-function queueLocalCold(from: string, to: string, offline: boolean): LocalColdQueueResult {
+function queueLocalCold(from: string, to: string, offline: boolean, requestId: string = randomUUID()): LocalColdQueueResult {
   if (shuttingDown) return "shutdown";
   const key = `${from}:${to}:${offline ? "offline" : "online"}`;
   if (localColdQueued.has(key)) return "duplicate";
   if (localColdQueue.length >= MAX_LOCAL_COLD_QUEUE) return "full";
   localColdQueued.add(key);
-  localColdQueue.push({ from, to, offline });
+  localColdQueue.push({ from, to, offline, requestId });
+  logColdLocal(requestId, `local enqueue range=${from}..${to} mode=${offline ? "offline" : "online"}`);
   void drainLocalColdQueue();
   return "accepted";
 }
@@ -262,10 +298,11 @@ async function drainLocalColdQueue(): Promise<void> {
   const job = localColdQueue.shift();
   if (!job) return;
   const key = `${job.from}:${job.to}:${job.offline ? "offline" : "online"}`;
-  localColdPromise = runLocalUsageJob({ from: job.from, to: job.to }, "cold", job.offline, localColdTimeoutMs)
+  logColdLocal(job.requestId, `local dequeue range=${job.from}..${job.to} mode=${job.offline ? "offline" : "online"}`);
+  localColdPromise = runLocalUsageJob({ from: job.from, to: job.to }, "cold", job.offline, localColdTimeoutMs, job.requestId)
     .catch((error) => {
       dashboardCache.clear();
-      console.error(`Local cold usage refresh failed: ${ccusageErrorMessage(error, localCcusageBinary)}`);
+      logColdLocal(job.requestId, `job failed error=${ccusageErrorMessage(error, localCcusageBinary)}`, true);
     })
     .finally(() => { localColdPromise = null; localColdQueued.delete(key); });
   await localColdPromise;
@@ -425,10 +462,11 @@ async function body(request: import("node:http").IncomingMessage): Promise<Reque
   return value ? JSON.parse(value) : {};
 }
 
-function publishRemoteRefresh(category: "hot" | "cold", from: string, to: string, mode: "online" | "offline"): void {
+function publishRemoteRefresh(category: "hot" | "cold", from: string, to: string, mode: "online" | "offline", requestId: string = randomUUID()): void {
   for (const hostId of Object.keys(remoteUsageStore.getSnapshot().hosts)) {
     if (hostId === localHostId) continue;
-    void remoteUsageStore.publishCommand(hostId, { requestId: randomUUID(), category, from, to, mode });
+    if (category === "cold") logColdLocal(requestId, `remote dispatch target=${hostId} range=${from}..${to} mode=${mode}`);
+    void remoteUsageStore.publishCommand(hostId, { requestId, category, from, to, mode });
   }
 }
 
@@ -461,21 +499,28 @@ async function handleApi(request: import("node:http").IncomingMessage, response:
     const mode = input.mode === undefined ? "offline" : input.mode;
     if (mode !== "online" && mode !== "offline") return json(response, 400, { error: "mode must be online or offline" });
     if (input.hostId !== undefined && (typeof input.hostId !== "string" || sanitizeHostId(input.hostId) !== input.hostId)) return json(response, 400, { error: "hostId is invalid" });
+    if (input.requestId !== undefined && (typeof input.requestId !== "string" || input.requestId.length === 0 || input.requestId.length > 128)) return json(response, 400, { error: "requestId must be a non-empty string of at most 128 characters" });
+    const requestId = typeof input.requestId === "string" ? input.requestId : randomUUID();
     const hostId = input.hostId as string | undefined;
+    const target = hostId || "all";
+    logColdLocal(requestId, `API receipt target=${target} range=${from}..${to} mode=${mode}`);
     let localAccepted: boolean | undefined;
     if (!hostId || hostId === localHostId) {
-      const queueResult = queueLocalCold(from, to, mode === "offline");
+      const queueResult = queueLocalCold(from, to, mode === "offline", requestId);
       if (queueResult === "shutdown") return json(response, 503, { error: "Server is shutting down" });
       if (queueResult === "full") {
-        console.warn(`[server] Local cold queue full (${MAX_LOCAL_COLD_QUEUE}); dropped request for ${from}..${to} (${hostId ? `host ${hostId}` : "all hosts"})`);
+        logColdLocal(requestId, `local enqueue rejected reason=full range=${from}..${to} mode=${mode}`);
         if (hostId === localHostId) return json(response, 429, { error: "Local cold backfill queue is full" });
         localAccepted = false;
       }
       if (!hostId && (queueResult === "accepted" || queueResult === "duplicate")) localAccepted = true;
     }
-    if (hostId && hostId !== localHostId) void remoteUsageStore.publishCommand(hostId, { requestId: randomUUID(), category: "cold", from, to, mode });
-    if (!hostId) publishRemoteRefresh("cold", from, to, mode);
-    return json(response, 202, { accepted: true, ...(localAccepted === undefined ? {} : { localAccepted }), category: "cold", from, to, mode, hostId: hostId || "all" });
+    if (hostId && hostId !== localHostId) {
+      logColdLocal(requestId, `remote dispatch target=${hostId} range=${from}..${to} mode=${mode}`);
+      void remoteUsageStore.publishCommand(hostId, { requestId, category: "cold", from, to, mode });
+    }
+    if (!hostId) publishRemoteRefresh("cold", from, to, mode, requestId);
+    return json(response, 202, { accepted: true, requestId, ...(localAccepted === undefined ? {} : { localAccepted }), category: "cold", from, to, mode, hostId: target });
   }
   if (request.method === "GET" && url.pathname === "/api/v1/quotas") {
     const enabled = config.providerOrder.filter((id) => config.providers[id].enabled);
