@@ -41,6 +41,7 @@ test("parses stdout without modifying the JSON document", async () => {
 test("slices a multi-day document and synthesizes missing dates", () => {
   const document = {
     metadata: { source: "test" },
+    totalCost: 4,
     daily: [
       { date: "2026-09-11", cost: 1 },
       { date: "2026-09-13", cost: 3 },
@@ -48,7 +49,6 @@ test("slices a multi-day document and synthesizes missing dates", () => {
   };
 
   assert.deepEqual(sliceCcusageDocument(document, "2026-09-11"), {
-    metadata: { source: "test" },
     daily: [{ date: "2026-09-11", cost: 1 }],
   });
   assert.deepEqual(sliceCcusageDocument(document, "2026-09-12"), {

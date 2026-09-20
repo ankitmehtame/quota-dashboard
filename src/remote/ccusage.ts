@@ -91,7 +91,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-/** Return the ccusage document for one date, or an empty document when absent. */
+/** Return only the daily rows for one date, or an empty document when absent. */
 export function sliceCcusageDocument(document: unknown, date: string): Record<string, unknown> {
   if (!isObject(document) || !Array.isArray(document.daily)) throw new Error("ccusage response must contain a top-level daily array");
   const daily = document.daily.filter((row) => {
@@ -99,11 +99,7 @@ export function sliceCcusageDocument(document: unknown, date: string): Record<st
     const rowDate = row.date ?? row.period;
     return rowDate === date;
   });
-  if (daily.length === 0) return { daily: [] };
-  return {
-    ...document,
-    daily,
-  };
+  return { daily };
 }
 
 export async function runCcusage({
@@ -123,7 +119,8 @@ export async function runCcusage({
   runner?: ExecFileRunner;
   sleep?: Sleep;
 }): Promise<CcusageCommandResult> {
-  for (let attempt = 0; attempt < CCUSAGE_RETRY_DELAYS_MS.length + 1; attempt += 1) {
+  let attempt = 0;
+  while (true) {
     try {
       const { stdout, stderr } = await executeFile(runner, binary, ccusageArgs(range, { offline }), {
         timeout: timeoutMs,
@@ -142,10 +139,9 @@ export async function runCcusage({
       const delay = CCUSAGE_RETRY_DELAYS_MS[attempt];
       if (delay === undefined) throw error;
       await sleep(delay);
+      attempt += 1;
     }
   }
-
-  throw new Error("ccusage failed");
 }
 
 export function ccusageErrorMessage(error: unknown, binary: string): string {

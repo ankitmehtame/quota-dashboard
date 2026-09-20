@@ -221,12 +221,12 @@ async function runLocalUsageJob(range: { from: string; to: string }, category: "
           generatedAt: new Date().toISOString(),
           ...(ccusageVersion() ? { ccusageVersion: ccusageVersion() } : {}),
           range,
-          data: documents.get(date),
+          data: documents.get(date) ?? { daily: [] },
         });
         dashboardCache.clear();
         if (category === "cold") logColdLocal(coldRequestId, `day ${date} end elapsed=${elapsedSeconds(startedAt)}`);
       } catch (error) {
-        if (category === "cold") logColdLocal(coldRequestId, `day ${date} failure elapsed=${elapsedSeconds(startedAt)} error=${ccusageErrorMessage(error, localCcusageBinary)}`, true);
+        if (category === "cold") logColdLocal(coldRequestId, `day ${date} failure elapsed=${elapsedSeconds(startedAt)} error=${error instanceof Error ? error.message : String(error)}`, true);
         throw error;
       }
     });

@@ -409,7 +409,7 @@ export class RemoteMqttPublisher {
       for (const date of dates) {
         currentDate = date;
         if (this.stopped || !this.client) return;
-        const message = makeUsageSnapshot(this.nextMetadata(date, job.category, job.runId), documents.get(date));
+        const message = makeUsageSnapshot(this.nextMetadata(date, job.category, job.runId), documents.get(date) ?? { daily: [] });
         await publish(this.client, makeUsageTopic(this.config.mqttPrefix, this.config.hostId, date), JSON.stringify(message));
       }
       if (!this.stopped && this.client && job.category === "hot") {
@@ -433,6 +433,7 @@ export class RemoteMqttPublisher {
     this.logCold(job.runId, `start days=${dates.length} reverse=true`);
     const startedAt = Date.now();
 
+    let documents: Map<string, Record<string, unknown>>;
     try {
       const range = { from: job.range.from, to: job.range.to, timezone: this.config.timezone };
       const result = await this.dependencies.runCcusage({
@@ -443,20 +444,29 @@ export class RemoteMqttPublisher {
         offline: job.mode === "offline",
         runner: this.dependencies.execFileRunner,
       });
-      const documents = new Map(dates.map((date) => [date, sliceCcusageDocument(result.document, date)]));
-      for (const date of dates) {
-        if (this.stopped || !this.client) return;
-        const dayStartedAt = Date.now();
-        this.logCold(job.runId, `day ${date} start`);
-        const message = makeUsageSnapshot(this.nextMetadata(date, job.category, job.runId), documents.get(date));
-        await publish(this.client, makeUsageTopic(this.config.mqttPrefix, this.config.hostId, date), JSON.stringify(message));
-        succeeded += 1;
-        this.logCold(job.runId, `day ${date} end elapsed=${((Date.now() - dayStartedAt) / 1000).toFixed(3)}s`);
-      }
+      documents = new Map(dates.map((date) => [date, sliceCcusageDocument(result.document, date)]));
     } catch (error) {
       failed = dates.length;
       const message = ccusageErrorMessage(error, this.config.ccusageBinary).slice(0, 16_384);
       this.logCold(job.runId, `range failure elapsed=${((Date.now() - startedAt) / 1000).toFixed(3)}s error=${message}`);
+      if (!this.stopped && this.client) this.logCold(job.runId, `summary succeeded=${succeeded} failed=${failed}`);
+      return;
+    }
+
+    for (const date of dates) {
+      if (this.stopped || !this.client) return;
+      const dayStartedAt = Date.now();
+      this.logCold(job.runId, `day ${date} start`);
+      try {
+        const message = makeUsageSnapshot(this.nextMetadata(date, job.category, job.runId), documents.get(date) ?? { daily: [] });
+        await publish(this.client, makeUsageTopic(this.config.mqttPrefix, this.config.hostId, date), JSON.stringify(message));
+        succeeded += 1;
+        this.logCold(job.runId, `day ${date} end elapsed=${((Date.now() - dayStartedAt) / 1000).toFixed(3)}s`);
+      } catch (error) {
+        failed += 1;
+        const message = error instanceof Error ? error.message : String(error);
+        this.logCold(job.runId, `day ${date} failure elapsed=${((Date.now() - dayStartedAt) / 1000).toFixed(3)}s error=${message}`);
+      }
     }
 
     if (!this.stopped && this.client) this.logCold(job.runId, `summary succeeded=${succeeded} failed=${failed}`);

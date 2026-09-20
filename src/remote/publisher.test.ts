@@ -20,6 +20,7 @@ const config: RemotePublisherConfig = {
 class FakeClient extends EventEmitter {
   publications: Array<{ topic: string; payload: string; options: { qos: number; retain: boolean } }> = [];
   subscriptions: string[] = [];
+  publishErrors = new Map<string, Error>();
   options: Record<string, any> = {};
 
   subscribe(topics: string | string[], _options: unknown, callback: (error?: Error | null) => void): void {
@@ -29,7 +30,7 @@ class FakeClient extends EventEmitter {
 
   publish(topic: string, payload: string, options: { qos: number; retain: boolean }, callback: (error?: Error | null) => void): void {
     this.publications.push({ topic, payload, options });
-    callback(null);
+    callback(this.publishErrors.get(topic) || null);
   }
 
   end(_force: boolean, _options: unknown, callback: (error?: Error | null) => void): void {
@@ -98,6 +99,67 @@ test("uses offline cold jobs and the cold timeout", async () => {
   assert.equal(publisher.requestCold("2026-09-01", "2026-09-02"), true);
   await flush();
   assert.deepEqual(calls, [{ timeoutMs: 1_800_000, offline: true }]);
+  await publisher.stop();
+});
+
+test("publishes a successful cold range newest-first with an empty day snapshot", async () => {
+  const { publisher, client } = startPublisher({
+    runCcusage: (async () => ({
+      document: { daily: [{ date: "2026-09-01", cost: 1 }, { date: "2026-09-03", cost: 3 }] },
+      stdout: "{}",
+      stderr: "",
+    })) as never,
+  });
+  publisher.start();
+  client.emit("connect");
+  await flush();
+  client.publications.length = 0;
+
+  assert.equal(publisher.requestCold("2026-09-01", "2026-09-03"), true);
+  await flush();
+
+  const usage = client.publications.filter((publication) => publication.topic.includes("/usage/") && JSON.parse(publication.payload).category === "cold");
+  assert.deepEqual(usage.map((publication) => publication.topic), [
+    "quota-dashboard/v1/hosts/workstation/usage/2026-09-03",
+    "quota-dashboard/v1/hosts/workstation/usage/2026-09-02",
+    "quota-dashboard/v1/hosts/workstation/usage/2026-09-01",
+  ]);
+  assert.deepEqual(usage.map((publication) => JSON.parse(publication.payload).data), [
+    { daily: [{ date: "2026-09-03", cost: 3 }] },
+    { daily: [] },
+    { daily: [{ date: "2026-09-01", cost: 1 }] },
+  ]);
+  await publisher.stop();
+});
+
+test("counts MQTT publication failures as day failures and keeps publishing the range", async () => {
+  const logs: string[] = [];
+  const { publisher, client } = startPublisher({
+    log: (message: string) => logs.push(message),
+    runCcusage: (async () => ({ document: { daily: [] }, stdout: "{}", stderr: "" })) as never,
+  });
+  publisher.start();
+  client.emit("connect");
+  await flush();
+  client.publications.length = 0;
+  logs.length = 0;
+  client.publishErrors.set(
+    "quota-dashboard/v1/hosts/workstation/usage/2026-09-02",
+    new Error("socket closed"),
+  );
+
+  assert.equal(publisher.requestCold("2026-09-01", "2026-09-03"), true);
+  await flush();
+
+  const usage = client.publications.filter((publication) => publication.topic.includes("/usage/") && JSON.parse(publication.payload).category === "cold");
+  assert.deepEqual(usage.map((publication) => publication.topic), [
+    "quota-dashboard/v1/hosts/workstation/usage/2026-09-03",
+    "quota-dashboard/v1/hosts/workstation/usage/2026-09-02",
+    "quota-dashboard/v1/hosts/workstation/usage/2026-09-01",
+  ]);
+  assert.ok(logs.some((line) => line.includes("day 2026-09-02 failure") && line.includes("error=socket closed")));
+  assert.ok(logs.some((line) => line.includes("summary succeeded=2 failed=1")));
+  assert.equal(logs.some((line) => line.includes("ccusage was not found")), false);
   await publisher.stop();
 });
 
