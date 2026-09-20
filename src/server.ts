@@ -340,8 +340,7 @@ async function scheduleLocalColdDate(): Promise<void> {
   if (!USAGE_SOURCE_IDS.some((id) => config.usageSources[id].enabled)) return;
   const rolling = rollingDateRange(usageTimezone, new Date(), localRollingDays);
   const newestColdDate = previousDate(localDateRange(2, usageTimezone).from);
-  const files = await usageStore.readNormalized(localHostId, rolling.from, newestColdDate);
-  const coveredDates = new Set(files.filter((file) => file.timezone === usageTimezone).map((file) => file.date));
+  const coveredDates = await usageStore.readStoredDates(localHostId, rolling.from, newestColdDate);
   for (let date = newestColdDate; date >= rolling.from; date = previousDate(date)) {
     if (!coveredDates.has(date)) {
       queueLocalCold(date, date, localColdMode === "offline");
@@ -396,7 +395,7 @@ async function buildUsage(url: URL, config: AppConfig) {
     const storageError = ingestError || (isLocal ? localHotUsageError : null) || null;
     storageErrorsByHost.set(hostId, storageError);
     const error = storageError || state?.error?.error || state?.status?.error || null;
-    const coveredDates = storedDatesByHost.get(hostId) || new Set(files.map((file) => file.date));
+    const coveredDates = storedDatesByHost.get(hostId) ?? new Set<string>();
     const complete = dateList(range.from, range.to).every((date) => coveredDates.has(date));
     const stale = !Number.isFinite(generatedTime) || generatedTime > Date.now() + 60_000 || Date.now() - generatedTime > (isLocal ? 10 * 60 * 1000 : staleAfterMs);
     const status = error ? "error" : state?.status?.status || (hostRecords.length ? "ok" : "unknown");
