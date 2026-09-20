@@ -12,7 +12,7 @@ import { processColdDays } from "./lib/cold-range.js";
 import { isProviderConfigured, PROVIDER_FETCHERS } from "./lib/providers.js";
 import { filterUsageRecords, summarizeUsage } from "./lib/usage.js";
 import { FilesystemUsageStore } from "./lib/usage-store.js";
-import { ccusageErrorMessage, DEFAULT_CCUSAGE_MAX_BUFFER, DEFAULT_COLD_CCUSAGE_TIMEOUT_MS, DEFAULT_HOT_CCUSAGE_TIMEOUT_MS, DEFAULT_ROLLING_DAYS, rollingDateRange, runCcusage } from "./remote/ccusage.js";
+import { ccusageErrorMessage, DEFAULT_CCUSAGE_MAX_BUFFER, DEFAULT_COLD_CCUSAGE_TIMEOUT_MS, DEFAULT_HOT_CCUSAGE_TIMEOUT_MS, DEFAULT_ROLLING_DAYS, rollingDateRange, runCcusage, sliceCcusageDocument } from "./remote/ccusage.js";
 import { DEFAULT_COLD_INTERVAL_MS, DEFAULT_PUBLISH_INTERVAL_MS } from "./remote/publisher.js";
 import { isValidRequestId, sanitizeHostId } from "./remote/protocol.js";
 import { RemoteMqttStore, readRemoteMqttSubscriberConfig } from "./remote/subscriber.js";
@@ -169,15 +169,6 @@ function ccusageVersion(): string | undefined {
   return value || undefined;
 }
 
-function documentMatchesDate(document: unknown, date: string): boolean {
-  if (!document || typeof document !== "object" || !Array.isArray((document as { daily?: unknown }).daily)) return true;
-  return (document as { daily: unknown[] }).daily.every((row) => {
-    if (!row || typeof row !== "object") return false;
-    const value = row as { date?: unknown; period?: unknown };
-    return (value.date === undefined || value.date === date) && (value.period === undefined || value.period === date);
-  });
-}
-
 function logColdLocal(requestId: string, message: string, error = false): void {
   const line = `[${new Date().toISOString()}] [cold] [local] [${requestId}] ${message}`;
   if (error) console.error(line);
@@ -193,20 +184,33 @@ type LocalColdJob = { from: string; to: string; offline: boolean; requestId: str
 async function runLocalUsageJob(range: { from: string; to: string }, category: "hot" | "cold", offline: boolean, timeoutMs: number, requestId?: string): Promise<void> {
   const failures: string[] = [];
   const coldRequestId = requestId || "local";
+  const dates = dateList(range.from, range.to);
+  let documents: Map<string, Record<string, unknown>>;
+  const startedAt = Date.now();
+  try {
+    const result = await runCcusage({
+      binary: localCcusageBinary,
+      range: { from: range.from, to: range.to, timezone: usageTimezone },
+      offline,
+      timeoutMs,
+      maxBuffer: localCcusageMaxBuffer,
+    });
+    documents = new Map(dates.map((date) => [date, sliceCcusageDocument(result.document, date)]));
+  } catch (error) {
+    if (category === "cold") {
+      const message = ccusageErrorMessage(error, localCcusageBinary);
+      logColdLocal(coldRequestId, `range failure elapsed=${elapsedSeconds(startedAt)} error=${message}`, true);
+      logColdLocal(coldRequestId, `summary succeeded=0 failed=${dates.length}`);
+    }
+    throw error;
+  }
+
   const runDate = async (date: string): Promise<void> => {
     const previous = localDateChains.get(date) || Promise.resolve();
     const current = previous.catch(() => undefined).then(async () => {
       const startedAt = Date.now();
       if (category === "cold") logColdLocal(coldRequestId, `day ${date} start`);
       try {
-        const result = await runCcusage({
-          binary: localCcusageBinary,
-          range: { from: date, to: date, timezone: usageTimezone },
-          offline,
-          timeoutMs,
-          maxBuffer: localCcusageMaxBuffer,
-        });
-        if (!documentMatchesDate(result.document, date)) throw new Error(`ccusage returned data outside ${date}`);
         await usageStore.ingest({
           schemaVersion: 2,
           hostId: localHostId,
@@ -217,7 +221,7 @@ async function runLocalUsageJob(range: { from: string; to: string }, category: "
           generatedAt: new Date().toISOString(),
           ...(ccusageVersion() ? { ccusageVersion: ccusageVersion() } : {}),
           range,
-          data: result.document,
+          data: documents.get(date),
         });
         dashboardCache.clear();
         if (category === "cold") logColdLocal(coldRequestId, `day ${date} end elapsed=${elapsedSeconds(startedAt)}`);

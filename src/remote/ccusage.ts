@@ -6,6 +6,7 @@ export const DEFAULT_HOT_CCUSAGE_TIMEOUT_MS = 10 * 60 * 1000;
 export const DEFAULT_COLD_CCUSAGE_TIMEOUT_MS = 30 * 60 * 1000;
 export const DEFAULT_CCUSAGE_MAX_BUFFER = 32 * 1024 * 1024;
 export const DEFAULT_ROLLING_DAYS = 370;
+const CCUSAGE_RETRY_DELAYS_MS = [500, 1000];
 
 export type CcusageRange = {
   from: string;
@@ -26,6 +27,8 @@ export type ExecFileRunner = (
   options: ExecFileOptions,
   callback: ExecFileCallback,
 ) => unknown;
+
+export type Sleep = (milliseconds: number) => Promise<void>;
 
 export function ccusageArgs(range: CcusageRange, options: { offline?: boolean } | boolean = {}): string[] {
   const offline = typeof options === "boolean" ? options : options.offline;
@@ -84,6 +87,25 @@ function executeFile(
   });
 }
 
+function isObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Return the ccusage document for one date, or an empty document when absent. */
+export function sliceCcusageDocument(document: unknown, date: string): Record<string, unknown> {
+  if (!isObject(document) || !Array.isArray(document.daily)) throw new Error("ccusage response must contain a top-level daily array");
+  const daily = document.daily.filter((row) => {
+    if (!isObject(row)) return false;
+    const rowDate = row.date ?? row.period;
+    return rowDate === date;
+  });
+  if (daily.length === 0) return { daily: [] };
+  return {
+    ...document,
+    daily,
+  };
+}
+
 export async function runCcusage({
   binary = process.env.CCUSAGE_BIN?.trim() || "ccusage",
   range,
@@ -91,6 +113,7 @@ export async function runCcusage({
   maxBuffer = DEFAULT_CCUSAGE_MAX_BUFFER,
   offline = false,
   runner = execFile as unknown as ExecFileRunner,
+  sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
 }: {
   binary?: string;
   range: CcusageRange;
@@ -98,20 +121,31 @@ export async function runCcusage({
   maxBuffer?: number;
   offline?: boolean;
   runner?: ExecFileRunner;
+  sleep?: Sleep;
 }): Promise<CcusageCommandResult> {
-  const { stdout, stderr } = await executeFile(runner, binary, ccusageArgs(range, { offline }), {
-    timeout: timeoutMs,
-    maxBuffer,
-    windowsHide: true,
-    killSignal: "SIGTERM",
-    encoding: "utf8",
-  });
+  for (let attempt = 0; attempt < CCUSAGE_RETRY_DELAYS_MS.length + 1; attempt += 1) {
+    try {
+      const { stdout, stderr } = await executeFile(runner, binary, ccusageArgs(range, { offline }), {
+        timeout: timeoutMs,
+        maxBuffer,
+        windowsHide: true,
+        killSignal: "SIGTERM",
+        encoding: "utf8",
+      });
 
-  return {
-    document: JSON.parse(stdout),
-    stdout,
-    stderr,
-  };
+      return {
+        document: JSON.parse(stdout),
+        stdout,
+        stderr,
+      };
+    } catch (error) {
+      const delay = CCUSAGE_RETRY_DELAYS_MS[attempt];
+      if (delay === undefined) throw error;
+      await sleep(delay);
+    }
+  }
+
+  throw new Error("ccusage failed");
 }
 
 export function ccusageErrorMessage(error: unknown, binary: string): string {
