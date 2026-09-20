@@ -61,7 +61,7 @@ test("publishes retained date-level hot usage with the hot timeout", async () =>
   const { publisher, client } = startPublisher({
     runCcusage: (async ({ range, timeoutMs, offline }: any) => {
       calls.push({ from: range.from, to: range.to, timeoutMs, offline });
-      return { document: { daily: [{ date: range.from, cost: 2 }] }, stdout: "{}", stderr: "" };
+      return { document: { daily: [{ date: "2026-09-12", cost: 2 }, { date: "2026-09-13", cost: 3 }] }, stdout: "{}", stderr: "" };
     }) as never,
   });
   const starting = publisher.start();
@@ -75,8 +75,7 @@ test("publishes retained date-level hot usage with the hot timeout", async () =>
     "quota-dashboard/v1/hosts/workstation/usage/2026-09-13",
   ]);
   assert.deepEqual(calls.filter((call) => !call.offline), [
-    { from: "2026-09-12", to: "2026-09-12", timeoutMs: 600_000, offline: false },
-    { from: "2026-09-13", to: "2026-09-13", timeoutMs: 600_000, offline: false },
+    { from: "2026-09-12", to: "2026-09-13", timeoutMs: 600_000, offline: false },
   ]);
   assert.ok(usage.every((publication) => publication.options.retain && publication.options.qos === 1));
   assert.equal(JSON.parse(usage[0].payload).date, "2026-09-12");
@@ -98,19 +97,18 @@ test("uses offline cold jobs and the cold timeout", async () => {
   calls.length = 0;
   assert.equal(publisher.requestCold("2026-09-01", "2026-09-02"), true);
   await flush();
-  assert.deepEqual(calls, [{ timeoutMs: 1_800_000, offline: true }, { timeoutMs: 1_800_000, offline: true }]);
+  assert.deepEqual(calls, [{ timeoutMs: 1_800_000, offline: true }]);
   await publisher.stop();
 });
 
-test("runs cold ranges newest-first, continues after a day failure, and preserves request IDs", async () => {
-  const calls: string[] = [];
+test("runs a cold range once and publishes no days when collection fails", async () => {
+  const calls: Array<{ from: string; to: string }> = [];
   const logs: string[] = [];
   const { publisher, client } = startPublisher({
     log: (message: string) => logs.push(message),
     runCcusage: (async ({ range }: any) => {
-      if (["2026-09-01", "2026-09-02", "2026-09-03"].includes(range.from)) calls.push(range.from);
-      if (range.from === "2026-09-02") throw new Error("one day failed");
-      return { document: { daily: [{ date: range.from, cost: 1 }] }, stdout: "{}", stderr: "" };
+      calls.push({ from: range.from, to: range.to });
+      throw new Error("range failed");
     }) as never,
   });
   publisher.start();
@@ -123,30 +121,27 @@ test("runs cold ranges newest-first, continues after a day failure, and preserve
   assert.equal(publisher.processCommand("quota-dashboard/v1/hosts/workstation/command", command), true);
   await flush();
 
-  assert.deepEqual(calls, ["2026-09-03", "2026-09-02", "2026-09-01"]);
+  assert.deepEqual(calls, [{ from: "2026-09-01", to: "2026-09-03" }]);
   assert.ok(logs.some((line) => line.includes("[cold] [cold-request-1] receipt range=2026-09-01..2026-09-03 mode=offline")));
   assert.ok(logs.some((line) => line.includes("[cold] [cold-request-1] start days=3 reverse=true")));
-  assert.ok(logs.some((line) => line.match(/\[cold\] \[cold-request-1\] day 2026-09-03 end elapsed=\d+\.\d{3}s/)));
-  assert.ok(logs.some((line) => line.match(/\[cold\] \[cold-request-1\] day 2026-09-02 failure elapsed=\d+\.\d{3}s error=one day failed/)));
-  assert.ok(logs.some((line) => line.match(/\[cold\] \[cold-request-1\] day 2026-09-01 start/)));
-  assert.ok(logs.some((line) => line.includes("[cold] [cold-request-1] summary succeeded=2 failed=1")));
+  assert.ok(logs.some((line) => line.match(/\[cold\] \[cold-request-1\] range failure elapsed=\d+\.\d{3}s error=range failed/)));
+  assert.ok(logs.some((line) => line.includes("[cold] [cold-request-1] summary succeeded=0 failed=3")));
   assert.equal(client.publications.some((publication) => JSON.parse(publication.payload).status === "error" && JSON.parse(publication.payload).category === "cold"), false);
   const usage = client.publications
     .filter((publication) => publication.topic.includes("/usage/") && JSON.parse(publication.payload).category === "cold" && JSON.parse(publication.payload).runId === "cold-request-1")
     .map((publication) => JSON.parse(publication.payload));
-  assert.deepEqual(usage.map((message) => message.date), ["2026-09-03", "2026-09-01"]);
-  assert.ok(usage.every((message) => message.runId === "cold-request-1"));
+  assert.deepEqual(usage, []);
   await publisher.stop();
 });
 
-test("keeps cold jobs FIFO while reversing dates inside each job", async () => {
+test("keeps cold jobs FIFO while publishing each range newest-first", async () => {
   const calls: string[] = [];
   let releaseFirst!: () => void;
   const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve; });
   const { publisher, client } = startPublisher({
     runCcusage: (async ({ range }: any) => {
-      calls.push(range.from);
-      if (range.from === "2026-09-03") await firstGate;
+      calls.push(`${range.from}..${range.to}`);
+      if (range.from === "2026-09-01") await firstGate;
       return { document: { daily: [] }, stdout: "{}", stderr: "" };
     }) as never,
   });
@@ -157,10 +152,10 @@ test("keeps cold jobs FIFO while reversing dates inside each job", async () => {
   assert.equal(publisher.requestCold("2026-09-01", "2026-09-03"), true);
   assert.equal(publisher.requestCold("2026-09-04", "2026-09-05"), true);
   await flush();
-  assert.deepEqual(calls, ["2026-09-03"]);
+  assert.deepEqual(calls, ["2026-09-01..2026-09-03"]);
   releaseFirst();
   await flush();
-  assert.deepEqual(calls, ["2026-09-03", "2026-09-02", "2026-09-01", "2026-09-05", "2026-09-04"]);
+  assert.deepEqual(calls, ["2026-09-01..2026-09-03", "2026-09-04..2026-09-05"]);
   await publisher.stop();
 });
 
@@ -191,7 +186,7 @@ test("allows one hot and one cold ccusage job concurrently", async () => {
   const calls: string[] = [];
   const { publisher, client } = startPublisher({
     runCcusage: (async ({ offline, range }: any) => {
-      calls.push(`${offline ? "cold" : "hot"}:${range.from}`);
+      calls.push(`${offline ? "cold" : "hot"}:${range.from}..${range.to}`);
       if (offline) await coldGate;
       else await hotGate;
       return { document: { daily: [] }, stdout: "{}", stderr: "" };
@@ -251,7 +246,7 @@ test("reconnect schedules the newest stale date alongside hot collection", async
   const calls: string[] = [];
   const { publisher, client } = startPublisher({
     runCcusage: (async ({ range, offline }: any) => {
-      calls.push(`${offline ? "cold" : "hot"}:${range.from}`);
+      calls.push(`${offline ? "cold" : "hot"}:${range.from}..${range.to}`);
       return { document: { daily: [] }, stdout: "{}", stderr: "" };
     }) as never,
   });
@@ -262,6 +257,6 @@ test("reconnect schedules the newest stale date alongside hot collection", async
   client.emit("reconnect");
   client.emit("connect");
   await flush();
-  assert.deepEqual(calls, ["cold:2026-09-11", "hot:2026-09-12", "hot:2026-09-13"]);
+  assert.deepEqual(calls, ["cold:2026-09-11..2026-09-11", "hot:2026-09-12..2026-09-13"]);
   await publisher.stop();
 });

@@ -25,7 +25,7 @@ import {
   DEFAULT_HOT_CCUSAGE_TIMEOUT_MS,
   rollingDateRange,
   runCcusage,
-  type CcusageRange,
+  sliceCcusageDocument,
   type ExecFileRunner,
 } from "./ccusage.js";
 
@@ -206,18 +206,6 @@ function validDateRange(range: MqttDateRange): boolean {
     return Number.isFinite(date.getTime()) && date.toISOString().slice(0, 10) === value;
   };
   return valid(range.from) && valid(range.to) && range.from <= range.to;
-}
-
-function documentMatchesDate(document: unknown, date: string): boolean {
-  if (!document || typeof document !== "object" || Array.isArray(document)) return false;
-  const daily = (document as Record<string, unknown>).daily;
-  if (daily === undefined) return true;
-  if (!Array.isArray(daily)) return false;
-  return daily.every((row) => {
-    if (!row || typeof row !== "object" || Array.isArray(row)) return false;
-    const rowDate = (row as Record<string, unknown>).date ?? (row as Record<string, unknown>).period;
-    return rowDate === undefined || rowDate === date;
-  });
 }
 
 export class RemoteMqttPublisher {
@@ -405,22 +393,23 @@ export class RemoteMqttPublisher {
       await this.startColdJob(job, timeoutMs);
       return;
     }
-    let currentDate = job.range.from;
+    let currentDate = job.range.to;
     try {
-      for (const date of dateList(job.range)) {
+      const dates = dateList(job.range);
+      const range = { from: job.range.from, to: job.range.to, timezone: this.config.timezone };
+      const result = await this.dependencies.runCcusage({
+        binary: this.config.ccusageBinary,
+        range,
+        timeoutMs,
+        maxBuffer: this.config.ccusageMaxBuffer,
+        offline: job.mode === "offline",
+        runner: this.dependencies.execFileRunner,
+      });
+      const documents = new Map(dates.map((date) => [date, sliceCcusageDocument(result.document, date)]));
+      for (const date of dates) {
         currentDate = date;
-        const range: CcusageRange = { from: date, to: date, timezone: this.config.timezone };
-        const result = await this.dependencies.runCcusage({
-          binary: this.config.ccusageBinary,
-          range,
-          timeoutMs,
-          maxBuffer: this.config.ccusageMaxBuffer,
-          offline: job.mode === "offline",
-          runner: this.dependencies.execFileRunner,
-        });
-        if (!documentMatchesDate(result.document, date)) throw new Error(`ccusage returned data outside ${date}`);
         if (this.stopped || !this.client) return;
-        const message = makeUsageSnapshot(this.nextMetadata(date, job.category, job.runId), result.document);
+        const message = makeUsageSnapshot(this.nextMetadata(date, job.category, job.runId), documents.get(date));
         await publish(this.client, makeUsageTopic(this.config.mqttPrefix, this.config.hostId, date), JSON.stringify(message));
       }
       if (!this.stopped && this.client && job.category === "hot") {
@@ -442,32 +431,32 @@ export class RemoteMqttPublisher {
     let succeeded = 0;
     let failed = 0;
     this.logCold(job.runId, `start days=${dates.length} reverse=true`);
+    const startedAt = Date.now();
 
-    for (const date of dates) {
-      if (this.stopped || !this.client) return;
-      const startedAt = Date.now();
-      this.logCold(job.runId, `day ${date} start`);
-      try {
-        const range: CcusageRange = { from: date, to: date, timezone: this.config.timezone };
-        const result = await this.dependencies.runCcusage({
-          binary: this.config.ccusageBinary,
-          range,
-          timeoutMs,
-          maxBuffer: this.config.ccusageMaxBuffer,
-          offline: job.mode === "offline",
-          runner: this.dependencies.execFileRunner,
-        });
-        if (!documentMatchesDate(result.document, date)) throw new Error(`ccusage returned data outside ${date}`);
+    try {
+      const range = { from: job.range.from, to: job.range.to, timezone: this.config.timezone };
+      const result = await this.dependencies.runCcusage({
+        binary: this.config.ccusageBinary,
+        range,
+        timeoutMs,
+        maxBuffer: this.config.ccusageMaxBuffer,
+        offline: job.mode === "offline",
+        runner: this.dependencies.execFileRunner,
+      });
+      const documents = new Map(dates.map((date) => [date, sliceCcusageDocument(result.document, date)]));
+      for (const date of dates) {
         if (this.stopped || !this.client) return;
-        const message = makeUsageSnapshot(this.nextMetadata(date, job.category, job.runId), result.document);
+        const dayStartedAt = Date.now();
+        this.logCold(job.runId, `day ${date} start`);
+        const message = makeUsageSnapshot(this.nextMetadata(date, job.category, job.runId), documents.get(date));
         await publish(this.client, makeUsageTopic(this.config.mqttPrefix, this.config.hostId, date), JSON.stringify(message));
         succeeded += 1;
-        this.logCold(job.runId, `day ${date} end elapsed=${((Date.now() - startedAt) / 1000).toFixed(3)}s`);
-      } catch (error) {
-        failed += 1;
-        const message = ccusageErrorMessage(error, this.config.ccusageBinary).slice(0, 16_384);
-        this.logCold(job.runId, `day ${date} failure elapsed=${((Date.now() - startedAt) / 1000).toFixed(3)}s error=${message}`);
+        this.logCold(job.runId, `day ${date} end elapsed=${((Date.now() - dayStartedAt) / 1000).toFixed(3)}s`);
       }
+    } catch (error) {
+      failed = dates.length;
+      const message = ccusageErrorMessage(error, this.config.ccusageBinary).slice(0, 16_384);
+      this.logCold(job.runId, `range failure elapsed=${((Date.now() - startedAt) / 1000).toFixed(3)}s error=${message}`);
     }
 
     if (!this.stopped && this.client) this.logCold(job.runId, `summary succeeded=${succeeded} failed=${failed}`);

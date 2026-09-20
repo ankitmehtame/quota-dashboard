@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { ccusageArgs, rollingDateRange, runCcusage } from "./ccusage.js";
+import { ccusageArgs, rollingDateRange, runCcusage, sliceCcusageDocument } from "./ccusage.js";
 
 test("uses daily JSON by-agent with the configured date range and timezone", () => {
   assert.deepEqual(ccusageArgs({ from: "2025-09-09", to: "2026-09-13", timezone: "Asia/Singapore" }), [
@@ -38,6 +38,24 @@ test("parses stdout without modifying the JSON document", async () => {
   assert.deepEqual(result.document, JSON.parse(stdout));
 });
 
+test("slices a multi-day document and synthesizes missing dates", () => {
+  const document = {
+    metadata: { source: "test" },
+    daily: [
+      { date: "2026-09-11", cost: 1 },
+      { date: "2026-09-13", cost: 3 },
+    ],
+  };
+
+  assert.deepEqual(sliceCcusageDocument(document, "2026-09-11"), {
+    metadata: { source: "test" },
+    daily: [{ date: "2026-09-11", cost: 1 }],
+  });
+  assert.deepEqual(sliceCcusageDocument(document, "2026-09-12"), {
+    daily: [],
+  });
+});
+
 test("passes offline mode and the caller timeout through to ccusage", async () => {
   await runCcusage({
     binary: "ccusage-test",
@@ -52,4 +70,40 @@ test("passes offline mode and the caller timeout through to ccusage", async () =
       callback(null, "{}", "");
     },
   });
+});
+
+test("retries ccusage failures twice with exponential backoff", async () => {
+  let attempts = 0;
+  const delays: number[] = [];
+  const result = await runCcusage({
+    binary: "ccusage-test",
+    range: { from: "2026-09-11", to: "2026-09-13", timezone: "UTC" },
+    sleep: async (milliseconds) => { delays.push(milliseconds); },
+    runner: (_file, _args, _options, callback) => {
+      attempts += 1;
+      if (attempts < 3) {
+        callback(new Error(`failure ${attempts}`) as NodeJS.ErrnoException, "", "");
+        return;
+      }
+      callback(null, '{"daily":[]}', "");
+    },
+  });
+
+  assert.equal(attempts, 3);
+  assert.deepEqual(delays, [500, 1000]);
+  assert.deepEqual(result.document, { daily: [] });
+});
+
+test("rejects after the third ccusage failure", async () => {
+  let attempts = 0;
+  await assert.rejects(runCcusage({
+    binary: "ccusage-test",
+    range: { from: "2026-09-13", to: "2026-09-13", timezone: "UTC" },
+    sleep: async () => undefined,
+    runner: (_file, _args, _options, callback) => {
+      attempts += 1;
+      callback(new Error("still failing") as NodeJS.ErrnoException, "", "");
+    },
+  }), /still failing/);
+  assert.equal(attempts, 3);
 });
