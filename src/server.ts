@@ -14,7 +14,7 @@ import { filterUsageRecords, summarizeUsage } from "./lib/usage.js";
 import { FilesystemUsageStore } from "./lib/usage-store.js";
 import { ccusageErrorMessage, DEFAULT_CCUSAGE_MAX_BUFFER, DEFAULT_COLD_CCUSAGE_TIMEOUT_MS, DEFAULT_HOT_CCUSAGE_TIMEOUT_MS, DEFAULT_ROLLING_DAYS, rollingDateRange, runCcusage } from "./remote/ccusage.js";
 import { DEFAULT_COLD_INTERVAL_MS, DEFAULT_PUBLISH_INTERVAL_MS } from "./remote/publisher.js";
-import { sanitizeHostId } from "./remote/protocol.js";
+import { isValidRequestId, sanitizeHostId } from "./remote/protocol.js";
 import { RemoteMqttStore, readRemoteMqttSubscriberConfig } from "./remote/subscriber.js";
 
 function loadEnvironmentFile(path: string): void {
@@ -219,9 +219,10 @@ async function runLocalUsageJob(range: { from: string; to: string }, category: "
           range,
           data: result.document,
         });
+        dashboardCache.clear();
         if (category === "cold") logColdLocal(coldRequestId, `day ${date} end elapsed=${elapsedSeconds(startedAt)}`);
       } catch (error) {
-        if (category === "cold") logColdLocal(coldRequestId, `day ${date} failure elapsed=${elapsedSeconds(startedAt)} error=${error instanceof Error ? error.message : String(error)}`, true);
+        if (category === "cold") logColdLocal(coldRequestId, `day ${date} failure elapsed=${elapsedSeconds(startedAt)} error=${ccusageErrorMessage(error, localCcusageBinary)}`, true);
         throw error;
       }
     });
@@ -234,7 +235,7 @@ async function runLocalUsageJob(range: { from: string; to: string }, category: "
   };
 
   if (category === "cold") {
-    const result = await processColdDays({ from: range.from, to: range.to, run: runDate });
+    const result = await processColdDays({ from: range.from, to: range.to, run: runDate, shouldStop: () => shuttingDown });
     dashboardCache.clear();
     logColdLocal(coldRequestId, `summary succeeded=${result.succeeded} failed=${result.failures.length}`);
     if (result.failures.length > 0) throw new Error(result.failures.map(({ date, error }) => `${date}: ${error instanceof Error ? error.message : String(error)}`).join("; "));
@@ -499,7 +500,7 @@ async function handleApi(request: import("node:http").IncomingMessage, response:
     const mode = input.mode === undefined ? "offline" : input.mode;
     if (mode !== "online" && mode !== "offline") return json(response, 400, { error: "mode must be online or offline" });
     if (input.hostId !== undefined && (typeof input.hostId !== "string" || sanitizeHostId(input.hostId) !== input.hostId)) return json(response, 400, { error: "hostId is invalid" });
-    if (input.requestId !== undefined && (typeof input.requestId !== "string" || input.requestId.length === 0 || input.requestId.length > 128)) return json(response, 400, { error: "requestId must be a non-empty string of at most 128 characters" });
+    if (input.requestId !== undefined && !isValidRequestId(input.requestId)) return json(response, 400, { error: "requestId must be a non-empty string of at most 128 characters without control characters" });
     const requestId = typeof input.requestId === "string" ? input.requestId : randomUUID();
     const hostId = input.hostId as string | undefined;
     const target = hostId || "all";

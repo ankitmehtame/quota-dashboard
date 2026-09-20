@@ -10,6 +10,7 @@ import {
   makeUsageSnapshot,
   makeUsageTopic,
   parseMqttCommand,
+  isValidRequestId,
   sanitizeHostId,
 } from "./protocol.js";
 
@@ -47,6 +48,13 @@ test("builds date-level usage and command topics", () => {
 test("sanitizes empty and traversal-like host IDs", () => {
   assert.equal(sanitizeHostId("../+/"), "host");
   assert.equal(sanitizeHostId("my machine"), "my-machine");
+});
+
+test("accepts compatible request IDs while rejecting log-control characters", () => {
+  assert.equal(isValidRequestId("request id/with punctuation_日本語"), true);
+  assert.equal(isValidRequestId("request\nsecond"), false);
+  assert.equal(isValidRequestId("request\u2028second"), false);
+  assert.equal(isValidRequestId(""), false);
 });
 
 test("status, usage, and commands use the new schema metadata", () => {

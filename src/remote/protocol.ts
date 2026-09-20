@@ -77,6 +77,13 @@ export function sanitizeHostId(value: string): string {
   return sanitized || "host";
 }
 
+export function isValidRequestId(value: unknown): value is string {
+  return typeof value === "string"
+    && value.length > 0
+    && value.length <= 128
+    && !/[\u0000-\u001F\u007F-\u009F\u2028\u2029]/u.test(value);
+}
+
 /** Keep a topic prefix hierarchical while removing unsafe MQTT characters. */
 export function sanitizeTopicPrefix(value: string | undefined): string {
   const segments = (value?.trim() || DEFAULT_PREFIX)
@@ -176,7 +183,7 @@ export function parseMqttCommand(
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const command = value as Record<string, unknown>;
   if (command.schemaVersion !== MQTT_SCHEMA_VERSION
-    || typeof command.requestId !== "string" || command.requestId.length === 0 || command.requestId.length > 128
+    || !isValidRequestId(command.requestId)
     || !["hot", "cold"].includes(command.category as string)
     || !isCalendarDate(command.from) || !isCalendarDate(command.to) || command.from > command.to
     || !["online", "offline"].includes(command.mode as string)) return null;

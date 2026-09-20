@@ -25,3 +25,32 @@ test("server cold processing continues after failures and invokes callbacks", as
   assert.equal(result.succeeded, 2);
   assert.equal(result.failures.length, 1);
 });
+
+test("server cold processing stops before the next date when requested", async () => {
+  const calls: string[] = [];
+  let stopping = false;
+  const result = await processColdDays({
+    from: "2026-09-01",
+    to: "2026-09-03",
+    shouldStop: () => stopping,
+    run: async (date) => {
+      calls.push(date);
+      stopping = true;
+    },
+  });
+  assert.deepEqual(calls, ["2026-09-03"]);
+  assert.equal(result.succeeded, 1);
+  assert.deepEqual(result.failures, []);
+});
+
+test("an onSuccess failure does not count a date as both succeeded and failed", async () => {
+  const result = await processColdDays({
+    from: "2026-09-01",
+    to: "2026-09-01",
+    run: async () => undefined,
+    onSuccess: () => { throw new Error("callback failed"); },
+  });
+  assert.equal(result.succeeded, 0);
+  assert.equal(result.failures.length, 1);
+  assert.equal(result.failures[0].date, "2026-09-01");
+});

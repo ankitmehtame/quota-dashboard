@@ -343,14 +343,14 @@ export class RemoteMqttPublisher {
   processCommand(topic: string, payload: Buffer | Uint8Array | string): boolean {
     const command = parseMqttCommand(topic, payload, this.config.mqttPrefix);
     if (!command || command.hostId !== this.config.hostId) return false;
-    if (command.category === "cold") this.logCold(command.requestId, `receipt range=${command.from}..${command.to} mode=${command.mode}`);
-    if (this.commandRequestIds.has(command.requestId) || this.commandRequestIds.size >= MAX_ACTIVE_COMMANDS) return false;
+    if (this.stopped || !this.client || this.commandRequestIds.has(command.requestId) || this.commandRequestIds.size >= MAX_ACTIVE_COMMANDS) return false;
     this.commandRequestIds.add(command.requestId);
     try {
       this.dependencies.onCommand?.(command);
     } catch (error) {
       this.log(`Command handler failed: ${error instanceof Error ? error.message : String(error)}`);
     }
+    if (command.category === "cold") this.logCold(command.requestId, `receipt range=${command.from}..${command.to} mode=${command.mode}`);
     const accepted = this.enqueueJob({ range: { from: command.from, to: command.to }, category: command.category, mode: command.mode, runId: command.requestId, commandRequestId: command.requestId }, command.category === "hot");
     if (!accepted) this.commandRequestIds.delete(command.requestId);
     return accepted;
