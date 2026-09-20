@@ -166,7 +166,8 @@ test("keeps cold jobs FIFO while reversing dates inside each job", async () => {
 
 test("deduplicates validated commands and does not block the MQTT callback", async () => {
   const commands: string[] = [];
-  const { publisher, client } = startPublisher({ onCommand: (command: any) => commands.push(command.requestId) });
+  const logs: string[] = [];
+  const { publisher, client } = startPublisher({ log: (message: string) => logs.push(message), onCommand: (command: any) => commands.push(command.requestId) });
   publisher.start();
   const topic = "quota-dashboard/v1/hosts/workstation/command";
   const command = JSON.stringify({ schemaVersion: 2, requestId: "request-1", category: "cold", from: "2026-09-01", to: "2026-09-01", mode: "offline" });
@@ -174,6 +175,8 @@ test("deduplicates validated commands and does not block the MQTT callback", asy
   assert.equal(publisher.processCommand(topic, command), false);
   assert.equal(publisher.processCommand("quota-dashboard/v1/hosts/workstation/status", command), false);
   assert.deepEqual(commands, ["request-1"]);
+  assert.equal(logs.filter((line) => line.includes("[cold] [request-1] receipt")).length, 1);
+  assert.ok(logs.findIndex((line) => line.includes("[cold] [request-1] receipt")) < logs.findIndex((line) => line.includes("[cold] [request-1] start")));
   await flush();
   assert.equal(publisher.processCommand(topic, command), true);
   await publisher.stop();

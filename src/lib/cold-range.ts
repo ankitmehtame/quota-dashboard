@@ -18,6 +18,7 @@ export async function processColdDays({
   from,
   to,
   run,
+  shouldStop,
   onStart,
   onSuccess,
   onFailure,
@@ -25,6 +26,7 @@ export async function processColdDays({
   from: string;
   to: string;
   run: (date: string) => Promise<void>;
+  shouldStop?: () => boolean;
   onStart?: (date: string) => void;
   onSuccess?: (date: string) => void;
   onFailure?: (date: string, error: unknown) => void;
@@ -32,11 +34,12 @@ export async function processColdDays({
   let succeeded = 0;
   const failures: ColdDayFailure[] = [];
   for (const date of reverseDateList(from, to)) {
+    if (shouldStop?.()) break;
     onStart?.(date);
     try {
       await run(date);
-      succeeded += 1;
       onSuccess?.(date);
+      succeeded += 1;
     } catch (error) {
       failures.push({ date, error });
       onFailure?.(date, error);
