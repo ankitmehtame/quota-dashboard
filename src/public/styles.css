@@ -181,7 +181,10 @@ dialog { color: var(--text); background: var(--surface-raised); border: 1px soli
 .view-picker-label { color: var(--faint); font: 10px var(--mono); text-transform: uppercase; letter-spacing: .06em; }
 .view-picker .range-menu-items { min-width: 130px; }
 .range-menu-items button:disabled { cursor: not-allowed; opacity: .35; }
+.range-menu-items button:disabled:hover { color: var(--muted); background: transparent; }
+.chart-segment { min-height: 0; }
 .detail-days { margin-top: 8px; }
+.day-details-content { margin-top: 22px; max-height: min(70vh, 520px); overflow-y: auto; scrollbar-color: var(--line) transparent; }
 
 @media (max-width: 560px) {
   .usage-controls { flex-wrap: wrap; }
