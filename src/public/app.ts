@@ -2,17 +2,21 @@ type QuotaWindow = { name?: string; usedPercent?: number | null; usedValue?: num
 type Provider = { id: string; name: string; shortName: string; accent: string; description: string; enabled: boolean; configured: boolean; status: string };
 type ModelUsageItem = { model: string; costUsd: number; totalTokens?: number };
 type UsageModel = ModelUsageItem & { provider: string };
-type UsageDay = { date: string; costUsd: number; totalTokens: number; byProvider?: Record<string, { costUsd: number; totalTokens: number }>; byModel?: Array<{ provider: string; models: ModelUsageItem[] }> };
+type UsageModelGroup = { provider: string; models: ModelUsageItem[] };
+type UsageDay = { date: string; costUsd: number; totalTokens: number; byProvider?: Record<string, { costUsd: number; totalTokens: number }>; byModel?: UsageModelGroup[] };
+type ChartRepresentation = "auto" | "day" | "week" | "month";
+type ConcreteRepresentation = Exclude<ChartRepresentation, "auto">;
+type UsageBucket = UsageDay & { from: string; to: string; days: UsageDay[] };
 type UsageRecord = { hostId?: string; date: string; provider: string; model: string; inputTokens: number; cachedInputTokens: number; cacheCreationTokens: number; outputTokens: number; reasoningTokens: number; costUsd: number };
 type UsageHost = { hostId: string; generatedAt?: string | null; category?: string | null; status: string; error?: string | null; stale?: boolean; local?: boolean; active?: boolean; included?: boolean; complete?: boolean; usable?: boolean; disabledReason?: string | null };
 type Usage = { totalCostUsd: number; totalTokens?: number; from?: string; to?: string; providers?: string[]; daily?: UsageDay[]; byModel?: UsageModel[]; byProvider?: Array<{ provider: string; costUsd: number; totalTokens: number }>; records?: UsageRecord[]; error?: string | null; hosts?: UsageHost[]; mqtt?: { configured: boolean; connection: string } };
 type Dashboard = { version: string; providerOrder: string[]; providers: Record<string, Provider>; quotas: Record<string, { windows?: QuotaWindow[]; planType?: string; subscriptionActiveUntil?: string | null; resetCredits?: Array<{ id: string; title: string; description?: string | null; expiresAt?: string | null }>; fetchedAt?: string; error?: string | null }>; usage: Usage; serverNow: string; cache?: { fetchedAt?: string } };
 type UsageResponse = { version: string; apiVersion: number; serverNow: string; timezone: string; from: string; to: string; usage: Usage };
-type AppState = { days: number; range: string; dashboard: Dashboard | null; hostSelections: Map<string, boolean>; chartScrollLeft: number };
+type AppState = { days: number; range: string; representation: ChartRepresentation; dashboard: Dashboard | null; hostSelections: Map<string, boolean>; chartScrollLeft: number };
 const timeFormatStorageKey = "quota-dashboard.time-format";
 const storedTimeFormat = localStorage.getItem(timeFormatStorageKey);
 const defaultHour12 = new Intl.DateTimeFormat([], { hour: "numeric" }).resolvedOptions().hour12 ?? true;
-const state: AppState & { hour12: boolean } = { days: 1, range: "today", dashboard: null, hostSelections: new Map(), chartScrollLeft: 0, hour12: storedTimeFormat === "12" || (storedTimeFormat !== "24" && defaultHour12) };
+const state: AppState & { hour12: boolean } = { days: 1, range: "today", representation: "auto", dashboard: null, hostSelections: new Map(), chartScrollLeft: 0, hour12: storedTimeFormat === "12" || (storedTimeFormat !== "24" && defaultHour12) };
 const $ = (selector: string): any => document.querySelector(selector);
 const element = (target: EventTarget | null): HTMLElement => target as HTMLElement;
 const escapeHtml = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] || character);
@@ -172,7 +176,43 @@ function money(value: number | null | undefined): string {
 }
 
 function usagePresetLabel(range: string): string {
-  return ({ today: "Today", "calendar-week": "Week", "calendar-month": "Month", "calendar-year": "Year", "relative-7": "7D", "relative-15": "15D", "relative-30": "30D", "relative-90": "90D", "relative-180": "180D" } as Record<string, string>)[range] || range;
+  return ({ today: "Today", "calendar-week": "Week", "calendar-month": "Month", "calendar-year": "Year", "relative-7": "7D", "relative-15": "15D", "relative-30": "30D", "relative-90": "90D", "relative-180": "180D", "relative-365": "1Y" } as Record<string, string>)[range] || range;
+}
+
+function representationLabel(representation: ChartRepresentation): string {
+  return ({ auto: "Auto", day: "Day", week: "Week", month: "Month" } as Record<ChartRepresentation, string>)[representation];
+}
+
+function defaultRepresentationForDays(days: number): ConcreteRepresentation {
+  const safeDays = Math.max(1, Math.trunc(days) || 1);
+  return safeDays > 90 ? "month" : safeDays > 30 ? "week" : "day";
+}
+
+function autoRepresentationForRange(range: string, days: number): ConcreteRepresentation {
+  if (range === "today" || range === "calendar-week" || range === "calendar-month") return "day";
+  if (range === "calendar-year") return "month";
+  return defaultRepresentationForDays(days);
+}
+
+function activeRepresentation(): ConcreteRepresentation {
+  return state.range === "today" || state.representation === "auto"
+    ? autoRepresentationForRange(state.range, state.days)
+    : state.representation;
+}
+
+function updateRepresentationControls(): void {
+  const button = $("#representation-menu-button") as HTMLButtonElement | null;
+  if (!button) return;
+  const active = activeRepresentation();
+  const selectedLabel = state.representation === "auto" ? `Auto · ${representationLabel(active)}` : representationLabel(active);
+  const selectedValue = state.representation === "auto" ? "auto" : active;
+  if (button.firstChild) button.firstChild.textContent = `${selectedLabel} `;
+  button.setAttribute("aria-label", `View usage by ${selectedLabel.toLowerCase()}`);
+  document.querySelectorAll<HTMLButtonElement>("[data-representation]").forEach((item) => {
+    const value = item.dataset.representation as ChartRepresentation | undefined;
+    item.classList.toggle("active", value === selectedValue);
+    item.disabled = state.range === "today" && (value === "week" || value === "month");
+  });
 }
 
 function localApiDate(value: string | undefined): Date | null {
@@ -182,6 +222,14 @@ function localApiDate(value: string | undefined): Date | null {
   // displayed calendar date to an adjacent day.
   const date = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12);
   return date.getFullYear() === Number(match[1]) && date.getMonth() === Number(match[2]) - 1 && date.getDate() === Number(match[3]) ? date : null;
+}
+
+function calendarDate(value: string | undefined): Date | null {
+  const match = value?.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return null;
+  // Usage dates are server-local calendar dates, so group them at UTC noon.
+  const date = new Date(Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 12));
+  return date.getUTCFullYear() === Number(match[1]) && date.getUTCMonth() === Number(match[2]) - 1 && date.getUTCDate() === Number(match[3]) ? date : null;
 }
 
 function compactUsageDateRange(from: string | undefined, to: string | undefined): string {
@@ -390,6 +438,78 @@ function filterUsageByHosts(usage: Usage, selectedHostIds: Set<string>): Usage {
   return { ...usage, records, ...summarizeSelectedRecords(records) };
 }
 
+function emptyUsageDay(date: string): UsageDay {
+  return { date, costUsd: 0, totalTokens: 0, byProvider: {}, byModel: [] };
+}
+
+function usageDaysForRange(usage: Usage): UsageDay[] {
+  const sourceDays = usage.daily || [];
+  const daily = new Map(sourceDays.map((day) => [day.date, day]));
+  const from = usage.from || sourceDays[0]?.date;
+  const to = usage.to || sourceDays[sourceDays.length - 1]?.date;
+  if (!from || !to || from > to || !calendarDate(from) || !calendarDate(to)) return sourceDays;
+  const days: UsageDay[] = [];
+  for (let date = from; date <= to; date = shiftDate(date, 1)) days.push(daily.get(date) || emptyUsageDay(date));
+  return days;
+}
+
+function usagePeriodStart(date: string, representation: ConcreteRepresentation): string {
+  const parsed = calendarDate(date);
+  if (!parsed || representation === "day") return date;
+  if (representation === "month") return `${parsed.getUTCFullYear()}-${String(parsed.getUTCMonth() + 1).padStart(2, "0")}-01`;
+  const weekday = parsed.getUTCDay();
+  parsed.setUTCDate(parsed.getUTCDate() - (weekday === 0 ? 6 : weekday - 1));
+  return parsed.toISOString().slice(0, 10);
+}
+
+function addUsageDay(bucket: UsageBucket, day: UsageDay): void {
+  bucket.costUsd += day.costUsd;
+  bucket.totalTokens += day.totalTokens;
+  bucket.from = day.date < bucket.from ? day.date : bucket.from;
+  bucket.to = day.date > bucket.to ? day.date : bucket.to;
+  bucket.days.push(day);
+  for (const [provider, value] of Object.entries(day.byProvider || {})) {
+    const current = bucket.byProvider?.[provider] || { costUsd: 0, totalTokens: 0 };
+    current.costUsd += value.costUsd;
+    current.totalTokens += value.totalTokens;
+    bucket.byProvider = { ...(bucket.byProvider || {}), [provider]: current };
+  }
+  for (const group of day.byModel || []) {
+    let target = bucket.byModel?.find((item) => item.provider === group.provider);
+    if (!target) {
+      target = { provider: group.provider, models: [] };
+      bucket.byModel = [...(bucket.byModel || []), target];
+    }
+    for (const model of group.models) {
+      const current = target.models.find((item) => item.model === model.model);
+      if (current) {
+        current.costUsd += model.costUsd;
+        current.totalTokens = (current.totalTokens || 0) + (model.totalTokens || 0);
+      } else {
+        target.models.push({ ...model, totalTokens: model.totalTokens || 0 });
+      }
+    }
+  }
+}
+
+function usageBuckets(usage: Usage, representation: ConcreteRepresentation): UsageBucket[] {
+  const buckets = new Map<string, UsageBucket>();
+  for (const day of usageDaysForRange(usage)) {
+    const key = usagePeriodStart(day.date, representation);
+    let bucket = buckets.get(key);
+    if (!bucket) {
+      bucket = { ...emptyUsageDay(day.date), from: day.date, to: day.date, days: [] };
+      buckets.set(key, bucket);
+    }
+    addUsageDay(bucket, day);
+  }
+  return [...buckets.values()].sort((a, b) => a.from.localeCompare(b.from));
+}
+
+function usageBucketLabel(bucket: UsageBucket, representation: ConcreteRepresentation): string {
+  return representation === "day" ? bucket.date : compactUsageDateRange(bucket.from, bucket.to);
+}
+
 function todaySpend(usage: Usage, hosts: UsageHost[], usableHosts: UsageHost[], selectedHostIds: Set<string>): { amount: number; known: boolean; partial: boolean } {
   // An explicit empty selection is a valid zero. No usable hosts means there
   // is no trustworthy source from which to infer a zero.
@@ -434,6 +554,7 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
   const selectedUsage = filterUsageByHosts(usage, selectedHostIds);
   const noHostsSelected = usableHosts.length > 0 && selectedHostIds.size === 0;
   renderSpendMetrics(usage, hosts, usableHosts, selectedUsage, selectedHostIds);
+  updateRepresentationControls();
   $("#axis-start").textContent = selectedUsage.from || "—";
   const sourceNames: Record<string, string> = { ...usageSourceNames, shared: "Shared" };
   const sourceColors: Record<string, string> = { codex: "mint", opencode: "violet", hermes: "orange", antigravity: "blue", shared: "neutral" };
@@ -459,24 +580,44 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
     renderUsage(usage, "preserve");
   }));
   const chart = $("#usage-chart");
-  const daily = selectedUsage.daily || [];
+  const representation = activeRepresentation();
+  const hasUsage = Boolean(selectedUsage.records?.length || selectedUsage.daily?.length);
+  const buckets = hasUsage ? usageBuckets(selectedUsage, representation) : [];
   const providers = [...enabledSources, ...(enabledSources.has("opencode") || enabledSources.has("hermes") || enabledSources.has("antigravity") ? ["shared"] : [])];
   const colors = sourceColors;
-  const max = Math.max(...daily.map((day) => day.costUsd), 0);
-  const usageTooltip = (day: UsageDay, hoveredProvider: string, segments: Array<{ provider: string; costUsd: number; totalTokens: number }>): string => {
+  const max = Math.max(...buckets.map((bucket) => bucket.costUsd), 0);
+  const usageTooltip = (bucket: UsageBucket, hoveredProvider: string, segments: Array<{ provider: string; costUsd: number; totalTokens: number }>): string => {
     const sortedSegments = [...segments].sort((a, b) => b.costUsd - a.costUsd);
     const harnesses = sortedSegments.map((segment) => `<span class="harness-row ${segment.provider === hoveredProvider ? "hovered" : ""}"><i class="tooltip-harness-dot ${colors[segment.provider] || "mint"}"></i><span class="harness-name">${escapeHtml(sourceNames[segment.provider] || segment.provider)}</span><span class="harness-detail"> · ${money(segment.costUsd)} · ${formatTokens(segment.totalTokens)} tokens</span></span>`).join("");
-    return `<span class="chart-tooltip"><strong>${money(day.costUsd)} total · ${formatTokens(day.totalTokens)} tokens</strong><span>${escapeHtml(day.date)}</span><div class="tooltip-separator"></div>${harnesses}</span>`;
+    return `<span class="chart-tooltip"><strong>${money(bucket.costUsd)} total · ${formatTokens(bucket.totalTokens)} tokens</strong><span>${escapeHtml(usageBucketLabel(bucket, representation))}</span><div class="tooltip-separator"></div>${harnesses}</span>`;
   };
-  const renderSegment = (day: UsageDay, segment: { provider: string; costUsd: number; totalTokens: number }, segments: Array<{ provider: string; costUsd: number; totalTokens: number }>, height: number, offset = 0) => { const color = colors[segment.provider] || "mint"; return `<div class="chart-segment ${color}" style="height:${height}%;bottom:${offset}%">${usageTooltip(day, segment.provider, segments)}</div>`; };
+  const renderSegment = (bucket: UsageBucket, segment: { provider: string; costUsd: number; totalTokens: number }, segments: Array<{ provider: string; costUsd: number; totalTokens: number }>, height: number, offset = 0) => { const color = colors[segment.provider] || "mint"; return `<div class="chart-segment ${color}" style="height:${height}%;bottom:${offset}%">${usageTooltip(bucket, segment.provider, segments)}</div>`; };
   const todayOnly = selectedUsage.from === selectedUsage.to;
   const chartScroll = document.querySelector<HTMLElement>(".chart-scroll");
-  chart.innerHTML = daily.length ? daily.map((day, dayIndex) => { const segments = providers.map((provider) => ({ provider, costUsd: day.byProvider?.[provider]?.costUsd || 0, totalTokens: day.byProvider?.[provider]?.totalTokens || 0 })).filter((segment) => segment.costUsd > 0 || segment.totalTokens > 0); const fallback = segments.length ? segments : [{ provider: "other", costUsd: day.costUsd, totalTokens: day.totalTokens }]; const displayedTotal = fallback.reduce((total, segment) => total + segment.costUsd, 0); if (todayOnly) return fallback.map((segment) => `<button class="chart-column today-harness" type="button" data-day-index="${dayIndex}" aria-label="${escapeHtml(day.date)} ${escapeHtml(segment.provider)}: ${money(segment.costUsd)}"><div class="chart-stack"><div class="chart-segment ${colors[segment.provider] || "mint"}" style="height:${max ? Math.max(2, (segment.costUsd / max) * 100) : 2}%;bottom:0">${usageTooltip(day, segment.provider, fallback)}</div></div></button>`).join(""); const isCurrentDay = day.date === selectedUsage.to; let offset = 0; const markup = fallback.map((segment) => { const height = isCurrentDay ? (displayedTotal > 0 ? (segment.costUsd / displayedTotal) * 100 : 0) : (max ? Math.max(2, (segment.costUsd / max) * 100) : 2); const html = renderSegment(day, segment, fallback, height, offset); offset += height; return html; }).join(""); const stackHeight = max ? Math.max(2, (displayedTotal / max) * 100) : 2; return `<button class="chart-column ${isCurrentDay && !todayOnly ? "current-day" : ""}" type="button" data-day-index="${dayIndex}" aria-label="${escapeHtml(day.date)}: ${money(displayedTotal)}"><div class="chart-stack" style="${isCurrentDay && !todayOnly ? `height:${stackHeight}% !important` : ""}">${markup}</div></button>`; }).join("") : `<div class="chart-empty">${escapeHtml(noHostsSelected ? "No usage hosts selected" : usage.error || "No usage data in this range")}</div>`;
+  chart.innerHTML = buckets.length ? buckets.map((bucket, bucketIndex) => {
+    const segments = providers.map((provider) => ({ provider, costUsd: bucket.byProvider?.[provider]?.costUsd || 0, totalTokens: bucket.byProvider?.[provider]?.totalTokens || 0 })).filter((segment) => segment.costUsd > 0 || segment.totalTokens > 0);
+    const fallback = segments.length ? segments : bucket.costUsd > 0 || bucket.totalTokens > 0 ? [{ provider: "other", costUsd: bucket.costUsd, totalTokens: bucket.totalTokens }] : [];
+    const displayedTotal = fallback.reduce((total, segment) => total + segment.costUsd, 0);
+    const label = usageBucketLabel(bucket, representation);
+    if (todayOnly) {
+      return (fallback.length ? fallback : [{ provider: "other", costUsd: 0, totalTokens: 0 }]).map((segment) => `<button class="chart-column today-harness" type="button" data-bucket-index="${bucketIndex}" aria-label="${escapeHtml(label)} ${escapeHtml(segment.provider)}: ${money(segment.costUsd)}"><div class="chart-stack">${segment.costUsd > 0 || segment.totalTokens > 0 ? `<div class="chart-segment ${colors[segment.provider] || "mint"}" style="height:${max ? Math.max(2, (segment.costUsd / max) * 100) : 2}%;bottom:0">${usageTooltip(bucket, segment.provider, fallback)}</div>` : ""}</div></button>`).join("");
+    }
+    const isCurrentBucket = bucket.to === selectedUsage.to;
+    let offset = 0;
+    const markup = fallback.map((segment) => {
+      const height = isCurrentBucket ? (displayedTotal > 0 ? (segment.costUsd / displayedTotal) * 100 : 0) : (max ? Math.max(2, (segment.costUsd / max) * 100) : 0);
+      const html = height > 0 ? renderSegment(bucket, segment, fallback, height, offset) : "";
+      offset += height;
+      return html;
+    }).join("");
+    const stackHeight = max && displayedTotal > 0 ? Math.max(2, (displayedTotal / max) * 100) : 0;
+    return `<button class="chart-column ${isCurrentBucket ? "current-day" : ""}" type="button" data-bucket-index="${bucketIndex}" aria-label="${escapeHtml(label)}: ${money(displayedTotal)}"><div class="chart-stack" style="${isCurrentBucket && stackHeight ? `height:${stackHeight}% !important` : ""}">${markup}</div></button>`;
+  }).join("") : `<div class="chart-empty">${escapeHtml(noHostsSelected ? "No usage hosts selected" : usage.error || "No usage data in this range")}</div>`;
   const chartColumnCount = chart.querySelectorAll(":scope > .chart-column").length;
   chartScroll?.style.setProperty("--chart-min-width", `${Math.max(1, chartColumnCount) * 15}px`);
   activeChartTooltip = null;
   bindChartTooltips(chart);
-  (chart.querySelectorAll("[data-day-index]") as NodeListOf<HTMLElement>).forEach((bar) => bar.addEventListener("click", () => openDayDetails(daily[Number(bar.dataset.dayIndex)])));
+  (chart.querySelectorAll("[data-bucket-index]") as NodeListOf<HTMLElement>).forEach((bar) => bar.addEventListener("click", () => openUsageDetails(buckets[Number(bar.dataset.bucketIndex)], representation)));
   $("#models-list").innerHTML = selectedUsage.byModel?.length ? selectedUsage.byModel.map((model, index) => `<div class="model-row"><span class="model-rank">${String(index + 1).padStart(2, "0")}</span><span class="model-name"><span class="model-name-text" title="${escapeHtml(model.model)}">${escapeHtml(model.model)}</span>${model.provider ? `<small class="model-provider">${escapeHtml(sourceNames[model.provider] || model.provider)}</small>` : ""}</span><span class="model-value">${money(model.costUsd)}</span></div>`).join("") : `<div class="quota-empty">${escapeHtml(noHostsSelected ? "No hosts selected." : "No model breakdown available.")}</div>`;
   const scroll = chartScroll;
   if (scroll) {
@@ -486,12 +627,15 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
   }
 }
 
-function openDayDetails(day: UsageDay | undefined): void {
-  if (!day) return;
+function openUsageDetails(bucket: UsageBucket | undefined, representation: ConcreteRepresentation): void {
+  if (!bucket) return;
   $("#usage-chart").classList.add("suppress-tooltips");
-  $("#day-details-title").textContent = day.date;
-  $("#day-details-summary").innerHTML = `<span><strong>${money(day.costUsd)}</strong> total</span><span><strong>${formatTokens(day.totalTokens)}</strong> tokens</span>`;
-  $("#day-details-content").innerHTML = (day.byModel || []).map((group) => `<section class="detail-group"><h3>${escapeHtml(group.provider)}</h3>${group.models.map((model) => `<div class="detail-model"><span>${escapeHtml(model.model)}</span><span>${money(model.costUsd)} · ${formatTokens(model.totalTokens)} tokens</span></div>`).join("")}</section>`).join("") || `<p class="quota-empty">No model details available.</p>`;
+  const label = usageBucketLabel(bucket, representation);
+  $("#day-details-title").textContent = representation === "day" ? label : `${representation === "week" ? "Week" : "Month"} · ${label}`;
+  $("#day-details-summary").innerHTML = `<span><strong>${money(bucket.costUsd)}</strong> total</span><span><strong>${formatTokens(bucket.totalTokens)}</strong> tokens</span>`;
+  const modelDetails = (bucket.byModel || []).map((group) => `<section class="detail-group"><h3>${escapeHtml(group.provider)}</h3>${group.models.map((model) => `<div class="detail-model"><span>${escapeHtml(model.model)}</span><span>${money(model.costUsd)} · ${formatTokens(model.totalTokens)} tokens</span></div>`).join("")}</section>`).join("");
+  const dailyDetails = representation === "day" ? "" : `<section class="detail-group detail-days"><h3>By day</h3>${bucket.days.map((day) => `<div class="detail-model"><span>${escapeHtml(day.date)}</span><span>${money(day.costUsd)} · ${formatTokens(day.totalTokens)} tokens</span></div>`).join("")}</section>`;
+  $("#day-details-content").innerHTML = modelDetails + dailyDetails || `<p class="quota-empty">No usage details available.</p>`;
   $("#day-details-dialog").showModal();
 }
 
@@ -808,18 +952,19 @@ $("#manage-button").addEventListener("click", async () => { await loadSettings()
 $("#close-settings").addEventListener("click", () => $("#settings-dialog").close());
 $("#close-day-details").addEventListener("click", () => $("#day-details-dialog").close());
 $("#day-details-dialog").addEventListener("close", () => { $("#usage-chart").classList.remove("suppress-tooltips"); (document.activeElement as HTMLElement | null)?.blur?.(); });
-document.querySelectorAll<HTMLElement>("[data-range]").forEach((button) => button.addEventListener("click", async (event) => { const current = element(event.currentTarget); const value = current.dataset.range || "today"; state.range = value; state.days = value === "today" ? 1 : value.startsWith("relative-") ? Number(value.slice(9)) : value === "calendar-year" ? 365 : value === "calendar-month" ? 31 : 7; document.querySelectorAll<HTMLElement>(".range-tab").forEach((tab) => tab.classList.toggle("active", value === "today")); document.querySelectorAll<HTMLElement>(".range-menu-items button").forEach((item) => item.classList.toggle("active", item.dataset.range === value)); document.querySelectorAll<HTMLElement>(".range-menu-button").forEach((menuButton) => { const menu = menuButton.parentElement; if (!menu) return; const selected = menu.querySelector(`[data-range="${value}"]`); menuButton.classList.toggle("active", Boolean(selected)); menuButton.setAttribute("aria-expanded", "false"); menu.querySelector(".range-menu-items")?.classList.remove("open"); }); if (value !== "today") { const menuButton = current.closest(".range-menu")?.querySelector<HTMLElement>(".range-menu-button"); if (menuButton?.firstChild) menuButton.childNodes[0].textContent = `${current.textContent} `; } await loadUsage(); }));
+document.querySelectorAll<HTMLElement>("[data-range]").forEach((button) => button.addEventListener("click", async (event) => { const current = element(event.currentTarget); const value = current.dataset.range || "today"; state.range = value; state.days = value === "today" ? 1 : value.startsWith("relative-") ? Number(value.slice(9)) : value === "calendar-year" ? 365 : value === "calendar-month" ? 31 : 7; document.querySelectorAll<HTMLElement>(".range-tab").forEach((tab) => tab.classList.toggle("active", value === "today")); document.querySelectorAll<HTMLElement>(".range-menu-items button").forEach((item) => item.classList.toggle("active", item.dataset.range === value)); document.querySelectorAll<HTMLElement>(".range-picker .range-menu-button").forEach((menuButton) => { const menu = menuButton.parentElement; if (!menu) return; const selected = menu.querySelector(`[data-range="${value}"]`); menuButton.classList.toggle("active", Boolean(selected)); menuButton.setAttribute("aria-expanded", "false"); menu.querySelector(".range-menu-items")?.classList.remove("open"); }); if (value !== "today") { const menuButton = current.closest(".range-menu")?.querySelector<HTMLElement>(".range-menu-button"); if (menuButton?.firstChild) menuButton.childNodes[0].textContent = `${current.textContent} `; } updateRepresentationControls(); await loadUsage(); }));
+document.querySelectorAll<HTMLElement>("[data-representation]").forEach((button) => button.addEventListener("click", (event) => { const value = element(event.currentTarget).dataset.representation as ChartRepresentation | undefined; if (!value) return; state.representation = value; closeRangeMenus(); updateRepresentationControls(); if (state.dashboard) renderUsage(state.dashboard.usage, "preserve"); }));
 document.querySelectorAll<HTMLElement>(".range-menu-button").forEach((button) => button.addEventListener("click", (event) => { const parent = element(event.currentTarget).parentElement; if (!parent) return; const menu = parent.querySelector<HTMLElement>(".range-menu-items"); if (!menu) return; const open = menu.classList.toggle("open"); element(event.currentTarget).setAttribute("aria-expanded", String(open)); }));
 function closeRangeMenus() { document.querySelectorAll(".range-menu-items").forEach((menu) => menu.classList.remove("open")); document.querySelectorAll(".range-menu-button").forEach((button) => button.setAttribute("aria-expanded", "false")); }
 document.addEventListener("keydown", (event) => { if (event.key === "Escape") { closeRangeMenus(); closeHostStatusPopover(); } });
 document.addEventListener("pointerdown", (event) => {
-  if (!element(event.target).closest(".range-picker")) closeRangeMenus();
+  if (!element(event.target).closest(".range-picker, .view-picker")) closeRangeMenus();
   if (activeHostStatusPopover && !element(event.target).closest(".usage-host-status-popover, .usage-host-alert")) closeHostStatusPopover();
 });
 document.addEventListener("focusin", (event) => {
   if (activeHostStatusPopover && !activeHostStatusPopover.anchor.closest(".usage-host-pill")?.contains(element(event.target))) closeHostStatusPopover();
 });
-renderClock(); setInterval(renderClock, 30_000); setInterval(() => { if (state.dashboard) renderQuotas(state.dashboard); }, 60_000);
+updateRepresentationControls(); renderClock(); setInterval(renderClock, 30_000); setInterval(() => { if (state.dashboard) renderQuotas(state.dashboard); }, 60_000);
 loadDashboard().catch((error) => { const message = error instanceof Error ? error.message : "Dashboard request failed"; $("#status-copy").textContent = message; showToast(message); });
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
 
