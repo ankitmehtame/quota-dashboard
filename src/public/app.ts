@@ -817,7 +817,7 @@ document.addEventListener("pointerdown", (event) => {
   if (activeHostStatusPopover && !element(event.target).closest(".usage-host-status-popover, .usage-host-alert")) closeHostStatusPopover();
 });
 document.addEventListener("focusin", (event) => {
-  if (activeHostStatusPopover && !element(event.target).closest(".usage-host-pill, .usage-host-status-popover")) closeHostStatusPopover();
+  if (activeHostStatusPopover && !activeHostStatusPopover.anchor.closest(".usage-host-pill")?.contains(element(event.target))) closeHostStatusPopover();
 });
 renderClock(); setInterval(renderClock, 30_000); setInterval(() => { if (state.dashboard) renderQuotas(state.dashboard); }, 60_000);
 loadDashboard().catch((error) => { const message = error instanceof Error ? error.message : "Dashboard request failed"; $("#status-copy").textContent = message; showToast(message); });
