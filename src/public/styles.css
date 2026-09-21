@@ -176,3 +176,15 @@ dialog { color: var(--text); background: var(--surface-raised); border: 1px soli
 @media (max-width: 560px) {
   .usage-controls { justify-content: space-between; margin-top: 17px; }
 }
+
+.view-picker { display: flex; align-items: center; gap: 7px; }
+.view-picker-label { color: var(--faint); font: 10px var(--mono); text-transform: uppercase; letter-spacing: .06em; }
+.view-picker .range-menu-items { min-width: 130px; }
+.range-menu-items button:disabled { cursor: not-allowed; opacity: .35; }
+.detail-days { margin-top: 8px; }
+
+@media (max-width: 560px) {
+  .usage-controls { flex-wrap: wrap; }
+  .view-picker { margin-left: auto; }
+  .view-picker-label { display: none; }
+}
