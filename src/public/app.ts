@@ -24,6 +24,7 @@ const HOT_USAGE_RETRY_GRACE_PERIOD_MS = 15_000;
 const HOT_USAGE_POLL_TIMEOUT_MS = 2 * 60 * 1000;
 let activeChartTooltip: { anchor: HTMLElement; tooltip: HTMLElement } | null = null;
 let activeQuotaTooltip: { anchor: HTMLElement; tooltip: HTMLElement } | null = null;
+let activeHostStatusPopover: { anchor: HTMLButtonElement; popover: HTMLElement } | null = null;
 type HotUsageBaseline = Map<string, { generatedAt: number; error: string | null }>;
 let hotUsagePoller: { timer: number; startedAt: number; baseline: HotUsageBaseline; targetHostIds: Set<string>; retryGraceHostIds: Set<string>; requestInFlight: boolean } | null = null;
 let activeRefreshes = 0;
@@ -117,6 +118,48 @@ function bindQuotaTooltips(): void {
     marker.addEventListener("focus", show);
     marker.addEventListener("blur", hide);
   });
+}
+
+function positionHostStatusPopover(anchor: HTMLElement, popover: HTMLElement): void {
+  const margin = 8;
+  const gap = 10;
+  popover.style.position = "fixed";
+  popover.style.visibility = "hidden";
+
+  const anchorRect = anchor.getBoundingClientRect();
+  const popoverRect = popover.getBoundingClientRect();
+  const maxLeft = Math.max(margin, window.innerWidth - popoverRect.width - margin);
+  const left = Math.min(Math.max(anchorRect.left + (anchorRect.width - popoverRect.width) / 2, margin), maxLeft);
+  const aboveTop = anchorRect.top - popoverRect.height - gap;
+  const belowTop = anchorRect.bottom + gap;
+  const maxTop = Math.max(margin, window.innerHeight - popoverRect.height - margin);
+  const top = aboveTop >= margin ? aboveTop : belowTop <= maxTop ? belowTop : maxTop;
+
+  popover.style.left = `${Math.round(left)}px`;
+  popover.style.top = `${Math.round(top)}px`;
+  popover.style.visibility = "visible";
+}
+
+function closeHostStatusPopover(): void {
+  if (!activeHostStatusPopover) return;
+  activeHostStatusPopover.popover.hidden = true;
+  activeHostStatusPopover.anchor.setAttribute("aria-expanded", "false");
+  activeHostStatusPopover = null;
+}
+
+function toggleHostStatusPopover(anchor: HTMLButtonElement): void {
+  if (activeHostStatusPopover?.anchor === anchor) {
+    closeHostStatusPopover();
+    return;
+  }
+  closeHostStatusPopover();
+  const targetId = anchor.dataset.statusTarget;
+  const popover = targetId ? document.getElementById(targetId) : null;
+  if (!popover) return;
+  popover.hidden = false;
+  anchor.setAttribute("aria-expanded", "true");
+  activeHostStatusPopover = { anchor, popover };
+  positionHostStatusPopover(anchor, popover);
 }
 
 function money(value: number | null | undefined): string {
@@ -378,6 +421,7 @@ function renderSpendMetrics(usage: Usage, hosts: UsageHost[], usableHosts: Usage
 }
 
 function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve"): void {
+  closeHostStatusPopover();
   if (scrollMode === "preserve") {
     const scroll = document.querySelector<HTMLElement>(".chart-scroll");
     if (scroll) state.chartScrollLeft = scroll.scrollLeft;
@@ -391,14 +435,19 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
   const sourceColors: Record<string, string> = { codex: "mint", opencode: "violet", hermes: "orange", antigravity: "blue", shared: "neutral" };
   const enabledSources = new Set(usage.providers || []);
   $(".chart-legend").innerHTML = [...enabledSources].map((provider) => `<span class="legend-key ${sourceColors[provider] || "mint"}"></span> ${escapeHtml(sourceNames[provider] || provider)}`).join("") || "No local usage sources enabled";
-  $("#usage-hosts").innerHTML = hosts.map((host) => {
+  $("#usage-hosts").innerHTML = hosts.map((host, index) => {
     const usable = hostUsable(usage, host);
     const selected = usable && selectedHostIds.has(host.hostId);
     const healthy = hostHealthy(host);
-    const detail = host.disabledReason || host.error || (host.included === false ? "Timezone mismatch" : host.complete === false ? "Range incomplete" : host.stale ? "Stale usage data" : host.status);
+    const detail = host.disabledReason || host.error || (host.included === false ? "Timezone mismatch" : host.complete === false ? "Range incomplete" : host.stale ? "Stale usage data" : host.status) || "Status unavailable";
     const stateLabel = !usable ? "unavailable" : selected ? healthy ? "selected, healthy" : "selected, unhealthy" : "unselected";
-    return `<button class="usage-host ${!usable ? "disabled" : selected ? healthy ? "selected healthy" : "selected unhealthy" : "unselected"}" type="button" data-host-id="${escapeHtml(host.hostId)}" aria-label="${escapeHtml(host.hostId)}: ${stateLabel}${detail ? `, ${escapeHtml(detail)}` : ""}" aria-pressed="${selected}" title="${escapeHtml(detail)}" ${!usable ? "disabled" : ""}>${escapeHtml(host.hostId)}</button>`;
+    const hostClass = `usage-host ${!usable ? "disabled" : selected ? healthy ? "selected healthy" : "selected unhealthy" : "unselected"}`;
+    const needsStatusAlert = !healthy || !usable;
+    if (!needsStatusAlert) return `<button class="${hostClass}" type="button" data-host-id="${escapeHtml(host.hostId)}" aria-label="${escapeHtml(host.hostId)}: ${stateLabel}" aria-pressed="${selected}">${escapeHtml(host.hostId)}</button>`;
+    const statusId = `usage-host-status-${index}`;
+    return `<span class="usage-host-pill ${!usable ? "disabled" : selected ? "selected" : "unselected"}"><button class="${hostClass}" type="button" data-host-id="${escapeHtml(host.hostId)}" aria-label="${escapeHtml(host.hostId)}: ${stateLabel}, ${escapeHtml(detail)}" aria-pressed="${selected}" ${!usable ? "disabled" : ""}>${escapeHtml(host.hostId)}</button><button class="usage-host-alert" type="button" data-status-target="${statusId}" aria-label="Show status for ${escapeHtml(host.hostId)}: ${escapeHtml(detail)}" aria-controls="${statusId}" aria-expanded="false"><span aria-hidden="true">!</span></button><span class="usage-host-status-popover" id="${statusId}" role="status" aria-live="polite" hidden><strong>${escapeHtml(host.hostId)}</strong><span>${escapeHtml(detail)}</span></span></span>`;
   }).join("") || `<span class="usage-host warning"><i></i>No usage hosts</span>`;
+  document.querySelectorAll<HTMLButtonElement>("#usage-hosts .usage-host-alert").forEach((button) => button.addEventListener("click", () => toggleHostStatusPopover(button)));
   document.querySelectorAll<HTMLButtonElement>("#usage-hosts .usage-host:not(:disabled)").forEach((button) => button.addEventListener("click", () => {
     const hostId = button.dataset.hostId;
     if (!hostId) return;
@@ -758,8 +807,11 @@ $("#day-details-dialog").addEventListener("close", () => { $("#usage-chart").cla
 document.querySelectorAll<HTMLElement>("[data-range]").forEach((button) => button.addEventListener("click", async (event) => { const current = element(event.currentTarget); const value = current.dataset.range || "today"; state.range = value; state.days = value === "today" ? 1 : value.startsWith("relative-") ? Number(value.slice(9)) : value === "calendar-year" ? 365 : value === "calendar-month" ? 31 : 7; document.querySelectorAll<HTMLElement>(".range-tab").forEach((tab) => tab.classList.toggle("active", value === "today")); document.querySelectorAll<HTMLElement>(".range-menu-items button").forEach((item) => item.classList.toggle("active", item.dataset.range === value)); document.querySelectorAll<HTMLElement>(".range-menu-button").forEach((menuButton) => { const menu = menuButton.parentElement; if (!menu) return; const selected = menu.querySelector(`[data-range="${value}"]`); menuButton.classList.toggle("active", Boolean(selected)); menuButton.setAttribute("aria-expanded", "false"); menu.querySelector(".range-menu-items")?.classList.remove("open"); }); if (value !== "today") { const menuButton = current.closest(".range-menu")?.querySelector<HTMLElement>(".range-menu-button"); if (menuButton?.firstChild) menuButton.childNodes[0].textContent = `${current.textContent} `; } await loadUsage(); }));
 document.querySelectorAll<HTMLElement>(".range-menu-button").forEach((button) => button.addEventListener("click", (event) => { const parent = element(event.currentTarget).parentElement; if (!parent) return; const menu = parent.querySelector<HTMLElement>(".range-menu-items"); if (!menu) return; const open = menu.classList.toggle("open"); element(event.currentTarget).setAttribute("aria-expanded", String(open)); }));
 function closeRangeMenus() { document.querySelectorAll(".range-menu-items").forEach((menu) => menu.classList.remove("open")); document.querySelectorAll(".range-menu-button").forEach((button) => button.setAttribute("aria-expanded", "false")); }
-document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeRangeMenus(); });
-document.addEventListener("pointerdown", (event) => { if (!element(event.target).closest(".range-picker")) closeRangeMenus(); });
+document.addEventListener("keydown", (event) => { if (event.key === "Escape") { closeRangeMenus(); closeHostStatusPopover(); } });
+document.addEventListener("pointerdown", (event) => {
+  if (!element(event.target).closest(".range-picker")) closeRangeMenus();
+  if (activeHostStatusPopover && !element(event.target).closest(".usage-host-status-popover, .usage-host-alert")) closeHostStatusPopover();
+});
 renderClock(); setInterval(renderClock, 30_000); setInterval(() => { if (state.dashboard) renderQuotas(state.dashboard); }, 60_000);
 loadDashboard().catch((error) => { const message = error instanceof Error ? error.message : "Dashboard request failed"; $("#status-copy").textContent = message; showToast(message); });
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
@@ -767,6 +819,7 @@ if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").cat
 function repositionActiveChartTooltip(): void {
   if (activeChartTooltip) positionChartTooltip(activeChartTooltip.anchor, activeChartTooltip.tooltip);
   if (activeQuotaTooltip) positionQuotaTooltip(activeQuotaTooltip.anchor, activeQuotaTooltip.tooltip);
+  if (activeHostStatusPopover) positionHostStatusPopover(activeHostStatusPopover.anchor, activeHostStatusPopover.popover);
 }
 
 window.addEventListener("resize", repositionActiveChartTooltip);
