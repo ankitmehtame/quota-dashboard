@@ -143,6 +143,10 @@ function positionHostStatusPopover(anchor: HTMLElement, popover: HTMLElement): v
 function closeHostStatusPopover(): void {
   if (!activeHostStatusPopover) return;
   activeHostStatusPopover.popover.hidden = true;
+  activeHostStatusPopover.popover.style.position = "";
+  activeHostStatusPopover.popover.style.left = "";
+  activeHostStatusPopover.popover.style.top = "";
+  activeHostStatusPopover.popover.style.visibility = "";
   activeHostStatusPopover.anchor.setAttribute("aria-expanded", "false");
   activeHostStatusPopover = null;
 }
@@ -811,6 +815,9 @@ document.addEventListener("keydown", (event) => { if (event.key === "Escape") { 
 document.addEventListener("pointerdown", (event) => {
   if (!element(event.target).closest(".range-picker")) closeRangeMenus();
   if (activeHostStatusPopover && !element(event.target).closest(".usage-host-status-popover, .usage-host-alert")) closeHostStatusPopover();
+});
+document.addEventListener("focusin", (event) => {
+  if (activeHostStatusPopover && !element(event.target).closest(".usage-host-pill, .usage-host-status-popover")) closeHostStatusPopover();
 });
 renderClock(); setInterval(renderClock, 30_000); setInterval(() => { if (state.dashboard) renderQuotas(state.dashboard); }, 60_000);
 loadDashboard().catch((error) => { const message = error instanceof Error ? error.message : "Dashboard request failed"; $("#status-copy").textContent = message; showToast(message); });
