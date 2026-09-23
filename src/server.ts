@@ -413,7 +413,7 @@ async function buildUsage(url: URL, config: AppConfig) {
       local: isLocal,
       included,
       complete,
-      usable: healthy,
+      usable: hostRecords.length > 0 || healthy,
       disabledReason: error || (hostRecords.length ? null : `No usable usage data reported by ${hostId}`),
     };
   });
