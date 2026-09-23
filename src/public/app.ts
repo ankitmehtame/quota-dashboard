@@ -424,6 +424,10 @@ function hostUsable(usage: Usage, host: UsageHost): boolean {
   return Boolean(usage.records?.some((record) => record.hostId === host.hostId));
 }
 
+function hostHasRecords(usage: Usage, host: UsageHost): boolean {
+  return Boolean(usage.records?.some((record) => record.hostId === host.hostId));
+}
+
 function reconcileHostSelections(usage: Usage): { hosts: UsageHost[]; usableHosts: UsageHost[]; selectedHostIds: Set<string> } {
   const hosts = usage.hosts || [];
   const usableHosts = hosts.filter((host) => hostUsable(usage, host));
@@ -563,15 +567,18 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
   $(".chart-legend").innerHTML = [...enabledSources].map((provider) => `<span class="legend-key ${sourceColors[provider] || "mint"}"></span> ${escapeHtml(sourceNames[provider] || provider)}`).join("") || "No local usage sources enabled";
   $("#usage-hosts").innerHTML = hosts.map((host, index) => {
     const usable = hostUsable(usage, host);
+    const hasRecords = hostHasRecords(usage, host);
     const selected = usable && selectedHostIds.has(host.hostId);
     const healthy = hostHealthy(host);
     const detail = host.disabledReason || host.error || (host.included === false ? "Timezone mismatch" : host.complete === false ? "Range incomplete" : host.stale ? "Stale usage data" : host.status) || "Status unavailable";
     const stateLabel = !usable ? "unavailable" : selected ? healthy ? "selected, healthy" : "selected, unhealthy" : "unselected";
     const hostClass = `usage-host ${!usable ? "disabled" : selected ? healthy ? "selected healthy" : "selected unhealthy" : "unselected"}`;
-    const needsStatusAlert = !healthy || !usable;
+    const needsStatusAlert = !healthy || !usable || !hasRecords;
     if (!needsStatusAlert) return `<button class="${hostClass}" type="button" data-host-id="${escapeHtml(host.hostId)}" aria-label="${escapeHtml(host.hostId)}: ${stateLabel}" aria-pressed="${selected}">${escapeHtml(host.hostId)}</button>`;
     const statusId = `usage-host-status-${index}`;
-    return `<span class="usage-host-pill ${!usable ? "disabled" : selected ? "selected" : "unselected"}"><button class="${hostClass}" type="button" data-host-id="${escapeHtml(host.hostId)}" aria-label="${escapeHtml(host.hostId)}: ${stateLabel}, ${escapeHtml(detail)}" aria-pressed="${selected}" ${!usable ? "disabled" : ""}>${escapeHtml(host.hostId)}</button><button class="usage-host-alert" type="button" data-status-target="${statusId}" aria-label="Show status for ${escapeHtml(host.hostId)}: ${escapeHtml(detail)}" aria-controls="${statusId}" aria-expanded="false"><span aria-hidden="true">!</span></button><span class="usage-host-status-popover" id="${statusId}" role="status" aria-live="polite" hidden><strong>${escapeHtml(host.hostId)}</strong><span>${escapeHtml(detail)}</span></span></span>`;
+    const icon = healthy && usable && !hasRecords ? "i" : "!";
+    const pillClass = !usable ? "disabled" : selected ? `selected ${healthy ? "healthy" : "unhealthy"}` : "unselected";
+    return `<span class="usage-host-pill ${pillClass} ${healthy && usable && !hasRecords ? "informational" : ""}"><button class="${hostClass}" type="button" data-host-id="${escapeHtml(host.hostId)}" aria-label="${escapeHtml(host.hostId)}: ${stateLabel}, ${escapeHtml(detail)}" aria-pressed="${selected}" ${!usable ? "disabled" : ""}>${escapeHtml(host.hostId)}</button><button class="usage-host-alert" type="button" data-status-target="${statusId}" aria-label="Show status for ${escapeHtml(host.hostId)}: ${escapeHtml(detail)}" aria-controls="${statusId}" aria-expanded="false"><span aria-hidden="true">${icon}</span></button><span class="usage-host-status-popover" id="${statusId}" role="status" aria-live="polite" hidden><strong>${escapeHtml(host.hostId)}</strong><span>${escapeHtml(detail)}</span></span></span>`;
   }).join("") || `<span class="usage-host warning"><i></i>No usage hosts</span>`;
   document.querySelectorAll<HTMLButtonElement>("#usage-hosts .usage-host-alert").forEach((button) => button.addEventListener("click", () => toggleHostStatusPopover(button)));
   document.querySelectorAll<HTMLButtonElement>("#usage-hosts .usage-host:not(:disabled)").forEach((button) => button.addEventListener("click", () => {

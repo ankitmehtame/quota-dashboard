@@ -398,6 +398,8 @@ async function buildUsage(url: URL, config: AppConfig) {
     const complete = dateList(range.from, range.to).every((date) => coveredDates.has(date));
     const stale = !Number.isFinite(generatedTime) || generatedTime > Date.now() + 60_000 || Date.now() - generatedTime > (isLocal ? 10 * 60 * 1000 : staleAfterMs);
     const status = error ? "error" : state?.status?.status || (hostRecords.length ? "ok" : "unknown");
+    const included = !error && (latest?.timezone ?? state?.usage?.timezone ?? usageTimezone) === usageTimezone;
+    const healthy = ["ok", "online"].includes(status) && !error && !stale && included && (isLocal || complete);
     return {
       hostId,
       generatedAt,
@@ -409,9 +411,9 @@ async function buildUsage(url: URL, config: AppConfig) {
       active: activeHostIds.has(hostId),
       stale,
       local: isLocal,
-      included: !error && (latest?.timezone ?? state?.usage?.timezone ?? usageTimezone) === usageTimezone,
+      included,
       complete,
-      usable: hostRecords.length > 0,
+      usable: healthy,
       disabledReason: error || (hostRecords.length ? null : `No usable usage data reported by ${hostId}`),
     };
   });
