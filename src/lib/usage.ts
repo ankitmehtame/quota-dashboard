@@ -235,7 +235,7 @@ export function mergeUsageRecords(
       local: false,
       included: timezoneMatches,
       complete: rangeComplete,
-      usable: ["ok", "online"].includes(remote.status) && !error && !remote.stale && timezoneMatches && rangeComplete,
+      usable: remoteRecords.length > 0 || (["ok", "online"].includes(remote.status) && !error && !remote.stale && timezoneMatches && rangeComplete),
       disabledReason: !timezoneMatches
         ? `Timezone ${remote.timezone || "unknown"} does not match ${range.timeZone}`
         : remoteRecords.length > 0

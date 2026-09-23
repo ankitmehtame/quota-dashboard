@@ -81,7 +81,7 @@ test("includes available records but flags a remote snapshot with incomplete ran
   assert.equal(merged.records.length, 1);
   assert.equal(merged.hosts[0].included, true);
   assert.equal(merged.hosts[0].complete, false);
-  assert.equal(merged.hosts[0].usable, false);
+  assert.equal(merged.hosts[0].usable, true);
   assert.match(merged.hosts[0].error || "", /does not cover/);
 });
 
