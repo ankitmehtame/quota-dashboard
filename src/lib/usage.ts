@@ -213,6 +213,11 @@ export function mergeUsageRecords(
   for (const remote of remoteInputs) {
     const timezoneMatches = remote.timezone === range.timeZone;
     const rangeComplete = Boolean(remote.range && remote.range.from <= range.from && remote.range.to >= range.to);
+    const error = !timezoneMatches
+      ? `Timezone ${remote.timezone || "unknown"} does not match ${range.timeZone}`
+      : !rangeComplete
+        ? `Published range ${remote.range?.from || "unknown"} to ${remote.range?.to || "unknown"} does not cover ${range.from} to ${range.to}`
+        : remote.error;
     const remoteRecords = timezoneMatches
       ? parseCcusage(remote.data)
         .filter((record) => record.date >= range.from && record.date <= range.to && selected.has(record.provider))
@@ -224,17 +229,13 @@ export function mergeUsageRecords(
       generatedAt: remote.generatedAt,
       timezone: remote.timezone,
       range: remote.range,
-      status: timezoneMatches && rangeComplete ? remote.status : "error",
-      error: !timezoneMatches
-        ? `Timezone ${remote.timezone || "unknown"} does not match ${range.timeZone}`
-        : !rangeComplete
-          ? `Published range ${remote.range?.from || "unknown"} to ${remote.range?.to || "unknown"} does not cover ${range.from} to ${range.to}`
-          : remote.error,
+      status: error ? "error" : remote.status,
+      error,
       stale: remote.stale,
       local: false,
       included: timezoneMatches,
       complete: rangeComplete,
-      usable: remoteRecords.length > 0,
+      usable: ["ok", "online"].includes(remote.status) && !error && !remote.stale && timezoneMatches && rangeComplete,
       disabledReason: !timezoneMatches
         ? `Timezone ${remote.timezone || "unknown"} does not match ${range.timeZone}`
         : remoteRecords.length > 0

@@ -81,11 +81,11 @@ test("includes available records but flags a remote snapshot with incomplete ran
   assert.equal(merged.records.length, 1);
   assert.equal(merged.hosts[0].included, true);
   assert.equal(merged.hosts[0].complete, false);
-  assert.equal(merged.hosts[0].usable, true);
+  assert.equal(merged.hosts[0].usable, false);
   assert.match(merged.hosts[0].error || "", /does not cover/);
 });
 
-test("marks a host with no selected-provider records as unavailable", () => {
+test("keeps a healthy host with no selected-provider records available", () => {
   const merged = mergeUsageRecords(["opencode"], { from: "2026-09-01", to: "2026-09-13", timeZone: "UTC" }, [], [{
     hostId: "empty-host",
     generatedAt: "2026-09-13T00:00:00Z",
@@ -97,8 +97,23 @@ test("marks a host with no selected-provider records as unavailable", () => {
     data: { daily: [{ date: "2026-09-12", agent: "codex", totalCost: 1 }] },
   }]);
   assert.equal(merged.records.length, 0);
-  assert.equal(merged.hosts[0].usable, false);
+  assert.equal(merged.hosts[0].usable, true);
   assert.match(merged.hosts[0].disabledReason || "", /No usable/);
+});
+
+test("keeps a host with no usage unavailable when its report is unhealthy", () => {
+  const merged = mergeUsageRecords(["opencode"], { from: "2026-09-01", to: "2026-09-13", timeZone: "UTC" }, [], [{
+    hostId: "offline-host",
+    generatedAt: "2026-09-13T00:00:00Z",
+    timezone: "UTC",
+    range: { from: "2026-09-01", to: "2026-09-13" },
+    status: "error",
+    error: "Report failed",
+    stale: false,
+    data: { daily: [] },
+  }]);
+  assert.equal(merged.hosts[0].usable, false);
+  assert.equal(merged.hosts[0].error, "Report failed");
 });
 
 test("keeps healthy usage status when the current range has no records", async () => {
@@ -119,7 +134,7 @@ test("keeps healthy usage status when the current range has no records", async (
       data: { daily: [{ date: "2026-09-12", agent: "codex", totalCost: 1 }] },
     }]);
     assert.equal(result.records.length, 0);
-    assert.equal(result.hosts[0].usable, false);
+    assert.equal(result.hosts[0].usable, true);
     assert.equal(result.status, "ok");
   } finally {
     if (originalBinary === undefined) delete process.env.CCUSAGE_BIN;
