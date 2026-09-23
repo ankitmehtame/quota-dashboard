@@ -5,13 +5,14 @@ import { ccusageArgs, rollingDateRange, runCcusage, sliceCcusageDocument } from 
 
 test("uses daily JSON by-agent with the configured date range and timezone", () => {
   assert.deepEqual(ccusageArgs({ from: "2025-09-09", to: "2026-09-13", timezone: "Asia/Singapore" }), [
-    "daily", "--json", "--by-agent", "--since", "2025-09-09", "--until", "2026-09-13", "--timezone", "Asia/Singapore",
+    "daily", "--json", "--by-agent", "--since", "2025-09-09", "--until", "2026-09-13", "--timezone", "Asia/Singapore", "--no-offline",
   ]);
 });
 
-test("adds offline mode only when requested", () => {
+test("always sets offline mode explicitly", () => {
   const range = { from: "2026-09-13", to: "2026-09-13", timezone: "UTC" };
-  assert.equal(ccusageArgs(range).at(-1), "UTC");
+  assert.equal(ccusageArgs(range).at(-1), "--no-offline");
+  assert.equal(ccusageArgs(range, { offline: false }).at(-1), "--no-offline");
   assert.equal(ccusageArgs(range, { offline: true }).at(-1), "--offline");
 });
 
@@ -29,7 +30,7 @@ test("parses stdout without modifying the JSON document", async () => {
     binary: "ccusage-test",
     range: { from: "2025-09-09", to: "2026-09-13", timezone: "UTC" },
     runner: (_file, args, options, callback) => {
-      assert.deepEqual(args, ["daily", "--json", "--by-agent", "--since", "2025-09-09", "--until", "2026-09-13", "--timezone", "UTC"]);
+      assert.deepEqual(args, ["daily", "--json", "--by-agent", "--since", "2025-09-09", "--until", "2026-09-13", "--timezone", "UTC", "--no-offline"]);
       assert.equal(options.timeout, 30_000);
       assert.equal(options.maxBuffer, 32 * 1024 * 1024);
       callback(null, stdout, "");

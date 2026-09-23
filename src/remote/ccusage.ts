@@ -42,7 +42,7 @@ export function ccusageArgs(range: CcusageRange, options: { offline?: boolean } 
     range.to,
     "--timezone",
     range.timezone,
-    ...(offline ? ["--offline"] : []),
+    offline ? "--offline" : "--no-offline",
   ];
 }
 
