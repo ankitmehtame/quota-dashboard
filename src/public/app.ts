@@ -614,19 +614,21 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
     }
     const isCurrentBucket = bucket.to === selectedUsage.to;
     let offset = 0;
-    const markup = fallback.map((segment) => {
-      // Current segments are relative to their own stack. Older buckets use
-      // chart-wide scale so their heights remain comparable.
+    // Keep small or token-only sources visible without letting their minimum
+    // heights push the colored segments outside the current stack.
+    const currentHeights = fallback.map((segment) => Math.max(2, displayedTotal > 0 ? (segment.costUsd / displayedTotal) * 100 : 0));
+    const currentHeightTotal = currentHeights.reduce((total, height) => total + height, 0);
+    const markup = fallback.map((segment, index) => {
       const height = isCurrentBucket
-        ? displayedTotal > 0 ? (segment.costUsd / displayedTotal) * 100 : 0
+        ? (currentHeights[index] / currentHeightTotal) * 100
         : max > 0 ? Math.max(2, (segment.costUsd / max) * 100) : 2;
       const html = renderSegment(bucket, segment, fallback, height, offset);
       offset += height;
       return html;
     }).join("");
-    const stackHeight = max && displayedTotal > 0 ? (displayedTotal / max) * 100 : 0;
-    const currentClass = isCurrentBucket && displayedTotal > 0 ? "current-day" : "";
-    const currentHeight = isCurrentBucket ? `height:${stackHeight}% !important` : "";
+    const stackHeight = displayedTotal > 0 && max > 0 ? Math.max(2, (displayedTotal / max) * 100) : fallback.length ? 2 : 0;
+    const currentClass = isCurrentBucket && fallback.length ? "current-day" : "";
+    const currentHeight = currentClass ? `height:${stackHeight}% !important` : "";
     return `<button class="chart-column ${currentClass}" type="button" data-bucket-index="${bucketIndex}" aria-label="${escapeHtml(label)}: ${money(displayedTotal)}"><div class="chart-stack" style="${currentHeight}">${markup}</div></button>`;
   }).join("") : `<div class="chart-empty">${escapeHtml(noHostsSelected ? "No usage hosts selected" : usage.error || "No usage data in this range")}</div>`;
   const chartColumnCount = chart.querySelectorAll(":scope > .chart-column").length;
