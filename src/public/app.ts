@@ -615,13 +615,19 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
     const isCurrentBucket = bucket.to === selectedUsage.to;
     let offset = 0;
     const markup = fallback.map((segment) => {
-      const height = Math.max(2, isCurrentBucket ? (displayedTotal > 0 ? (segment.costUsd / displayedTotal) * 100 : 0) : (max ? (segment.costUsd / max) * 100 : 0));
+      // Current segments are relative to their own stack. Older buckets use
+      // chart-wide scale so their heights remain comparable.
+      const height = isCurrentBucket
+        ? displayedTotal > 0 ? (segment.costUsd / displayedTotal) * 100 : 0
+        : max > 0 ? Math.max(2, (segment.costUsd / max) * 100) : 2;
       const html = renderSegment(bucket, segment, fallback, height, offset);
       offset += height;
       return html;
     }).join("");
-    const stackHeight = max && displayedTotal > 0 ? Math.max(2, (displayedTotal / max) * 100) : 0;
-    return `<button class="chart-column ${isCurrentBucket ? "current-day" : ""}" type="button" data-bucket-index="${bucketIndex}" aria-label="${escapeHtml(label)}: ${money(displayedTotal)}"><div class="chart-stack" style="${isCurrentBucket && stackHeight ? `height:${stackHeight}% !important` : ""}">${markup}</div></button>`;
+    const stackHeight = max && displayedTotal > 0 ? (displayedTotal / max) * 100 : 0;
+    const currentClass = isCurrentBucket && displayedTotal > 0 ? "current-day" : "";
+    const currentHeight = isCurrentBucket ? `height:${stackHeight}% !important` : "";
+    return `<button class="chart-column ${currentClass}" type="button" data-bucket-index="${bucketIndex}" aria-label="${escapeHtml(label)}: ${money(displayedTotal)}"><div class="chart-stack" style="${currentHeight}">${markup}</div></button>`;
   }).join("") : `<div class="chart-empty">${escapeHtml(noHostsSelected ? "No usage hosts selected" : usage.error || "No usage data in this range")}</div>`;
   const chartColumnCount = chart.querySelectorAll(":scope > .chart-column").length;
   chartScroll?.style.setProperty("--chart-min-width", `${Math.max(1, chartColumnCount) * 15}px`);
