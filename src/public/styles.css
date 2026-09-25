@@ -85,7 +85,7 @@ dialog { color: var(--text); background: var(--surface-raised); border: 1px soli
 .today-harness { outline: none; }
 .today-harness { flex: 0 0 22px; width: 22px; }
 .today-bar { box-shadow: 0 0 0 1px var(--mint); }
-.current-day .chart-stack { box-shadow: 0 0 0 1px var(--mint); border-radius: 2px; }
+.current-day .chart-stack { box-shadow: inset 0 0 0 1px var(--mint); border-radius: 2px; }
 .current-day .chart-stack { min-height: 2px; }
 .chart-legend span { display: inline-block; margin-top: 0; }
 .chart-legend .legend-key { align-self: center; margin: 0 0 1px 6px; vertical-align: middle; }
