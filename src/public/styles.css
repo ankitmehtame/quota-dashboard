@@ -86,8 +86,7 @@ dialog { color: var(--text); background: var(--surface-raised); border: 1px soli
 .today-harness { flex: 0 0 22px; width: 22px; }
 .today-bar { box-shadow: 0 0 0 1px var(--mint); }
 .current-day .chart-stack { border-radius: 2px; }
-.current-day .chart-stack::after { content: ""; position: absolute; inset: 0; border: 1px solid var(--mint); border-radius: inherit; pointer-events: none; }
-.current-day .chart-stack { min-height: 2px; }
+.current-day .chart-stack::after { content: ""; position: absolute; inset: 0; border: 1px solid var(--mint); border-radius: inherit; pointer-events: none; z-index: 1; }
 .chart-legend span { display: inline-block; margin-top: 0; }
 .chart-legend .legend-key { align-self: center; margin: 0 0 1px 6px; vertical-align: middle; }
 .tooltip-harness-dot { display: inline-block; width: 7px; height: 7px; border-radius: 1px; margin-right: 6px; }.tooltip-harness-dot.mint { background: var(--mint); }.tooltip-harness-dot.violet { background: var(--violet); }.tooltip-harness-dot.orange { background: var(--orange); }.tooltip-harness-dot.blue { background: var(--blue); }.tooltip-harness-dot.neutral { background: var(--neutral); }
