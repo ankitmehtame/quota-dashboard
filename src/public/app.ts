@@ -601,7 +601,7 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
     const harnesses = sortedSegments.map((segment) => `<span class="harness-row ${segment.provider === hoveredProvider ? "hovered" : ""}"><i class="tooltip-harness-dot ${colors[segment.provider] || "mint"}"></i><span class="harness-name">${escapeHtml(sourceNames[segment.provider] || segment.provider)}</span><span class="harness-detail"> · ${money(segment.costUsd)} · ${formatTokens(segment.totalTokens)} tokens</span></span>`).join("");
     return `<span class="chart-tooltip"><strong>${money(bucket.costUsd)} total · ${formatTokens(bucket.totalTokens)} tokens</strong><span>${escapeHtml(usageBucketLabel(bucket, representation))}</span><div class="tooltip-separator"></div>${harnesses}</span>`;
   };
-  const renderSegment = (bucket: UsageBucket, segment: { provider: string; costUsd: number; totalTokens: number }, segments: Array<{ provider: string; costUsd: number; totalTokens: number }>, height: number, offset = 0) => { const color = colors[segment.provider] || "mint"; return `<div class="chart-segment ${color}" style="height:${height}%;bottom:${offset}%">${usageTooltip(bucket, segment.provider, segments)}</div>`; };
+  const renderSegment = (bucket: UsageBucket, segment: { provider: string; costUsd: number; totalTokens: number }, segments: Array<{ provider: string; costUsd: number; totalTokens: number }>, height: number) => { const color = colors[segment.provider] || "mint"; return `<div class="chart-segment ${color}" style="flex:${height} 1 0%">${usageTooltip(bucket, segment.provider, segments)}</div>`; };
   const todayOnly = selectedUsage.from === selectedUsage.to;
   const chartScroll = document.querySelector<HTMLElement>(".chart-scroll");
   chart.innerHTML = buckets.length ? buckets.map((bucket, bucketIndex) => {
@@ -613,16 +613,14 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
       return (fallback.length ? fallback : [{ provider: "other", costUsd: 0, totalTokens: 0 }]).map((segment) => `<button class="chart-column today-harness" type="button" data-bucket-index="${bucketIndex}" aria-label="${escapeHtml(label)} ${escapeHtml(segment.provider)}: ${money(segment.costUsd)}"><div class="chart-stack">${segment.costUsd > 0 || segment.totalTokens > 0 ? `<div class="chart-segment ${colors[segment.provider] || "mint"}" style="height:${max ? Math.max(2, (segment.costUsd / max) * 100) : 2}%;bottom:0">${usageTooltip(bucket, segment.provider, fallback)}</div>` : ""}</div></button>`).join("");
     }
     const isCurrentBucket = bucket.to === selectedUsage.to;
-    let offset = 0;
     // Size every stack by total spend. Keep small or token-only sources visible
     // inside that height so minimum segment sizes cannot inflate older bars.
+    // Flex weights share pixel rounding instead of positioning each boundary independently.
     const segmentHeights = fallback.map((segment) => Math.max(2, displayedTotal > 0 ? (segment.costUsd / displayedTotal) * 100 : 0));
     const segmentHeightTotal = segmentHeights.reduce((total, height) => total + height, 0);
     const markup = fallback.map((segment, index) => {
       const height = (segmentHeights[index] / segmentHeightTotal) * 100;
-      const html = renderSegment(bucket, segment, fallback, height, offset);
-      offset += height;
-      return html;
+      return renderSegment(bucket, segment, fallback, height);
     }).join("");
     const stackHeight = displayedTotal > 0 && max > 0 ? Math.max(2, (displayedTotal / max) * 100) : fallback.length ? 2 : 0;
     const currentClass = isCurrentBucket && fallback.length ? "current-day" : "";

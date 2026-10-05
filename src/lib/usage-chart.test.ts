@@ -12,11 +12,11 @@ function renderChart(days: Array<{ date: string; costs: number[]; tokens?: numbe
     date, from: date, to: date, days: [],
     costUsd: costs.reduce((total, cost) => total + cost, 0),
     totalTokens: (tokens || []).reduce((total, count) => total + count, 0),
-    byProvider: Object.fromEntries(costs.map((costUsd, index) => [["codex", "opencode", "hermes"][index], { costUsd, totalTokens: tokens?.[index] || 0 }])),
+    byProvider: Object.fromEntries(costs.map((costUsd, index) => [["codex", "opencode", "hermes", "antigravity"][index], { costUsd, totalTokens: tokens?.[index] || 0 }])),
   }));
   const chart = { innerHTML: "", querySelectorAll: () => [] };
   const elements = new Map<string, { innerHTML?: string; textContent?: string }>();
-  const usage = { from: days[0].date, to: days.at(-1)!.date, daily: buckets, providers: ["codex", "opencode", "hermes"] };
+  const usage = { from: days[0].date, to: days.at(-1)!.date, daily: buckets, providers: ["codex", "opencode", "hermes", "antigravity"] };
   runInNewContext(`${renderer}\nrenderUsage(usage);`, {
     usage, state: { chartScrollLeft: 0, hostSelections: new Map() },
     document: { querySelector: () => null, querySelectorAll: () => [] },
@@ -37,10 +37,10 @@ function renderChart(days: Array<{ date: string; costs: number[]; tokens?: numbe
   return chart.innerHTML;
 }
 
-function stackGeometry(html: string): Array<{ height: number; segments: Array<{ height: number; bottom: number }> }> {
+function stackGeometry(html: string): Array<{ height: number; segments: Array<{ height: number }> }> {
   return [...html.matchAll(/<div class="chart-stack" style="([^"]*)">(.*?)<\/button>/g)].map((match) => ({
     height: Number(match[1].match(/height:([\d.]+)%/)?.[1] ?? 100),
-    segments: [...match[2].matchAll(/style="height:([\d.]+)%;bottom:([\d.]+)%"/g)].map((segment) => ({ height: Number(segment[1]), bottom: Number(segment[2]) })),
+    segments: [...match[2].matchAll(/style="flex:([\d.]+) 1 0%"/g)].map((segment) => ({ height: Number(segment[1]) })),
   }));
 }
 
@@ -61,7 +61,6 @@ for (const representation of ["day", "week", "month"]) {
       let offset = 0;
       for (const segment of stack.segments) {
         assert.ok(segment.height > 0);
-        assert.ok(Math.abs(segment.bottom - offset) < 1e-10);
         offset += segment.height;
       }
       assert.ok(Math.abs(offset - 100) < 1e-10);
@@ -76,6 +75,25 @@ test("equal spend has equal stack height despite different provider mixes", () =
   ]));
   const visibleHeight = (stack: typeof stacks[number]) => stack.height * stack.segments.reduce((total, segment) => total + segment.height, 0) / 100;
   assert.ok(Math.abs(visibleHeight(stacks[0]) - visibleHeight(stacks[1])) < 1e-10);
+});
+
+test("Hermes and Antigravity share a continuous flex stack with OpenCode", () => {
+  const html = renderChart([
+    { date: "2026-09-24", costs: [0, 0.01, 7.13, 11.27] },
+    { date: "2026-09-25", costs: [25, 0, 0, 0] },
+  ]);
+  const stack = stackGeometry(html)[0];
+  assert.equal(stack.segments.length, 3);
+  assert.ok(Math.abs(stack.segments.reduce((total, segment) => total + segment.height, 0) - 100) < 1e-10);
+  assert.match(html, /chart-segment orange/);
+  assert.match(html, /chart-segment blue/);
+  assert.doesNotMatch(html, /bottom:/);
+
+  const styles = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+  assert.match(styles, /\.chart-stack \{ position: relative; display: flex; flex-direction: column-reverse; gap: 0; \}/);
+  assert.doesNotMatch(styles, /\.chart-segment \{[^}]*position: absolute/);
+  assert.match(styles, /\.chart-segment:first-child \{ border-radius: 0; \}/);
+  assert.match(styles, /\.chart-segment:last-child \{ border-radius: 2px 2px 0 0; \}/);
 });
 
 test("empty and token-only buckets stay finite and within their stacks", () => {
