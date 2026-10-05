@@ -614,22 +614,19 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
     }
     const isCurrentBucket = bucket.to === selectedUsage.to;
     let offset = 0;
-    // Keep small or token-only sources visible without letting their minimum
-    // heights push the colored segments outside the current stack.
-    const currentHeights = fallback.map((segment) => Math.max(2, displayedTotal > 0 ? (segment.costUsd / displayedTotal) * 100 : 0));
-    const currentHeightTotal = currentHeights.reduce((total, height) => total + height, 0);
+    // Size every stack by total spend. Keep small or token-only sources visible
+    // inside that height so minimum segment sizes cannot inflate older bars.
+    const segmentHeights = fallback.map((segment) => Math.max(2, displayedTotal > 0 ? (segment.costUsd / displayedTotal) * 100 : 0));
+    const segmentHeightTotal = segmentHeights.reduce((total, height) => total + height, 0);
     const markup = fallback.map((segment, index) => {
-      const height = isCurrentBucket
-        ? (currentHeights[index] / currentHeightTotal) * 100
-        : max > 0 ? Math.max(2, (segment.costUsd / max) * 100) : 2;
+      const height = (segmentHeights[index] / segmentHeightTotal) * 100;
       const html = renderSegment(bucket, segment, fallback, height, offset);
       offset += height;
       return html;
     }).join("");
     const stackHeight = displayedTotal > 0 && max > 0 ? Math.max(2, (displayedTotal / max) * 100) : fallback.length ? 2 : 0;
     const currentClass = isCurrentBucket && fallback.length ? "current-day" : "";
-    const currentHeight = currentClass ? `height:${stackHeight}% !important` : "";
-    return `<button class="chart-column ${currentClass}" type="button" data-bucket-index="${bucketIndex}" aria-label="${escapeHtml(label)}: ${money(displayedTotal)}"><div class="chart-stack" style="${currentHeight}">${markup}</div></button>`;
+    return `<button class="chart-column ${currentClass}" type="button" data-bucket-index="${bucketIndex}" aria-label="${escapeHtml(label)}: ${money(displayedTotal)}"><div class="chart-stack" style="height:${stackHeight}%">${markup}</div></button>`;
   }).join("") : `<div class="chart-empty">${escapeHtml(noHostsSelected ? "No usage hosts selected" : usage.error || "No usage data in this range")}</div>`;
   const chartColumnCount = chart.querySelectorAll(":scope > .chart-column").length;
   chartScroll?.style.setProperty("--chart-min-width", `${Math.max(1, chartColumnCount) * 15}px`);
