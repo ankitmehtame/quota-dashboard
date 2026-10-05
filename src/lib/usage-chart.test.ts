@@ -90,7 +90,7 @@ test("Hermes and Antigravity share a continuous flex stack with OpenCode", () =>
   assert.doesNotMatch(html, /bottom:/);
 
   const styles = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
-  assert.match(styles, /\.chart-stack \{ position: relative; display: flex; flex-direction: column-reverse; gap: 0; \}/);
+  assert.match(styles, /\.chart-stack \{ position: relative; display: flex; flex-direction: column-reverse; justify-content: flex-start; gap: 0; \}/);
   assert.doesNotMatch(styles, /\.chart-segment \{[^}]*position: absolute/);
   assert.match(styles, /\.chart-segment:first-child \{ border-radius: 0; \}/);
   assert.match(styles, /\.chart-segment:last-child \{ border-radius: 2px 2px 0 0; \}/);
@@ -115,4 +115,15 @@ test("today-only view retains separate provider bars", () => {
   assert.equal([...html.matchAll(/class="chart-column today-harness"/g)].length, 2);
   assert.match(html, /height:66\.666/);
   assert.match(html, /height:33\.333/);
+});
+
+test("today-only bars align to the bottom of reversed flex stacks", () => {
+  const html = renderChart([{ date: "2026-10-05", costs: [0, 5.4, 0.06, 24.6] }]);
+  assert.equal([...html.matchAll(/class="chart-column today-harness"/g)].length, 3);
+  assert.match(html, /height:2%;bottom:0/);
+  const styles = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+  // Logical `start` means top, whereas `flex-start` follows column-reverse to the baseline.
+  const stackRules = [...styles.matchAll(/\.chart-stack \{([^}]+)\}/g)].map((match) => match[1]).join(";");
+  const alignment = [...stackRules.matchAll(/justify-content:\s*([^;]+)/g)].at(-1)?.[1];
+  assert.equal(alignment, "flex-start");
 });
