@@ -81,7 +81,8 @@ dialog { color: var(--text); background: var(--surface-raised); border: 1px soli
 .quota-balance-primary, .quota-balance-secondary { display: block; }
 .quota-balance-secondary { color: var(--muted); font: 12px var(--mono); letter-spacing: 0; margin-top: 7px; }
 .quota-now-marker { position: absolute; top: -3px; bottom: -3px; width: 2px; border-radius: 2px; background: var(--text); box-shadow: 0 0 0 1px var(--bg), 0 0 7px var(--text); z-index: 2; cursor: help; }.quota-now-tooltip { display: none; position: absolute; z-index: 5; left: 50%; bottom: 12px; transform: translateX(-50%); min-width: 165px; padding: 8px 9px; border: 1px solid var(--line); border-radius: 4px; background: #202925; color: var(--text); box-shadow: 0 8px 24px #0008; white-space: nowrap; }.quota-now-tooltip strong, .quota-now-tooltip span { display: block; }.quota-now-tooltip strong { font: 11px var(--mono); }.quota-now-tooltip span { color: var(--muted); font: 10px var(--mono); margin-top: 4px; }.quota-now-marker:hover .quota-now-tooltip, .quota-now-marker:focus .quota-now-tooltip { display: block; }
-.chart-stack { position: relative; display: flex; flex-direction: column-reverse; gap: 0; }.chart-segment { position: relative; flex: 0 0 auto; border-radius: 0; }.chart-segment:first-child { border-radius: 0; }.chart-segment:last-child { border-radius: 2px 2px 0 0; }
+/* flex-start follows column-reverse to the bottom; start would align Today bars at the top. */
+.chart-stack { position: relative; display: flex; flex-direction: column-reverse; justify-content: flex-start; gap: 0; }.chart-segment { position: relative; flex: 0 0 auto; border-radius: 0; }.chart-segment:first-child { border-radius: 0; }.chart-segment:last-child { border-radius: 2px 2px 0 0; }
 .today-harness { outline: none; }
 .today-harness { flex: 0 0 22px; width: 22px; }
 .today-bar { box-shadow: 0 0 0 1px var(--mint); }
