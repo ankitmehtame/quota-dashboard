@@ -96,9 +96,13 @@ Provider enablement and dashboard order are stored in `~/.config/quota-dashboard
 
 Ollama Cloud reads `OLLAMA_API_KEY` from the environment or from
 `~/.config/quota-dashboard/.env`. Usage is fetched from
-`https://ollama.com/api/usage`. Newer accounts report a monthly window; legacy
-accounts may report session and weekly windows instead. Reset timestamps are
-shown when Ollama reports them, while legacy windows use their known schedules.
+`https://ollama.com/api/balance`. Monthly quota usage is calculated as
+`(allowance_usd - balance_usd) / allowance_usd * 100`. The card shows included
+credits remaining, credits used, the monthly allowance, and the reported reset
+date. Elapsed time uses the API's actual billing-period dates. A balance summary
+above the quota bar shows total available credits with an included/purchased
+breakdown, including zero purchased credits. Purchased credits do not affect the monthly percentage.
+There is no fallback to `/api/usage` or its old limit response format.
 
 Local usage is collected in the background for one date at a time. The parsed result is separated into Codex, OpenCode, Hermes, and Antigravity groups using its provider/source fields; those groups are independently toggleable in the Providers dialog. Antigravity usage appears when the installed `ccusage` release supports that source. The dashboard reads normalized records from `USAGE_DATA_DIR` immediately and never waits for a `ccusage` process. Each host/date directory also keeps the exact current document in `raw.json` plus timestamped raw backups when a later complete result omits a previously present tool. The dashboard does not read provider-local databases directly. Codex/ChatGPT quota is fetched directly from `https://chatgpt.com/backend-api/wham/usage` using the Codex OAuth credentials in `~/.codex/auth.json`; an expired access token is refreshed automatically when the endpoint returns `401`. OpenCode Go supports rolling, weekly, and monthly windows when its dashboard returns them.
 

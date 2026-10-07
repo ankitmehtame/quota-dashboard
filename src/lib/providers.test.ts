@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mock } from "node:test";
 
-import { fetchCodex, parseCodexQuota, parseCodexResetCredits, parseOllamaUsage, parseOpenCodeGo } from "./providers.js";
+import { fetchCodex, fetchOllama, parseCodexQuota, parseCodexResetCredits, parseOllamaBalance, parseOllamaCreditBalance, parseOpenCodeGo } from "./providers.js";
 
 test("parses OpenCode Go rolling usage and reset time", () => {
   const now = Date.parse("2026-08-12T00:00:00Z");
@@ -100,89 +100,79 @@ test("refreshes Codex credentials after an unauthorized quota response", async (
   }
 });
 
-test("parses Ollama session and weekly usage with epoch-anchored resets", () => {
-  const now = Date.parse("2026-08-19T10:30:00Z");
-  const windows = parseOllamaUsage({ limits: { session: { usage: 0.003 }, weekly: { usage: 0.001 } } }, now);
-  assert.deepEqual(windows.map((window) => ({ name: window.name, usedPercent: window.usedPercent, resetAt: window.resetAt })), [
-    { name: "session", usedPercent: 0.3, resetAt: "2026-08-19T14:00:00.000Z" },
-    { name: "weekly", usedPercent: 0.1, resetAt: "2026-08-24T00:00:00.000Z" },
-  ]);
+const ollamaBalance = {
+  included: { balance_usd: 2.06662, allowance_usd: 2.5, period: { from: "2026-09-19T00:50:25.281112Z", until: "2026-10-19T00:50:25.281112Z" } },
+  purchased: { balance_usd: 0 },
+};
+
+test("calculates Ollama monthly quota from included credit balance", () => {
+  const [window] = parseOllamaBalance(ollamaBalance);
+  assert.equal(window.name, "monthly");
+  assert.equal(window.usedPercent, 17.34);
+  assert.ok(Math.abs(window.usedValue! - 0.43338) < 1e-10);
+  assert.equal(window.limitValue, 2.5);
+  assert.equal(window.valueLabel, "$2.07 remaining · $0.43 used");
+  assert.equal(window.windowStart, "2026-09-19T00:50:25.281Z");
+  assert.equal(window.resetAt, "2026-10-19T00:50:25.281Z");
+  assert.equal(window.windowSeconds, 30 * 86400);
 });
 
-test("uses the next five-hour Ollama session window", () => {
-  const windows = parseOllamaUsage({ limits: { session: { usage: 0.003 } } }, Date.parse("2026-08-19T19:30:00Z"));
-  assert.equal(windows[0].resetAt, "2026-08-20T00:00:00.000Z");
-  assert.equal(windows[0].windowSeconds, 18_000);
+test("keeps purchased credits separate from monthly quota", () => {
+  const windows = parseOllamaBalance({ ...ollamaBalance, purchased: { balance_usd: 25 } });
+  assert.equal(windows[0].usedPercent, 17.34);
+  assert.equal(windows.length, 1);
+  assert.deepEqual(parseOllamaCreditBalance({ ...ollamaBalance, purchased: { balance_usd: 25 } }), { includedUsd: 2.06662, purchasedUsd: 25 });
+  assert.deepEqual(parseOllamaCreditBalance(ollamaBalance), { includedUsd: 2.06662, purchasedUsd: 0 });
+  assert.deepEqual(parseOllamaCreditBalance({ included: ollamaBalance.included }), { includedUsd: 2.06662, purchasedUsd: null });
+  assert.equal(parseOllamaCreditBalance({}), undefined);
 });
 
-test("anchors Ollama session windows to the global epoch", () => {
-  const windows = parseOllamaUsage({ limits: { session: { usage: 0.003 } } }, Date.parse("1970-01-02T08:30:00Z"));
-  assert.equal(windows[0].resetAt, "1970-01-02T11:00:00.000Z");
-  assert.equal(windows[0].windowSeconds, 18_000);
+test("handles empty and exhausted Ollama allowances without dividing by zero", () => {
+  for (const [balance, allowance, expected] of [[0, 0, null], [0, 2.5, 100], [2.5, 2.5, 0], [-1, 2.5, 100], [3, 2.5, 0]] as const) {
+    const [window] = parseOllamaBalance({ included: { balance_usd: balance, allowance_usd: allowance } });
+    assert.equal(window.usedPercent, expected);
+  }
 });
 
-test("ignores malformed Ollama usage windows", () => {
-  assert.deepEqual(parseOllamaUsage({ limits: { session: { usage: "unknown" } } }), []);
+test("does not infer Ollama reset dates for malformed billing periods", () => {
+  for (const period of [{}, { from: "invalid", until: "2026-10-19" }, { from: "2026-10-19", until: "2026-09-19" }]) {
+    const [window] = parseOllamaBalance({ included: { ...ollamaBalance.included, period } });
+    assert.equal(window.usedPercent, 17.34);
+    assert.equal(window.resetAt, null);
+    assert.equal(window.windowSeconds, null);
+  }
 });
 
-test("rounds Ollama percentages for API consumers", () => {
-  const windows = parseOllamaUsage({ limits: { session: { usage: 0.00123456 } } });
-  assert.equal(windows[0].usedPercent, 0.12);
+test("rejects malformed balances and old Ollama usage responses", () => {
+  for (const payload of [null, {}, { included: {} }, { included: { balance_usd: null, allowance_usd: 2.5 } },
+    { included: { balance_usd: false, allowance_usd: 2.5 } }, { included: { balance_usd: 1, allowance_usd: -1 } },
+    { limits: { monthly: { usage: 0.5 } } }, { totals: { usage_usd: 0.1841 } }]) {
+    assert.deepEqual(parseOllamaBalance(payload), []);
+  }
 });
 
-test("parses Ollama percentage usage and provider reset timestamps", () => {
-  const windows = parseOllamaUsage({ limits: {
-    session: { used_percent: 12.5, reset_at: "2026-08-19T15:00:00Z" },
-    weekly: { used: 34, resetAt: 1787616000 },
-  } }, Date.parse("2026-08-19T10:30:00Z"));
-  assert.deepEqual(windows.map((window) => ({ name: window.name, usedPercent: window.usedPercent, resetAt: window.resetAt })), [
-    { name: "session", usedPercent: 12.5, resetAt: "2026-08-19T15:00:00.000Z" },
-    { name: "weekly", usedPercent: 34, resetAt: "2026-08-25T00:00:00.000Z" },
-  ]);
-});
-
-test("parses the current Ollama monthly usage window", () => {
-  const windows = parseOllamaUsage({ limits: { monthly: { usage: 0.005, limit: 1, unit: "credits", reset_at: "2026-09-15T00:00:00Z", models: [{ name: "model-a", request_count: 40 }, { name: "model-b", request_count: 2 }] } } });
-  assert.deepEqual(windows.map((window) => ({ name: window.name, usedPercent: window.usedPercent, usedValue: window.usedValue, limitValue: window.limitValue, requestCount: window.requestCount, unit: window.unit, resetAt: window.resetAt, windowSeconds: window.windowSeconds })), [
-    { name: "monthly", usedPercent: 0.5, usedValue: 0.005, limitValue: 1, requestCount: 42, unit: "credits", resetAt: "2026-09-15T00:00:00.000Z", windowSeconds: null },
-  ]);
-});
-
-test("aggregates Ollama request counts from monthly model usage", () => {
-  const windows = parseOllamaUsage({ limits: { monthly: { usage: 0.034, models: [
-    { name: "gemma4:31b", request_count: 1197 },
-    { name: "gpt-oss:120b", request_count: 2 },
-  ] } } });
-  assert.equal(windows[0].usedValue, 0.034);
-  assert.equal(windows[0].limitValue, null);
-  assert.equal(windows[0].requestCount, 1199);
-  assert.equal(windows[0].resetAt, null);
-});
-
-test("reports zero Ollama requests for an empty monthly model list", () => {
-  const windows = parseOllamaUsage({ limits: { monthly: { usage: 0, models: [] } } });
-  assert.equal(windows[0].requestCount, 0);
-});
-
-test("falls back for invalid Ollama values and handles percentage edge cases", () => {
-  const windows = parseOllamaUsage({ limits: {
-    session: { used_percent: null, usage: 0.5, reset: null },
-    weekly: { used: 1, reset: false },
-  } }, Date.parse("2026-08-19T10:30:00Z"));
-  assert.deepEqual(windows.map((window) => ({ name: window.name, usedPercent: window.usedPercent, resetAt: window.resetAt })), [
-    { name: "session", usedPercent: 50, resetAt: "2026-08-19T14:00:00.000Z" },
-    { name: "weekly", usedPercent: 1, resetAt: "2026-08-24T00:00:00.000Z" },
-  ]);
-});
-
-test("treats Ollama usage as a fraction even when it exceeds one", () => {
-  const windows = parseOllamaUsage({ limits: { session: { usage: 1.25 } } });
-  assert.equal(windows[0].usedPercent, 100);
-});
-test("falls back from invalid Ollama fields and reset timestamps", () => {
-  const windows = parseOllamaUsage({ limits: {
-    session: { used_percent: "unknown", used: 34, reset_at: 1e20 },
-  } }, Date.parse("2026-08-19T10:30:00Z"));
-  assert.equal(windows[0].usedPercent, 34);
-  assert.equal(windows[0].resetAt, "2026-08-19T14:00:00.000Z");
+test("fetches only Ollama balance and never falls back to usage", async () => {
+  const originalKey = process.env.OLLAMA_API_KEY;
+  process.env.OLLAMA_API_KEY = "test-key";
+  const urls: string[] = [];
+  let status = 200;
+  mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
+    urls.push(String(input));
+    assert.equal(new Headers(init?.headers).get("authorization"), "Bearer test-key");
+    return new Response(JSON.stringify(ollamaBalance), { status });
+  });
+  try {
+    const fetched = await fetchOllama();
+    assert.equal(fetched.windows[0].usedPercent, 17.34);
+    assert.deepEqual(fetched.creditBalance, { includedUsd: 2.06662, purchasedUsd: 0 });
+    status = 503;
+    const failed = await fetchOllama();
+    assert.equal(failed.status, "error");
+    assert.equal(failed.error, "Ollama returned HTTP 503");
+    assert.deepEqual(urls, ["https://ollama.com/api/balance", "https://ollama.com/api/balance"]);
+  } finally {
+    mock.restoreAll();
+    if (originalKey === undefined) delete process.env.OLLAMA_API_KEY;
+    else process.env.OLLAMA_API_KEY = originalKey;
+  }
 });

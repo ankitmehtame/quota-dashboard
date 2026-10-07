@@ -33,6 +33,7 @@ export type ProviderResult = {
   error: string | null;
   fetchedAt: string;
   windows: QuotaWindow[];
+  creditBalance?: { includedUsd: number; purchasedUsd: number | null };
   planType?: string | null;
   subscriptionActiveUntil?: string | null;
   resetCredits?: RateLimitResetCredit[];
@@ -113,15 +114,15 @@ export const PROVIDER_DEFINITIONS: Record<ProviderId, {
     name: "Ollama Cloud",
     shortName: "Ollama",
     accent: "orange",
-    description: "Cloud usage windows",
+    description: "Monthly cloud credits and balance",
     capabilities: {
       quota: true,
       usage: false,
       usedPercent: true,
-      remainingValue: false,
+      remainingValue: true,
       resetAt: true,
       historicalUsage: false,
-      cost: false,
+      cost: true,
       tokenCounts: false,
     },
   },

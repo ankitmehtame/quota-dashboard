@@ -194,3 +194,8 @@ dialog { color: var(--text); background: var(--surface-raised); border: 1px soli
   .view-picker { margin-left: auto; }
   .view-picker-label { display: none; }
 }
+.quota-foot { flex-wrap: wrap; gap: 6px 12px; line-height: 1.5; }
+.quota-foot > span { flex: 0 0 auto; max-width: 100%; overflow-wrap: anywhere; }
+.quota-credit-balance { margin-bottom: 22px; }
+.quota-credit-balance-inline { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 14px; }
+.quota-credit-balance-inline .quota-balance-secondary { margin-top: 0; }
