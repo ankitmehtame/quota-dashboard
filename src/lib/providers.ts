@@ -51,16 +51,6 @@ function result(configured: boolean, windows: QuotaWindow[] = [], error: string 
   };
 }
 
-const OLLAMA_WEEK_SECONDS = 7 * 24 * 60 * 60;
-const OLLAMA_SESSION_SECONDS = 5 * 60 * 60;
-const OLLAMA_SESSION_ANCHOR = Date.parse("1970-01-01T00:00:00Z");
-const OLLAMA_WEEK_ANCHOR = Date.parse("1970-01-05T00:00:00Z");
-
-function nextOllamaReset(now: number, windowSeconds: number, anchor: number): string {
-  const elapsed = Math.floor((now - anchor) / (windowSeconds * 1000));
-  return new Date(anchor + (elapsed + 1) * windowSeconds * 1000).toISOString();
-}
-
 function strictNumber(value: unknown): number | null {
   if (typeof value === "number") return Number.isFinite(value) ? value : null;
   if (typeof value === "string" && value.trim()) {
@@ -70,72 +60,54 @@ function strictNumber(value: unknown): number | null {
   return null;
 }
 
-function ollamaResetAt(value: JsonObject, now: number, windowSeconds: number | null, anchor: number | null): string | null {
-  const reported = value.reset_at ?? value.resetAt ?? value.reset;
-  if (typeof reported === "string" && Number.isFinite(Date.parse(reported))) {
-    const date = new Date(reported);
-    if (Number.isFinite(date.getTime())) return date.toISOString();
-  }
-  const timestamp = strictNumber(reported);
-  if (timestamp !== null && timestamp > 0) {
-    const date = new Date(timestamp < 10_000_000_000 ? timestamp * 1000 : timestamp);
-    if (Number.isFinite(date.getTime())) return date.toISOString();
-  }
-  return windowSeconds !== null && anchor !== null ? nextOllamaReset(now, windowSeconds, anchor) : null;
-}
-
-function ollamaRequestCount(value: JsonObject): number | null {
-  const reported = strictNumber(value.requests ?? value.request_count ?? value.requestCount);
-  if (reported !== null) return reported;
-  if (!Array.isArray(value.models)) return null;
-  let total = 0;
-  let found = false;
-  for (const rawModel of value.models) {
-    const model = objectValue(rawModel);
-    const count = strictNumber(model.request_count ?? model.requests ?? model.requestCount);
-    if (count === null) continue;
-    total += count;
-    found = true;
-  }
-  return found || value.models.length === 0 ? total : null;
-}
-
-export function parseOllamaUsage(payload: unknown, now = Date.now()): QuotaWindow[] {
-  const limits = objectValue(objectValue(payload).limits);
-  const windows: QuotaWindow[] = [];
-  for (const [name, seconds, anchor] of [["session", OLLAMA_SESSION_SECONDS, OLLAMA_SESSION_ANCHOR], ["weekly", OLLAMA_WEEK_SECONDS, OLLAMA_WEEK_ANCHOR], ["monthly", null, null]] as const) {
-    const limit = objectValue(limits[name]);
-    const rawPercent = [limit.used_percent, limit.used].map(strictNumber).find((value): value is number => value !== null) ?? null;
-    const rawUsage = strictNumber(limit.usage);
-    const rawLimit = strictNumber(limit.limit ?? limit.max ?? limit.quota);
-    const requestCount = ollamaRequestCount(limit);
-    if (rawPercent === null && rawUsage === null) continue;
-    const usage = rawPercent !== null ? rawPercent / 100 : rawUsage!;
-    windows.push(usageWindow({
-      name,
-      usedPercent: Math.round(usage * 10000) / 100,
-      usedValue: rawUsage,
-      limitValue: rawLimit,
-      requestCount,
-      unit: typeof limit.unit === "string" ? limit.unit : null,
-      resetAt: ollamaResetAt(limit, now, seconds, anchor),
-      ...(seconds === null ? {} : { windowSeconds: seconds }),
-    }));
-  }
+export function parseOllamaBalance(payload: unknown): QuotaWindow[] {
+  const data = objectValue(payload);
+  const included = objectValue(data.included);
+  const balance = strictNumber(included.balance_usd);
+  const allowance = strictNumber(included.allowance_usd);
+  if (balance === null || allowance === null || allowance < 0) return [];
+  const used = Math.max(0, allowance - balance);
+  const period = objectValue(included.period);
+  const dateValue = (value: unknown): string | null =>
+    typeof value === "string" && Number.isFinite(Date.parse(value)) ? new Date(value).toISOString() : null;
+  const windowStart = dateValue(period.from);
+  const windowEnd = dateValue(period.until);
+  const validPeriod = windowStart !== null && windowEnd !== null && Date.parse(windowEnd) > Date.parse(windowStart);
+  const windows = [usageWindow({
+    name: "monthly",
+    usedPercent: allowance > 0 ? Math.round(used / allowance * 10000) / 100 : null,
+    usedValue: used,
+    limitValue: allowance,
+    unit: "USD",
+    valueLabel: `${formatMoney(balance)} remaining · ${formatMoney(used)} used`,
+    windowStart: validPeriod ? windowStart : null,
+    windowEnd: validPeriod ? windowEnd : null,
+    resetAt: validPeriod ? windowEnd : null,
+    ...(validPeriod ? { windowSeconds: (Date.parse(windowEnd!) - Date.parse(windowStart!)) / 1000 } : {}),
+  })];
   return windows;
 }
 
-async function fetchOllama(): Promise<ProviderResult> {
+export function parseOllamaCreditBalance(payload: unknown): ProviderResult["creditBalance"] {
+  const data = objectValue(payload);
+  const includedUsd = strictNumber(objectValue(data.included).balance_usd);
+  if (includedUsd === null) return undefined;
+  return { includedUsd, purchasedUsd: strictNumber(objectValue(data.purchased).balance_usd) };
+}
+
+export async function fetchOllama(): Promise<ProviderResult> {
   const key = process.env.OLLAMA_API_KEY?.trim();
   if (!key) return result(false, [], "Ollama Cloud API key is not configured");
   try {
-    const response = await fetch("https://ollama.com/api/usage", {
+    const response = await fetch("https://ollama.com/api/balance", {
       headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
       signal: AbortSignal.timeout(15_000),
     });
     if (!response.ok) return result(true, [], `Ollama returned HTTP ${response.status}`);
-    const windows = parseOllamaUsage(await response.json());
-    return windows.length ? result(true, windows) : result(true, [], "Ollama usage response did not include a limit window");
+    const payload: unknown = await response.json();
+    const windows = parseOllamaBalance(payload);
+    return windows.length ? { ...result(true, windows), creditBalance: parseOllamaCreditBalance(payload) }
+      : result(true, [], "Ollama balance response did not include valid monthly credits");
   } catch (error) {
     return result(true, [], errorMessage(error, "Ollama request failed"));
   }
