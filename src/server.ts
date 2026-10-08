@@ -12,6 +12,7 @@ import { processColdDays } from "./lib/cold-range.js";
 import { isProviderConfigured, PROVIDER_FETCHERS } from "./lib/providers.js";
 import { filterUsageRecords, summarizeUsage } from "./lib/usage.js";
 import { FilesystemUsageStore } from "./lib/usage-store.js";
+import { aggregateUsageSeverity, offlineUsageWarning, type UsageSeverity } from "./lib/usage-health.js";
 import { ccusageErrorMessage, DEFAULT_CCUSAGE_MAX_BUFFER, DEFAULT_COLD_CCUSAGE_TIMEOUT_MS, DEFAULT_HOT_CCUSAGE_TIMEOUT_MS, DEFAULT_ROLLING_DAYS, rollingDateRange, runCcusage, sliceCcusageDocument } from "./remote/ccusage.js";
 import { DEFAULT_COLD_INTERVAL_MS, DEFAULT_PUBLISH_INTERVAL_MS } from "./remote/publisher.js";
 import { isValidRequestId, sanitizeHostId } from "./remote/protocol.js";
@@ -395,11 +396,14 @@ async function buildUsage(url: URL, config: AppConfig) {
     storageErrorsByHost.set(hostId, storageError);
     const error = storageError || state?.error?.error || state?.status?.error || null;
     const coveredDates = storedDatesByHost.get(hostId) ?? new Set<string>();
-    const complete = dateList(range.from, range.to).every((date) => coveredDates.has(date));
+    const missingDates = dateList(range.from, range.to).filter((date) => !coveredDates.has(date));
+    const complete = missingDates.length === 0;
     const stale = !Number.isFinite(generatedTime) || generatedTime > Date.now() + 60_000 || Date.now() - generatedTime > (isLocal ? 10 * 60 * 1000 : staleAfterMs);
     const status = error ? "error" : state?.status?.status || (hostRecords.length ? "ok" : "unknown");
     const included = !error && (latest?.timezone ?? state?.usage?.timezone ?? usageTimezone) === usageTimezone;
     const healthy = ["ok", "online"].includes(status) && !error && !stale && included && (isLocal || complete);
+    const warning = offlineUsageWarning({ local: isLocal, brokerConnected: remoteState.configured && remoteState.connection === "connected", publisherStatus: state?.status?.status, error, included, generatedAt, missingDates, today });
+    const severity: UsageSeverity = warning ? "warning" : healthy ? null : "error";
     return {
       hostId,
       generatedAt,
@@ -407,28 +411,33 @@ async function buildUsage(url: URL, config: AppConfig) {
       category: latest?.category ?? state?.usage?.category ?? state?.status?.category ?? null,
       range: latest?.range ?? state?.usage?.range ?? { from: range.from, to: range.to },
       status,
+      severity,
       error,
       active: activeHostIds.has(hostId),
       stale,
       local: isLocal,
       included,
       complete,
+      missingDates,
       usable: hostRecords.length > 0 || healthy,
       disabledReason: error || (hostRecords.length ? null : `No usable usage data reported by ${hostId}`),
     };
   });
-  const hostProblem = hosts.some((host) => {
+  const problemHosts = hosts.filter((host) => {
     const hasSelectedRecords = records.some((record) => record.hostId === host.hostId);
     if (!activeHostIds.has(host.hostId)) return hasSelectedRecords && Boolean(storageErrorsByHost.get(host.hostId));
     return Boolean(host.error) || host.stale || !host.included || (!host.local && !host.complete)
       || (!host.local && !["ok", "online"].includes(host.status));
   });
+  const hostProblem = problemHosts.length > 0;
+  const severity = aggregateUsageSeverity([...problemHosts.map((host) => host.severity), ...(remoteState.configured && remoteState.connection !== "connected" ? ["error" as const] : [])]);
   const usageStatus = usageSources.length === 0 ? "disabled" : hostProblem ? (records.length ? "partial" : "error") : "ok";
   const usageResult = usageSources.length ? {
     status: usageStatus,
+    severity,
     error: hosts.find((host) => Boolean(host.error))?.error ?? null,
     source: "filesystem",
-    sources: usageSources.map((provider) => ({ provider, status: usageStatus, error: hosts.find((host) => Boolean(host.error))?.error ?? null })),
+    sources: usageSources.map((provider) => ({ provider, status: usageStatus, severity, error: hosts.find((host) => Boolean(host.error))?.error ?? null })),
     hosts,
     records,
     ...summary,
