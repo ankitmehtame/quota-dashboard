@@ -147,6 +147,9 @@ dialog { color: var(--text); background: var(--surface-raised); border: 1px soli
 .usage-host-alert { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; border: 0; border-left: 1px solid var(--line); border-radius: 0 99px 99px 0; background: transparent; color: var(--danger); padding: 4px 7px; }
 .usage-host-pill.selected .usage-host-alert, .usage-host-pill.disabled .usage-host-alert { border-left-color: currentColor; color: var(--bg); }
 .usage-host-pill.informational.unselected .usage-host-alert { color: var(--mint); }
+.usage-host-pill.warning.selected, .usage-host-pill.warning.disabled { border-color: var(--orange); background: var(--orange); color: var(--bg); }
+.usage-host-pill.warning.unselected { border-color: var(--orange); }
+.usage-host-pill.warning.unselected .usage-host-alert { color: var(--orange); }
 .usage-host-alert:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
 .usage-host-pill.unselected .usage-host-alert:hover { color: var(--text); }
 .usage-host-pill.selected .usage-host-alert:hover, .usage-host-pill.disabled .usage-host-alert:hover { opacity: 0.8; }
@@ -154,6 +157,7 @@ dialog { color: var(--text); background: var(--surface-raised); border: 1px soli
 .usage-host-status-popover strong, .usage-host-status-popover span { display: block; }
 .usage-host-status-popover strong { font: 11px var(--mono); }
 .usage-host-status-popover span { color: var(--muted); font: 10px var(--mono); margin-top: 5px; }
+.usage-host-status-popover .usage-missing-dates { max-height: min(240px, 40vh); overflow-y: auto; }
 .chart-column { flex: 1 0 10px; min-width: 10px; max-width: none; }
 .chart-column:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
 .today-harness { flex: 1 0 10px; width: auto; }

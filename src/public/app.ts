@@ -8,7 +8,7 @@ type ChartRepresentation = "auto" | "day" | "week" | "month";
 type ConcreteRepresentation = Exclude<ChartRepresentation, "auto">;
 type UsageBucket = UsageDay & { from: string; to: string; days: UsageDay[] };
 type UsageRecord = { hostId?: string; date: string; provider: string; model: string; inputTokens: number; cachedInputTokens: number; cacheCreationTokens: number; outputTokens: number; reasoningTokens: number; costUsd: number };
-type UsageHost = { hostId: string; generatedAt?: string | null; category?: string | null; status: string; error?: string | null; stale?: boolean; local?: boolean; active?: boolean; included?: boolean; complete?: boolean; usable?: boolean; disabledReason?: string | null };
+type UsageHost = { hostId: string; generatedAt?: string | null; category?: string | null; status: string; severity?: "warning" | "error" | null; error?: string | null; stale?: boolean; local?: boolean; active?: boolean; included?: boolean; complete?: boolean; missingDates?: string[]; usable?: boolean; disabledReason?: string | null };
 type Usage = { totalCostUsd: number; totalTokens?: number; from?: string; to?: string; providers?: string[]; daily?: UsageDay[]; byModel?: UsageModel[]; byProvider?: Array<{ provider: string; costUsd: number; totalTokens: number }>; records?: UsageRecord[]; error?: string | null; hosts?: UsageHost[]; mqtt?: { configured: boolean; connection: string } };
 type Dashboard = { version: string; providerOrder: string[]; providers: Record<string, Provider>; quotas: Record<string, { windows?: QuotaWindow[]; creditBalance?: { includedUsd: number; purchasedUsd: number | null }; planType?: string; subscriptionActiveUntil?: string | null; resetCredits?: Array<{ id: string; title: string; description?: string | null; expiresAt?: string | null }>; fetchedAt?: string; error?: string | null }>; usage: Usage; serverNow: string; cache?: { fetchedAt?: string } };
 type UsageResponse = { version: string; apiVersion: number; serverNow: string; timezone: string; from: string; to: string; usage: Usage };
@@ -240,6 +240,31 @@ function compactUsageDateRange(from: string | undefined, to: string | undefined)
   const includeYear = start.getFullYear() !== new Date().getFullYear() || end.getFullYear() !== new Date().getFullYear();
   const formatter = new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric", ...(includeYear ? { year: "numeric" } : {}) });
   return formatter.formatRange(start, end);
+}
+
+function missingUsageDateRanges(dates: string[] = []): string[] {
+  const sorted = [...new Set(dates)].filter((date) => calendarDate(date)).sort();
+  let formatter: Intl.DateTimeFormat | undefined;
+  try {
+    formatter = new Intl.DateTimeFormat(undefined, { year: "numeric", month: "2-digit", day: "2-digit", timeZone: "UTC" });
+  } catch {
+    // Keep ISO calendar labels when locale formatting is unavailable.
+  }
+  const format = (date: string): string => formatter ? formatter.format(calendarDate(date)!) : date;
+  const ranges: string[] = [];
+  for (let index = 0; index < sorted.length; index++) {
+    const from = sorted[index];
+    let to = from;
+    while (index + 1 < sorted.length && sorted[index + 1] === shiftDate(to, 1)) to = sorted[++index];
+    ranges.push(from === to ? format(from) : `${format(from)} to ${format(to)}`);
+  }
+  return ranges;
+}
+
+function missingUsageDetails(host: UsageHost): string {
+  if ((host.disabledReason && host.severity !== "warning") || host.error || host.included === false || host.complete !== false) return "";
+  const ranges = missingUsageDateRanges(host.missingDates);
+  return ranges.length ? `<span class="usage-missing-dates"><span>Missing usage dates:</span>${ranges.map((range) => `<span>${escapeHtml(range)}</span>`).join("")}</span>` : "";
 }
 
 function formatTokens(value: number | null | undefined): string {
@@ -559,15 +584,16 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
     const hasRecords = hostHasRecords(usage, host);
     const selected = usable && selectedHostIds.has(host.hostId);
     const healthy = hostHealthy(host);
-    const detail = host.disabledReason || host.error || (host.included === false ? "Timezone mismatch" : host.complete === false ? "Range incomplete" : host.stale ? "Stale usage data" : host.status) || "Status unavailable";
+    const warning = host.severity === "warning";
+    const detail = warning ? `Publisher offline${host.complete === false ? "; usage missing through today" : ""}${!hasRecords ? "; no usable usage data in this period" : ""}` : host.disabledReason || host.error || (host.included === false ? "Timezone mismatch" : host.complete === false ? "Range incomplete" : host.stale ? "Stale usage data" : host.status) || "Status unavailable";
     const stateLabel = !usable ? "unavailable" : selected ? healthy ? "selected, healthy" : "selected, unhealthy" : "unselected";
     const hostClass = `usage-host ${!usable ? "disabled" : selected ? healthy ? "selected healthy" : "selected unhealthy" : "unselected"}`;
     const needsStatusAlert = !healthy || !usable || !hasRecords;
     if (!needsStatusAlert) return `<button class="${hostClass}" type="button" data-host-id="${escapeHtml(host.hostId)}" aria-label="${escapeHtml(host.hostId)}: ${stateLabel}" aria-pressed="${selected}">${escapeHtml(host.hostId)}</button>`;
     const statusId = `usage-host-status-${index}`;
     const icon = healthy && usable && !hasRecords ? "i" : "!";
-    const pillClass = !usable ? "disabled" : selected ? `selected ${healthy ? "healthy" : "unhealthy"}` : "unselected";
-    return `<span class="usage-host-pill ${pillClass} ${healthy && usable && !hasRecords ? "informational" : ""}"><button class="${hostClass}" type="button" data-host-id="${escapeHtml(host.hostId)}" aria-label="${escapeHtml(host.hostId)}: ${stateLabel}, ${escapeHtml(detail)}" aria-pressed="${selected}" ${!usable ? "disabled" : ""}>${escapeHtml(host.hostId)}</button><button class="usage-host-alert" type="button" data-status-target="${statusId}" aria-label="Show status for ${escapeHtml(host.hostId)}: ${escapeHtml(detail)}" aria-controls="${statusId}" aria-expanded="false"><span aria-hidden="true">${icon}</span></button><span class="usage-host-status-popover" id="${statusId}" role="status" aria-live="polite" hidden><strong>${escapeHtml(host.hostId)}</strong><span>${escapeHtml(detail)}</span></span></span>`;
+    const pillClass = `${!usable ? "disabled" : selected ? `selected ${healthy ? "healthy" : "unhealthy"}` : "unselected"}${warning ? " warning" : ""}`;
+    return `<span class="usage-host-pill ${pillClass} ${healthy && usable && !hasRecords ? "informational" : ""}"><button class="${hostClass}" type="button" data-host-id="${escapeHtml(host.hostId)}" aria-label="${escapeHtml(host.hostId)}: ${stateLabel}, ${escapeHtml(detail)}" aria-pressed="${selected}" ${!usable ? "disabled" : ""}>${escapeHtml(host.hostId)}</button><button class="usage-host-alert" type="button" data-status-target="${statusId}" aria-label="Show status for ${escapeHtml(host.hostId)}: ${escapeHtml(detail)}" aria-controls="${statusId}" aria-expanded="false"><span aria-hidden="true">${icon}</span></button><span class="usage-host-status-popover" id="${statusId}" role="status" aria-live="polite" hidden><strong>${escapeHtml(host.hostId)}</strong><span>${escapeHtml(detail)}</span>${missingUsageDetails(host)}</span></span>`;
   }).join("") || `<span class="usage-host warning"><i></i>No usage hosts</span>`;
   document.querySelectorAll<HTMLButtonElement>("#usage-hosts .usage-host-alert").forEach((button) => button.addEventListener("click", () => toggleHostStatusPopover(button)));
   document.querySelectorAll<HTMLButtonElement>("#usage-hosts .usage-host:not(:disabled)").forEach((button) => button.addEventListener("click", () => {
@@ -646,12 +672,14 @@ function renderStatus(data: Dashboard): void {
   const enabled = statuses.filter((provider) => provider.enabled);
   const errors = enabled.filter((provider) => provider.status === "error");
   const hosts = data.usage.hosts || [];
-  const hostProblems = hosts.filter((host) => !hostHealthy(host));
+  const hostProblems = hosts.filter((host) => !hostHealthy(host) && host.severity !== "warning");
+  const warnings = hosts.filter((host) => host.severity === "warning").length;
   const mqttProblem = data.usage.mqtt?.configured && data.usage.mqtt.connection !== "connected";
   const problems = errors.length + hostProblems.length + (mqttProblem ? 1 : 0);
   $("#status-copy").textContent = problems
     ? `${problems} source${problems === 1 ? "" : "s"} need attention · ${hosts.length} usage host${hosts.length === 1 ? "" : "s"}`
     : `${enabled.length} quota source${enabled.length === 1 ? "" : "s"} active · ${hosts.length} usage host${hosts.length === 1 ? "" : "s"} combined`;
+  if (warnings) $("#status-copy").textContent += ` · ${warnings} usage warning${warnings === 1 ? "" : "s"}`;
   $("#updated-at").textContent = `updated ${relativeTime(data.serverNow)}`;
   $("#last-refresh").textContent = `Last refresh: ${formatRefreshTime(data.cache?.fetchedAt || data.serverNow)}`;
   $("#app-version").textContent = `Build ${data.version}`;
