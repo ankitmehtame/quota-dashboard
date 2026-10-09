@@ -105,23 +105,42 @@ function clearQuotaTooltip(tooltip: HTMLElement): void {
   tooltip.style.transform = "";
 }
 
+function closeActiveQuotaTooltip(): void {
+  if (!activeQuotaTooltip) return;
+  const { anchor, tooltip } = activeQuotaTooltip;
+  tooltip.hidden = true;
+  clearQuotaTooltip(tooltip);
+  if (tooltip.parentElement === document.body) anchor.appendChild(tooltip);
+  activeQuotaTooltip = null;
+}
+
+function bindQuotaTooltipTrigger(anchor: HTMLElement, tooltip: HTMLElement): void {
+  const show = () => {
+    if (activeQuotaTooltip?.tooltip !== tooltip) closeActiveQuotaTooltip();
+    if (tooltip.parentElement !== document.body) document.body.appendChild(tooltip);
+    tooltip.hidden = false;
+    activeQuotaTooltip = { anchor, tooltip };
+    positionQuotaTooltip(anchor, tooltip);
+  };
+  const hide = () => { if (activeQuotaTooltip?.tooltip === tooltip) closeActiveQuotaTooltip(); };
+  anchor.addEventListener("pointerenter", (event) => { if (event.pointerType !== "touch") show(); });
+  anchor.addEventListener("pointerleave", (event) => { if (event.pointerType !== "touch") hide(); });
+  anchor.addEventListener("click", show);
+  anchor.addEventListener("focus", show);
+  anchor.addEventListener("blur", hide);
+}
+
+function bindQuotaTooltipDismissal(): void {
+  document.addEventListener("pointerdown", (event) => {
+    if (activeQuotaTooltip && !activeQuotaTooltip.anchor.contains(event.target as Node)) closeActiveQuotaTooltip();
+  });
+  document.addEventListener("keydown", (event) => { if (event.key === "Escape") closeActiveQuotaTooltip(); });
+}
+
 function bindQuotaTooltips(): void {
   document.querySelectorAll<HTMLElement>(".quota-now-marker").forEach((marker) => {
     const tooltip = marker.querySelector<HTMLElement>(".quota-now-tooltip");
-    if (!tooltip) return;
-    const show = () => {
-      activeQuotaTooltip = { anchor: marker, tooltip };
-      positionQuotaTooltip(marker, tooltip);
-    };
-    const hide = () => {
-      if (document.activeElement === marker) return;
-      if (activeQuotaTooltip?.tooltip === tooltip) activeQuotaTooltip = null;
-      clearQuotaTooltip(tooltip);
-    };
-    marker.addEventListener("pointerenter", show);
-    marker.addEventListener("pointerleave", hide);
-    marker.addEventListener("focus", show);
-    marker.addEventListener("blur", hide);
+    if (tooltip) bindQuotaTooltipTrigger(marker, tooltip);
   });
 }
 
@@ -309,6 +328,34 @@ function formatRefreshTime(iso: string | null | undefined): string {
   return iso ? new Intl.DateTimeFormat([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: state.hour12 }).format(new Date(iso)) : "unknown";
 }
 
+function formatHeaderRefresh(iso: string | null | undefined): string {
+  if (!iso) return "Refreshed —";
+  const timestamp = Date.parse(iso);
+  if (!Number.isFinite(timestamp)) return "Refreshed —";
+  const minutes = Math.floor(Math.max(0, Date.now() - timestamp) / 60_000);
+  if (minutes === 0) return "Refreshed just now";
+  if (minutes < 60) return `Refreshed ${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  const days = Math.floor(hours / 24);
+  if (days > 0) return `Refreshed ${days}d ${hours % 24}h ago`;
+  return `Refreshed ${hours}h ${minutes % 60}m ago`;
+}
+
+function renderHeaderRefresh(): void {
+  const headerRefresh = $("#header-refresh") as HTMLElement | null;
+  if (!headerRefresh) return;
+  const refreshedAt = state.dashboard?.cache?.fetchedAt || state.dashboard?.serverNow;
+  const timestamp = refreshedAt ? Date.parse(refreshedAt) : NaN;
+  $("#header-refresh-label").textContent = formatHeaderRefresh(refreshedAt);
+  $("#header-refresh-tooltip").textContent = Number.isFinite(timestamp) ? formatRefreshTime(refreshedAt) : "Refresh time unavailable";
+}
+
+function bindHeaderRefreshTooltip(): void {
+  const trigger = $("#header-refresh") as HTMLButtonElement;
+  const tooltip = $("#header-refresh-tooltip") as HTMLElement;
+  bindQuotaTooltipTrigger(trigger, tooltip);
+}
+
 function formatRenewalDate(iso: string | null | undefined): string | null {
   if (!iso || !Number.isFinite(Date.parse(iso))) return null;
   return new Intl.DateTimeFormat([], { year: "numeric", month: "short", day: "numeric" }).format(new Date(iso));
@@ -362,8 +409,8 @@ function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][st
 }
 
 function renderQuotas(data: Dashboard): void {
+  if (activeQuotaTooltip?.anchor.closest("#quota-grid")) closeActiveQuotaTooltip();
   $("#quota-grid").innerHTML = providerOrder.filter((id) => data.providers[id]?.enabled).map((id) => quotaCard(id, data.providers[id], data.quotas[id])).join("") || `<div class="quota-card"><div class="quota-empty">No providers enabled. Open Manage providers to begin.</div></div>`;
-  activeQuotaTooltip = null;
   bindQuotaTooltips();
 }
 
@@ -707,6 +754,7 @@ function renderStatus(data: Dashboard): void {
   if (warnings) $("#status-copy").textContent += ` · ${warnings} usage warning${warnings === 1 ? "" : "s"}`;
   $("#updated-at").textContent = `updated ${relativeTime(data.serverNow)}`;
   $("#last-refresh").textContent = `Last refresh: ${formatRefreshTime(data.cache?.fetchedAt || data.serverNow)}`;
+  renderHeaderRefresh();
   $("#app-version").textContent = `Build ${data.version}`;
   $("#app-version").setAttribute("title", `Build ${data.version}`);
 }
@@ -715,6 +763,7 @@ function renderClock(): void {
   const now = new Date();
   $("#now-time").textContent = new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit", hour12: state.hour12 }).format(now);
   $("#now-date").textContent = new Intl.DateTimeFormat([], { weekday: "short", month: "short", day: "numeric", year: "numeric" }).format(now);
+  renderHeaderRefresh();
 }
 
 function usageQuery(): string {
@@ -1020,6 +1069,8 @@ document.addEventListener("pointerdown", (event) => {
 document.addEventListener("focusin", (event) => {
   if (activeHostStatusPopover && !activeHostStatusPopover.anchor.closest(".usage-host-pill")?.contains(element(event.target))) closeHostStatusPopover();
 });
+bindHeaderRefreshTooltip();
+bindQuotaTooltipDismissal();
 updateRepresentationControls(); renderClock(); setInterval(renderClock, 30_000); setInterval(() => { if (state.dashboard) renderQuotas(state.dashboard); }, 60_000);
 loadDashboard().catch((error) => { const message = error instanceof Error ? error.message : "Dashboard request failed"; $("#status-copy").textContent = message; showToast(message); });
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});
