@@ -25,7 +25,7 @@ function renderChart(days: Array<{ date: string; costs: number[]; tokens?: numbe
       if (!elements.has(selector)) elements.set(selector, {});
       return elements.get(selector);
     },
-    closeHostStatusPopover() {}, renderSpendMetrics() {}, updateRepresentationControls() {}, bindChartTooltips() {},
+    closeHostStatusPopover() {}, renderSpendMetrics() {}, renderTopModels() {}, updateRepresentationControls() {}, bindChartTooltips() {},
     reconcileHostSelections: () => ({ hosts: [], usableHosts: [], selectedHostIds: new Set() }),
     filterUsageByHosts: () => usage,
     activeRepresentation: () => representation,

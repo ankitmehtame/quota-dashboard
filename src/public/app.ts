@@ -12,11 +12,11 @@ type UsageHost = { hostId: string; generatedAt?: string | null; category?: strin
 type Usage = { totalCostUsd: number; totalTokens?: number; from?: string; to?: string; providers?: string[]; daily?: UsageDay[]; byModel?: UsageModel[]; byProvider?: Array<{ provider: string; costUsd: number; totalTokens: number }>; records?: UsageRecord[]; error?: string | null; hosts?: UsageHost[]; mqtt?: { configured: boolean; connection: string } };
 type Dashboard = { version: string; providerOrder: string[]; providers: Record<string, Provider>; quotas: Record<string, { windows?: QuotaWindow[]; creditBalance?: { includedUsd: number; purchasedUsd: number | null }; planType?: string; subscriptionActiveUntil?: string | null; resetCredits?: Array<{ id: string; title: string; description?: string | null; expiresAt?: string | null }>; fetchedAt?: string; error?: string | null }>; usage: Usage; serverNow: string; cache?: { fetchedAt?: string } };
 type UsageResponse = { version: string; apiVersion: number; serverNow: string; timezone: string; from: string; to: string; usage: Usage };
-type AppState = { days: number; range: string; representation: ChartRepresentation; dashboard: Dashboard | null; hostSelections: Map<string, boolean>; chartScrollLeft: number };
+type AppState = { days: number; range: string; modelsRange: "today" | "selected"; representation: ChartRepresentation; dashboard: Dashboard | null; hostSelections: Map<string, boolean>; chartScrollLeft: number };
 const timeFormatStorageKey = "quota-dashboard.time-format";
 const storedTimeFormat = localStorage.getItem(timeFormatStorageKey);
 const defaultHour12 = new Intl.DateTimeFormat([], { hour: "numeric" }).resolvedOptions().hour12 ?? true;
-const state: AppState & { hour12: boolean } = { days: 1, range: "today", representation: "auto", dashboard: null, hostSelections: new Map(), chartScrollLeft: 0, hour12: storedTimeFormat === "12" || (storedTimeFormat !== "24" && defaultHour12) };
+const state: AppState & { hour12: boolean } = { days: 1, range: "today", modelsRange: "today", representation: "auto", dashboard: null, hostSelections: new Map(), chartScrollLeft: 0, hour12: storedTimeFormat === "12" || (storedTimeFormat !== "24" && defaultHour12) };
 const $ = (selector: string): any => document.querySelector(selector);
 const element = (target: EventTarget | null): HTMLElement => target as HTMLElement;
 const escapeHtml = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] || character);
@@ -563,6 +563,31 @@ function renderSpendMetrics(usage: Usage, hosts: UsageHost[], usableHosts: Usage
   $("#today-caption").textContent = `Today so far${today.partial ? " · partial" : ""}`;
 }
 
+function renderTopModels(usage: Usage, hosts: UsageHost[], usableHosts: UsageHost[], selectedUsage: Usage, selectedHostIds: Set<string>): void {
+  const todayOnly = state.range === "today" || state.modelsRange === "today";
+  $("#models-range-picker").hidden = state.range === "today";
+  document.querySelectorAll<HTMLButtonElement>("[data-models-range]").forEach((button) => {
+    const active = button.dataset.modelsRange === state.modelsRange;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+    button.onclick = () => {
+      state.modelsRange = button.dataset.modelsRange === "selected" ? "selected" : "today";
+      renderTopModels(usage, hosts, usableHosts, selectedUsage, selectedHostIds);
+    };
+  });
+  const today = todayOnly ? todaySpend(usage, hosts, usableHosts, selectedHostIds) : null;
+  const models = todayOnly ? summarizeSelectedRecords((selectedUsage.records || []).filter((record) => record.date === usage.to)).byModel : selectedUsage.byModel;
+  const status = $("#models-status");
+  status.hidden = !today?.partial;
+  status.textContent = today?.partial ? "Today's usage is incomplete. Showing available models." : "";
+  const sourceNames: Record<string, string> = { ...usageSourceNames, shared: "Shared" };
+  const noHostsSelected = usableHosts.length > 0 && selectedHostIds.size === 0;
+  let emptyMessage = "No model breakdown available.";
+  if (noHostsSelected) emptyMessage = "No hosts selected.";
+  else if (today) emptyMessage = !today.known ? "Today's usage is unavailable." : today.partial ? "No model breakdown available for today's incomplete usage." : "No model usage today.";
+  $("#models-list").innerHTML = models?.length ? models.map((model, index) => `<div class="model-row"><span class="model-rank">${String(index + 1).padStart(2, "0")}</span><span class="model-name"><span class="model-name-text" title="${escapeHtml(model.model)}">${escapeHtml(model.model)}</span>${model.provider ? `<small class="model-provider">${escapeHtml(sourceNames[model.provider] || model.provider)}</small>` : ""}</span><span class="model-value">${money(model.costUsd)}</span></div>`).join("") : `<div class="quota-empty">${escapeHtml(emptyMessage)}</div>`;
+}
+
 function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve"): void {
   closeHostStatusPopover();
   if (scrollMode === "preserve") {
@@ -646,7 +671,7 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
   activeChartTooltip = null;
   bindChartTooltips(chart);
   (chart.querySelectorAll("[data-bucket-index]") as NodeListOf<HTMLButtonElement>).forEach((bar) => bar.addEventListener("click", () => { activeDetailsTrigger = bar; openUsageDetails(buckets[Number(bar.dataset.bucketIndex)], representation); }));
-  $("#models-list").innerHTML = selectedUsage.byModel?.length ? selectedUsage.byModel.map((model, index) => `<div class="model-row"><span class="model-rank">${String(index + 1).padStart(2, "0")}</span><span class="model-name"><span class="model-name-text" title="${escapeHtml(model.model)}">${escapeHtml(model.model)}</span>${model.provider ? `<small class="model-provider">${escapeHtml(sourceNames[model.provider] || model.provider)}</small>` : ""}</span><span class="model-value">${money(model.costUsd)}</span></div>`).join("") : `<div class="quota-empty">${escapeHtml(noHostsSelected ? "No hosts selected." : "No model breakdown available.")}</div>`;
+  renderTopModels(usage, hosts, usableHosts, selectedUsage, selectedHostIds);
   const scroll = chartScroll;
   if (scroll) {
     const restoreScroll = () => { scroll.scrollLeft = scrollMode === "newest" ? scroll.scrollWidth : Math.min(state.chartScrollLeft, Math.max(0, scroll.scrollWidth - scroll.clientWidth)); state.chartScrollLeft = scroll.scrollLeft; };
