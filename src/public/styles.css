@@ -132,7 +132,7 @@ dialog { color: var(--text); background: var(--surface-raised); border: 1px soli
 .models-range-picker button { padding: 6px 8px; white-space: nowrap; }
 .models-range-picker button:focus-visible { outline: 2px solid var(--mint); outline-offset: -2px; }
 .models-status { flex: 0 0 auto; color: var(--muted); font-size: 11px; margin-bottom: 8px; }
-.models-list { min-height: 0; overflow-y: auto; scrollbar-color: var(--line) transparent; }
+.models-list { min-height: 0; overflow-y: auto; padding-inline-end: 12px; scrollbar-gutter: stable; scrollbar-color: var(--line) transparent; }
 .usage-host { appearance: none; background: transparent; cursor: pointer; }
 .usage-host i { display: none; }
 .usage-host.selected.healthy { background: var(--mint); border-color: var(--mint); color: var(--bg); }
