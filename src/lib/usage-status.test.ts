@@ -13,6 +13,7 @@ test("dashboard summary counts offline warnings separately from errors", () => {
       data: { providers: { codex: { enabled: true, status: "ok" } }, usage: { hosts }, serverNow: "2026-01-02", version: "test" },
       hostHealthy: (host: { status: string }) => host.status === "ok",
       relativeTime: String, formatRefreshTime: String,
+      renderHeaderRefresh() {},
       $: (selector: string) => {
         if (!elements.has(selector)) elements.set(selector, { textContent: "", setAttribute() {} });
         return elements.get(selector);
