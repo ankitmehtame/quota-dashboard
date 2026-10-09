@@ -78,7 +78,8 @@
               </div>
             </article>
             <article class="models-card">
-              <div class="card-title"><span>Top models</span><span class="muted">selected range</span></div>
+              <div class="card-title models-title"><span>Top models</span><div class="segmented models-range-picker" id="models-range-picker" role="group" aria-label="Top models time range" hidden><button class="active" type="button" data-models-range="today" aria-pressed="true" aria-controls="models-list">Today</button><button type="button" data-models-range="selected" aria-pressed="false" aria-controls="models-list">Selected range</button></div></div>
+              <div class="models-status" id="models-status" role="status" hidden></div>
               <div id="models-list" class="models-list"><div class="skeleton-line"></div><div class="skeleton-line short"></div></div>
             </article>
           </div>
