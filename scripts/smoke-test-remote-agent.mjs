@@ -40,7 +40,8 @@ try {
   assert.ok(archiveEntries.includes("remote/node_modules/"));
   assert.ok(archiveEntries.includes("remote/index.js"));
   assert.ok(archiveEntries.includes("remote/setup.sh"));
-  const allowedArchiveEntry = /^remote\/(?:$|package(?:-lock)?\.json$|(?:index|publisher|ccusage|protocol)\.js$|setup\.sh$|node_modules\/.*$)/;
+  assert.ok(archiveEntries.includes("remote/lib/daily-logger.js"));
+  const allowedArchiveEntry = /^remote\/(?:$|package(?:-lock)?\.json$|(?:index|publisher|ccusage|protocol)\.js$|lib\/(?:$|daily-logger\.js$)|setup\.sh$|node_modules\/.*$)/;
   assert.ok(archiveEntries.every((entry) => allowedArchiveEntry.test(entry)));
 
   await execFileAsync("tar", ["-xzf", path.resolve(rootDir, archivePath), "-C", tempDir]);
@@ -72,6 +73,7 @@ try {
     env: {
       ...process.env,
       HOME: homeDir,
+      QUOTA_LOG_DIR: path.join(homeDir, "custom logs"),
       PATH: `${fakeBinDir}:${process.env.PATH}`,
       SMOKE_SYSTEMCTL_LOG: systemctlLog,
       SMOKE_LAUNCHCTL_LOG: launchctlLog,
@@ -98,6 +100,7 @@ try {
   ]);
   assert.match(envContents, /MQTT_URL='mqtt:\/\/smoke-broker:1883'/);
   assert.match(envContents, /CCUSAGE_BIN='.*\/ccusage'/);
+  assert.ok(envContents.includes(`QUOTA_LOG_DIR='${path.join(homeDir, "custom logs")}'`));
   assert.equal(launcherContents.includes(`${extractDir}/index.js`), true);
   assert.match(unitContents, /quota-dashboard-remote/);
   const systemctlContents = await readFile(systemctlLog, "utf8");
@@ -110,6 +113,7 @@ try {
     env: {
       ...process.env,
       HOME: macHomeDir,
+      QUOTA_LOG_DIR: "",
       PATH: `${fakeBinDir}:${process.env.PATH}`,
       SMOKE_SYSTEMCTL_LOG: systemctlLog,
       SMOKE_LAUNCHCTL_LOG: launchctlLog,
@@ -124,6 +128,7 @@ try {
     readFile(plist, "utf8"),
   ]);
   assert.match(macEnvContents, /MQTT_URL='mqtt:\/\/mac-broker:1883'/);
+  assert.equal(macEnvContents.includes("QUOTA_LOG_DIR="), false);
   assert.equal(macLauncherContents.includes(`${extractDir}/index.js`), true);
   assert.match(plistContents, /local\.quota-dashboard\.remote/);
   assert.match(await readFile(launchctlLog, "utf8"), /bootout gui\/\d+\/local\.quota-dashboard\.remote/);
@@ -159,6 +164,7 @@ try {
     connect: () => client,
     now: () => new Date("2026-09-13T12:00:00.000Z"),
     runCcusage: async () => ({ document: { daily: [] }, stdout: "{}", stderr: "" }),
+    infoLog: () => {},
   });
   await publisher.start();
   client.emit("connect");

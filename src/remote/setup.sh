@@ -64,6 +64,17 @@ xml_escape() {
 
 mkdir -p "${CONFIG_DIR}" "${BIN_DIR}"
 umask 077
+LOG_DIR_SETTING=""
+if [ "${QUOTA_LOG_DIR+x}" = x ]; then
+  if [ -n "${QUOTA_LOG_DIR}" ]; then
+    LOG_DIR_SETTING="QUOTA_LOG_DIR=$(quote_env "${QUOTA_LOG_DIR}")"
+  fi
+elif [ -f "${ENV_FILE}" ]; then
+  # Preserve a prior override without executing the existing environment file.
+  while IFS= read -r line; do
+    case "${line}" in QUOTA_LOG_DIR=*) LOG_DIR_SETTING="${line}" ;; esac
+  done < "${ENV_FILE}"
+fi
 {
   printf 'MQTT_URL=%s\n' "$(quote_env "${MQTT_URL}")"
   printf 'MQTT_USERNAME=%s\n' "$(quote_env "${MQTT_USERNAME}")"
@@ -79,6 +90,9 @@ umask 077
   printf 'CCUSAGE_COLD_MODE=%s\n' "$(quote_env "offline")"
   printf 'CCUSAGE_BIN=%s\n' "$(quote_env "$(command -v ccusage)")"
   printf 'CCUSAGE_VERSION=%s\n' "$(quote_env "$(ccusage --version 2>/dev/null || true)")"
+  if [ -n "${LOG_DIR_SETTING}" ]; then
+    printf '%s\n' "${LOG_DIR_SETTING}"
+  fi
 } > "${ENV_FILE}"
 chmod 600 "${ENV_FILE}"
 
