@@ -21,6 +21,55 @@ test("resolves platform defaults and environment override", () => {
   assert.equal(resolveDailyLogDirectory({ platform: "darwin", home: "/home/test", env: { QUOTA_LOG_DIR: "/custom/logs" } }), "/custom/logs");
 });
 
+test("retention boundaries survive timezones with midnight DST transitions", async () => {
+  const previousTimezone = process.env.TZ;
+  try {
+    for (const { timezone, today, oldest, expired } of [
+      { timezone: "America/Havana", today: [2024, 3, 16], oldest: "2024-03-10", expired: "2024-03-09" },
+      { timezone: "Africa/Cairo", today: [2024, 5, 2], oldest: "2024-04-26", expired: "2024-04-25" },
+      { timezone: "America/Santiago", today: [2024, 9, 14], oldest: "2024-09-08", expired: "2024-09-07" },
+    ]) {
+      process.env.TZ = timezone;
+      const removed: string[] = [];
+      const fs: DailyLoggerFileSystem = {
+        async mkdir() {}, async chmod() {}, async appendFile() {},
+        async readdir() { return [oldest, expired].map(date => `server-info-${date}.log`); },
+        async unlink(path) { removed.push(path); },
+      };
+      const logger = createDailyLogger({ name: "server", directory: "/virtual", now: () => new Date(today[0], today[1] - 1, today[2], 12), fileSystem: fs });
+      await logger.close();
+      assert.deepEqual(removed, [`/virtual/server-info-${expired}.log`], timezone);
+    }
+  } finally {
+    if (previousTimezone === undefined) delete process.env.TZ;
+    else process.env.TZ = previousTimezone;
+  }
+});
+
+test("secures permissions once per daily file and retries failed chmod calls", async () => {
+  let current = new Date(2025, 0, 1, 12);
+  const permissionCalls: string[] = [];
+  const fs: DailyLoggerFileSystem = {
+    async mkdir() {}, async readdir() { return []; }, async unlink() {}, async appendFile() {},
+    async chmod(path, mode) {
+      assert.equal(mode, 0o600);
+      permissionCalls.push(path);
+      if (permissionCalls.length === 1) throw new Error("temporarily unavailable");
+    },
+  };
+  const logger = createDailyLogger({ name: "remote", directory: "/virtual", now: () => current, fileSystem: fs, stderr: () => {} });
+  logger.log("first entry");
+  logger.log("permission retry");
+  logger.log("no repeated chmod");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(permissionCalls, ["/virtual/remote-info-2025-01-01.log", "/virtual/remote-info-2025-01-01.log"]);
+  current = new Date(2025, 0, 2, 12);
+  logger.log("new daily file");
+  logger.log("same daily file");
+  await logger.close();
+  assert.deepEqual(permissionCalls, ["/virtual/remote-info-2025-01-01.log", "/virtual/remote-info-2025-01-01.log", "/virtual/remote-info-2025-01-02.log"]);
+});
+
 test("retries failed retention cleanup during the same local day", async () => {
   let tick!: () => void;
   let attempts = 0;
@@ -157,6 +206,7 @@ test("recovers after a file error and announces the lost-entry gap", async () =>
   await logger.close();
   assert.equal([...contents.values()].join(""), `${formatLocalTimestamp(new Date(2025, 0, 1))} GAP: lost 1 log entry (filesystem failures: 1, queue overflow: 0)\n${formatLocalTimestamp(new Date(2025, 0, 1))} survives recovery\n`);
   assert(messages.some(message => message.includes("unable to write log entry")));
+  assert(messages.some(message => message.includes("entry dropped; logging will retry on the next write or periodic check")));
   assert(messages.some(message => message.includes("logging recovered")));
 });
 

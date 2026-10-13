@@ -80,6 +80,8 @@ function validDate(value: string): boolean {
 function addLocalDays(dateString: string, days: number): string {
   const [year, month, day] = dateString.split("-").map(Number);
   const date = new Date(0);
+  // Calendar arithmetic should not land in a midnight daylight-saving transition.
+  date.setHours(12, 0, 0, 0);
   date.setFullYear(year, month - 1, day + days);
   return `${String(date.getFullYear()).padStart(4, "0")}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
 }
@@ -109,6 +111,7 @@ export function createDailyLogger(options: DailyLoggerOptions): DailyLogger {
   const intervalMs = options.rolloverIntervalMs ?? DEFAULT_ROLLOVER_CHECK_MS;
   const prefix = options.name === "remote" ? "remote-info" : "server-info";
   const filename = (date: string) => `${prefix}-${date}.log`;
+  const securedFiles = new Set<string>();
   const pending: Array<{ message: string; timestamp: string; date: string; synthetic?: boolean }> = [];
   let active = false;
   let closed = false;
@@ -139,12 +142,13 @@ export function createDailyLogger(options: DailyLoggerOptions): DailyLogger {
       const match = entry.match(new RegExp(`^${prefix}-(\\d{4}-\\d{2}-\\d{2})\\.log$`));
       if (!match || !validDate(match[1])) continue;
       if (match[1] < earliest) {
-        try { await io.unlink(join(directory, entry)); }
+        const path = join(directory, entry);
+        try { await io.unlink(path); securedFiles.delete(path); }
         catch (error) {
           if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) {
             complete = false;
             rateLimitedError(`unable to prune expired log file (${error instanceof Error ? error.message : String(error)})`);
-          }
+          } else securedFiles.delete(path);
         }
       }
     }
@@ -186,10 +190,13 @@ export function createDailyLogger(options: DailyLoggerOptions): DailyLogger {
         report(`[${prefix}] logging recovered after a directory or retention preparation failure`);
         preparationFailed = false;
       }
-      try {
-        await io.chmod(path, FILE_MODE);
-      } catch (error) {
-        rateLimitedError(`unable to secure log file permissions (${error instanceof Error ? error.message : String(error)})`);
+      if (!securedFiles.has(path)) {
+        try {
+          await io.chmod(path, FILE_MODE);
+          securedFiles.add(path);
+        } catch (error) {
+          rateLimitedError(`unable to secure log file permissions (${error instanceof Error ? error.message : String(error)})`);
+        }
       }
       // A stalled append can finish after a date rollover. Reconcile retention
       // after that write too, including the final entry of an otherwise idle queue.
@@ -199,7 +206,7 @@ export function createDailyLogger(options: DailyLoggerOptions): DailyLogger {
       return true;
     } catch (error) {
       if (!entry.synthetic) filesystemLost++;
-      rateLimitedError(`unable to write log entry; will retry (${error instanceof Error ? error.message : String(error)})`);
+      rateLimitedError(`${entry.synthetic ? "unable to record logging gap" : "unable to write log entry; entry dropped"}; logging will retry on the next write or periodic check (${error instanceof Error ? error.message : String(error)})`);
       return false;
     }
   }
