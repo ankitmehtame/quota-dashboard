@@ -1,4 +1,4 @@
-import { chmod, cp, mkdir, mkdtemp, rm } from "node:fs/promises";
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -21,8 +21,12 @@ const runtimeFiles = ["index.js", "publisher.js", "ccusage.js", "protocol.js"];
 try {
   await mkdir(remoteDir, { recursive: true });
   for (const file of runtimeFiles) {
-    await cp(path.join(rootDir, "src", "dist", "remote", file), path.join(remoteDir, file));
+    const source = await readFile(path.join(rootDir, "src", "dist", "remote", file), "utf8");
+    // The standalone archive flattens dist/remote, so shared imports move with it.
+    await writeFile(path.join(remoteDir, file), source.replaceAll('"../lib/', '"./lib/'));
   }
+  await mkdir(path.join(remoteDir, "lib"), { recursive: true });
+  await cp(path.join(rootDir, "src", "dist", "lib", "daily-logger.js"), path.join(remoteDir, "lib", "daily-logger.js"));
   await cp(path.join(rootDir, "src", "remote", "setup.sh"), path.join(remoteDir, "setup.sh"));
   await chmod(path.join(remoteDir, "setup.sh"), 0o755);
   await cp(path.join(rootDir, "src", "remote", "package.json"), path.join(remoteDir, "package.json"));

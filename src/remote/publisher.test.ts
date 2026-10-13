@@ -52,6 +52,8 @@ function startPublisher(dependencies: Record<string, unknown> = {}): { publisher
     }) as never,
     now: () => new Date("2026-09-13T12:00:00.000Z"),
     runCcusage: (async () => ({ document: { daily: [] }, stdout: "{}", stderr: "" })) as never,
+    log: () => {},
+    infoLog: () => {},
     ...(dependencies as any),
   });
   return { publisher, client };
@@ -233,11 +235,135 @@ test("deduplicates validated commands and does not block the MQTT callback", asy
   assert.equal(publisher.processCommand("quota-dashboard/v1/hosts/workstation/status", command), false);
   assert.deepEqual(commands, ["request-1"]);
   assert.equal(logs.filter((line) => line.includes("[cold] [request-1] receipt")).length, 1);
+  assert.ok(logs.some((line) => line.includes("command ignored request=request-1") && line.includes("duplicate request")));
   assert.ok(logs.findIndex((line) => line.includes("[cold] [request-1] receipt")) < logs.findIndex((line) => line.includes("[cold] [request-1] start")));
   await flush();
   assert.equal(publisher.processCommand(topic, command), true);
   await publisher.stop();
   assert.equal(client.listenerCount("message"), 0);
+});
+
+test("scheduled hot successes stay quiet, while failures and the first recovery are logged", async (t) => {
+  const logs: string[] = [];
+  let shouldFail = false;
+  const { publisher, client } = startPublisher({
+    log: (message: string) => logs.push(message),
+    runCcusage: (async () => {
+      if (shouldFail) throw new Error("temporary failure");
+      return { document: { daily: [] }, stdout: "{}", stderr: "" };
+    }) as never,
+  });
+  t.after(() => publisher.stop());
+  publisher.start();
+  client.emit("connect");
+  await flush();
+  logs.length = 0;
+  await publisher.publishHot(false);
+  assert.equal(logs.length, 0);
+
+  shouldFail = true;
+  await publisher.publishHot(false);
+  assert.ok(logs.some((line) => line.includes("hot job failure")));
+  const afterFailure = logs.length;
+  await publisher.publishHot(false);
+  assert.equal(logs.slice(afterFailure).some((line) => line.includes("hot job failure")), true);
+
+  shouldFail = false;
+  await publisher.publishHot(false);
+  assert.ok(logs.some((line) => line.includes("hot job recovered")));
+  const afterRecovery = logs.length;
+  await publisher.publishHot(false);
+  assert.equal(logs.length, afterRecovery);
+  await publisher.stop();
+});
+
+test("daily logs trace scheduled jobs and publications, and cold recovery stays independent", async (t) => {
+  const main: string[] = [];
+  const info: string[] = [];
+  let hotFails = false;
+  let coldFails = false;
+  const { publisher } = startPublisher({
+    log: (line: string) => main.push(line),
+    infoLog: (line: string) => info.push(line),
+    runCcusage: (async ({ offline }: { offline?: boolean }) => {
+      if (offline ? coldFails : hotFails) throw new Error("temporary failure");
+      return { document: { daily: [] }, stdout: "{}", stderr: "" };
+    }) as never,
+  });
+  t.after(() => publisher.stop());
+  await publisher.start();
+  publisher.scheduleColdHistory();
+  await flush();
+  await publisher.publishHot(false);
+  assert.equal(main.length, 0);
+  assert.ok(info.some((line) => line.includes("[cold]") && line.includes("source=scheduled")));
+  assert.ok(info.some((line) => line.includes("[hot]") && line.includes("completion duration=")));
+  assert.ok(info.some((line) => line.includes("mqtt response sent kind=usage") && line.includes("duration=")));
+  assert.ok(info.some((line) => line.includes("mqtt response sent kind=status")));
+  assert.ok(info.some((line) => line.includes("mqtt response sent kind=error")));
+
+  hotFails = true;
+  await publisher.publishHot(false);
+  coldFails = true;
+  publisher.scheduleColdHistory();
+  await flush();
+  coldFails = false;
+  publisher.scheduleColdHistory();
+  await flush();
+  assert.equal(main.filter((line) => line.includes("cold job recovered")).length, 1);
+  assert.equal(main.filter((line) => line.includes("hot job recovered")).length, 0);
+  hotFails = false;
+  await publisher.publishHot(false);
+  assert.equal(main.filter((line) => line.includes("hot job recovered")).length, 1);
+  const count = main.length;
+  publisher.scheduleColdHistory();
+  await flush();
+  await publisher.publishHot(false);
+  assert.equal(main.length, count);
+});
+
+test("on-demand hot commands log their lifecycle to both destinations", async (t) => {
+  const main: string[] = [];
+  const info: string[] = [];
+  let closed = false;
+  const { publisher } = startPublisher({ log: (line: string) => main.push(line), infoLog: (line: string) => info.push(line), closeLog: async () => { closed = true; } });
+  t.after(() => publisher.stop());
+  await publisher.start();
+  assert.equal(publisher.processCommand("quota-dashboard/v1/hosts/workstation/command", JSON.stringify({ schemaVersion: 2, requestId: "hot-123", category: "hot", from: "2026-09-12", to: "2026-09-13", mode: "online" })), true);
+  await flush();
+  for (const records of [main, info]) {
+    for (const event of ["receipt", "start", "completion duration="]) assert.ok(records.some((line) => line.includes("[hot] [hot-123]") && line.includes(event)));
+  }
+  await publisher.stop();
+  assert.equal(closed, true);
+});
+
+test("daily logs omit ccusage parse payloads while MQTT error payloads stay unchanged", async () => {
+  const logs: string[] = [];
+  const payload = '{"daily":[{"apiKey":"sensitive-value"}]}';
+  const error = new SyntaxError(`Unexpected token in ccusage output ${payload}`);
+  const { publisher, client } = startPublisher({
+    log: (message: string) => logs.push(message),
+    runCcusage: (async () => { throw error; }) as never,
+  });
+  publisher.start();
+  client.emit("connect");
+  await flush();
+  logs.length = 0;
+
+  const topic = "quota-dashboard/v1/hosts/workstation/command";
+  const coldCommand = JSON.stringify({ schemaVersion: 2, requestId: "parse-error-cold", category: "cold", from: "2026-09-13", to: "2026-09-13", mode: "offline" });
+  assert.equal(publisher.processCommand(topic, coldCommand), true);
+  await flush();
+
+  assert.ok(logs.some((line) => line.includes("invalid ccusage output (SyntaxError)")));
+  assert.equal(logs.some((line) => line.includes("sensitive-value")), false);
+  const hotCommand = JSON.stringify({ schemaVersion: 2, requestId: "parse-error-hot", category: "hot", from: "2026-09-13", to: "2026-09-13", mode: "online" });
+  assert.equal(publisher.processCommand(topic, hotCommand), true);
+  await flush();
+  assert.equal(logs.some((line) => line.includes("sensitive-value")), false);
+  assert.ok(client.publications.some((publication) => publication.topic.endsWith("/error") && publication.payload.includes("sensitive-value")));
+  await publisher.stop();
 });
 
 test("allows one hot and one cold ccusage job concurrently", async () => {
