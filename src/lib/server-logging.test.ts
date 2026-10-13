@@ -237,3 +237,27 @@ test("HTTP access logs cover static, error, and aborted responses without query 
     assert.doesNotMatch(`${server.stdout()}\n${await readLog(server.logs)}`, /DO_NOT_LOG_QUERY|\?token=|\?secret=/);
   } finally { await server.stop(); }
 });
+
+test("shutdown closes idle keep-alive connections and flushes their access records", { timeout: 10_000 }, async () => {
+  const server = await startServer({ enabled: false, hotIntervalMs: 60_000 });
+  const socket = createConnection({ host: "127.0.0.1", port: server.port });
+  try {
+    let response = "";
+    socket.on("data", (chunk: Buffer) => { response += chunk.toString(); });
+    await new Promise<void>((resolve, reject) => { socket.once("connect", resolve); socket.once("error", reject); });
+    socket.write("GET / HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n");
+    await waitFor(async () => response.includes("HTTP/1.1 200") && server.stdout().includes("method=GET path=/ status=200"));
+    assert.equal(socket.destroyed, false, "client leaves the idle keep-alive socket open");
+    let exitCode: number | null | undefined;
+    server.process.once("exit", (code) => { exitCode = code; });
+    server.process.kill("SIGTERM");
+    await waitFor(async () => exitCode !== undefined, 3000, "shutdown without waiting for the keep-alive timeout", async () => server.stdout());
+    assert.equal(exitCode, 0);
+    const daily = await readLog(server.logs);
+    assert.match(daily, /http complete .*method=GET path=\/ status=200/);
+    assert.doesNotMatch(server.stdout(), /shutdown timed out/);
+  } finally {
+    socket.destroy();
+    await server.stop();
+  }
+});
