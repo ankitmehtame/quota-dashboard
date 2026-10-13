@@ -13,6 +13,8 @@ import { isProviderConfigured, PROVIDER_FETCHERS } from "./lib/providers.js";
 import { filterUsageRecords, summarizeUsage } from "./lib/usage.js";
 import { FilesystemUsageStore } from "./lib/usage-store.js";
 import { aggregateUsageSeverity, offlineUsageWarning, type UsageSeverity } from "./lib/usage-health.js";
+import { createDailyLogger, formatLocalTimestamp } from "./lib/daily-logger.js";
+import { createHttpRequestLog } from "./lib/http-request-log.js";
 import { ccusageErrorMessage, DEFAULT_CCUSAGE_MAX_BUFFER, DEFAULT_COLD_CCUSAGE_TIMEOUT_MS, DEFAULT_HOT_CCUSAGE_TIMEOUT_MS, DEFAULT_ROLLING_DAYS, rollingDateRange, runCcusage, sliceCcusageDocument } from "./remote/ccusage.js";
 import { DEFAULT_COLD_INTERVAL_MS, DEFAULT_PUBLISH_INTERVAL_MS } from "./remote/publisher.js";
 import { isValidRequestId, sanitizeHostId } from "./remote/protocol.js";
@@ -66,17 +68,20 @@ const localColdIntervalMs = positiveNumber(process.env.CCUSAGE_COLD_INTERVAL_MS,
 const quotaCache = new Map<ProviderId, { cachedAt: number; value: ProviderResult }>();
 const dashboardCache = new Map<string, { cachedAt: number; fetchedAt: string; value: DashboardValue }>();
 const localHostId = sanitizeHostId(process.env.LOCAL_HOST_ID?.trim() || hostname());
+const dailyLogger = createDailyLogger({ name: "server" });
 const remotePersistenceErrors = new Map<string, string>();
 const remotePersistenceChains = new Map<string, Promise<void>>();
 let localHotPromise: Promise<void> | null = null;
+let localHotJobId: string | null = null;
 let localColdPromise: Promise<void> | null = null;
 let localHotSchedulePromise: Promise<void> | null = null;
 let localColdSchedulePromise: Promise<void> | null = null;
 let localHotTimer: NodeJS.Timeout | null = null;
 let localColdTimer: NodeJS.Timeout | null = null;
-let localHotUsageError: string | null = null;
+const localUsageHealth = { hotError: null as string | null, coldError: null as string | null };
 const localColdQueue: LocalColdJob[] = [];
 const localColdQueued = new Set<string>();
+const localColdQueuedJobIds = new Map<string, string>();
 const localDateChains = new Map<string, Promise<void>>();
 const MAX_LOCAL_COLD_QUEUE = 10;
 const remoteUsageStore = new RemoteMqttStore({
@@ -88,6 +93,10 @@ const remoteUsageStore = new RemoteMqttStore({
     const next = previous.catch(() => undefined).then(() => usageStore.ingest({ ...message, hostId: message.hostId })).then(() => {
       remotePersistenceErrors.delete(message.hostId);
       dashboardCache.clear();
+      dailyLogger.log(`mqtt persistence success host=${message.hostId} date=${message.date} category=${message.category} runId=${message.runId}`);
+    }, (error) => {
+      dailyLogger.log(`mqtt persistence failure host=${message.hostId} date=${message.date} category=${message.category} runId=${message.runId} error=persistence-failure`);
+      throw error;
     });
     remotePersistenceChains.set(key, next);
     void next.then(
@@ -100,9 +109,10 @@ const remoteUsageStore = new RemoteMqttStore({
     remotePersistenceErrors.set(message.hostId, error instanceof Error ? error.message : String(error));
     dashboardCache.clear();
   },
+  infoLog: (message) => dailyLogger.log(`mqtt ${message}`),
 });
 remoteUsageStore.addChangeListener(() => dashboardCache.clear());
-void remoteUsageStore.start().catch((error) => console.error(`Remote MQTT subscriber failed: ${error instanceof Error ? error.message : String(error)}`));
+void remoteUsageStore.start().catch(() => { dailyLogger.log("mqtt subscriber start failed error=connection-failure"); console.error("Remote MQTT subscriber failed: connection-failure"); });
 const buildInfo = await loadBuildInfo();
 startLocalHotScheduler();
 startLocalColdScheduler();
@@ -170,24 +180,39 @@ function ccusageVersion(): string | undefined {
   return value || undefined;
 }
 
-function logColdLocal(requestId: string, message: string, error = false): void {
-  const line = `[${new Date().toISOString()}] [cold] [local] [${requestId}] ${message}`;
+function logColdLocal(requestId: string, message: string, error = false, quiet = false): void {
+  const line = `[${formatLocalTimestamp(new Date())}] [cold] [local] [${requestId}] ${message}`;
+  dailyLogger.log(`[cold] [local] [${requestId}] ${message}`);
   if (error) console.error(line);
-  else console.log(line);
+  else if (!quiet) console.log(line);
 }
 
 function elapsedSeconds(startedAt: number): string {
   return `${((Date.now() - startedAt) / 1000).toFixed(3)}s`;
 }
 
-type LocalColdJob = { from: string; to: string; offline: boolean; requestId: string };
+function safeCcusageLogSummary(error: unknown): string {
+  const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+  if (code === "ENOENT") return "binary-not-found";
+  if (code === "ETIMEDOUT" || code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER") return "command-timeout-or-output-limit";
+  return "ccusage-failure";
+}
 
-async function runLocalUsageJob(range: { from: string; to: string }, category: "hot" | "cold", offline: boolean, timeoutMs: number, requestId?: string): Promise<void> {
+function logHotLocal(jobId: string, message: string, scheduled = false, error = false): void {
+  dailyLogger.log(`[hot] [local] [${jobId}] ${message}`);
+  if (error || !scheduled) console[error ? "error" : "log"](`[${formatLocalTimestamp(new Date())}] [hot] [local] [${jobId}] ${message}`);
+}
+
+type LocalColdJob = { from: string; to: string; offline: boolean; requestId: string; scheduled: boolean };
+
+async function runLocalUsageJob(range: { from: string; to: string }, category: "hot" | "cold", offline: boolean, timeoutMs: number, requestId?: string, scheduled = false): Promise<void> {
   const failures: string[] = [];
-  const coldRequestId = requestId || "local";
+  const coldRequestId = requestId || randomUUID();
   const dates = dateList(range.from, range.to);
   let documents: Map<string, Record<string, unknown>>;
   const startedAt = Date.now();
+  if (category === "cold") logColdLocal(coldRequestId, `job start range=${range.from}..${range.to} mode=${offline ? "offline" : "online"}`, false, scheduled);
+  else logHotLocal(coldRequestId, `job start range=${range.from}..${range.to} mode=${offline ? "offline" : "online"}`, scheduled);
   try {
     const result = await runCcusage({
       binary: localCcusageBinary,
@@ -199,10 +224,10 @@ async function runLocalUsageJob(range: { from: string; to: string }, category: "
     documents = new Map(dates.map((date) => [date, sliceCcusageDocument(result.document, date)]));
   } catch (error) {
     if (category === "cold") {
-      const message = ccusageErrorMessage(error, localCcusageBinary);
-      logColdLocal(coldRequestId, `range failure elapsed=${elapsedSeconds(startedAt)} error=${message}`, true);
-      logColdLocal(coldRequestId, `summary succeeded=0 failed=${dates.length}`);
-    }
+      const message = safeCcusageLogSummary(error);
+      logColdLocal(coldRequestId, `range failure elapsed=${elapsedSeconds(startedAt)} error=${message}`, true, scheduled);
+      logColdLocal(coldRequestId, `summary succeeded=0 failed=${dates.length} elapsed=${elapsedSeconds(startedAt)}`, false, scheduled);
+    } else logHotLocal(coldRequestId, `job failure elapsed=${elapsedSeconds(startedAt)} error=${safeCcusageLogSummary(error)}`, scheduled, true);
     throw error;
   }
 
@@ -210,7 +235,7 @@ async function runLocalUsageJob(range: { from: string; to: string }, category: "
     const previous = localDateChains.get(date) || Promise.resolve();
     const current = previous.catch(() => undefined).then(async () => {
       const startedAt = Date.now();
-      if (category === "cold") logColdLocal(coldRequestId, `day ${date} start`);
+      if (category === "cold") logColdLocal(coldRequestId, `day ${date} start`, false, scheduled);
       try {
         await usageStore.ingest({
           schemaVersion: 2,
@@ -225,9 +250,11 @@ async function runLocalUsageJob(range: { from: string; to: string }, category: "
           data: documents.get(date) ?? { daily: [] },
         });
         dashboardCache.clear();
-        if (category === "cold") logColdLocal(coldRequestId, `day ${date} end elapsed=${elapsedSeconds(startedAt)}`);
+        if (category === "cold") logColdLocal(coldRequestId, `day ${date} end elapsed=${elapsedSeconds(startedAt)}`, false, scheduled);
+        else logHotLocal(coldRequestId, `day ${date} persisted elapsed=${elapsedSeconds(startedAt)}`, scheduled);
       } catch (error) {
-        if (category === "cold") logColdLocal(coldRequestId, `day ${date} failure elapsed=${elapsedSeconds(startedAt)} error=${error instanceof Error ? error.message : String(error)}`, true);
+        if (category === "cold") logColdLocal(coldRequestId, `day ${date} failure elapsed=${elapsedSeconds(startedAt)} error=persistence-failure`, true, scheduled);
+        else logHotLocal(coldRequestId, `day ${date} failure elapsed=${elapsedSeconds(startedAt)} error=persistence-failure`, scheduled, true);
         throw error;
       }
     });
@@ -242,7 +269,7 @@ async function runLocalUsageJob(range: { from: string; to: string }, category: "
   if (category === "cold") {
     const result = await processColdDays({ from: range.from, to: range.to, run: runDate, shouldStop: () => shuttingDown });
     dashboardCache.clear();
-    logColdLocal(coldRequestId, `summary succeeded=${result.succeeded} failed=${result.failures.length}`);
+    logColdLocal(coldRequestId, `summary succeeded=${result.succeeded} failed=${result.failures.length} elapsed=${elapsedSeconds(startedAt)}`, false, scheduled);
     if (result.failures.length > 0) throw new Error(result.failures.map(({ date, error }) => `${date}: ${error instanceof Error ? error.message : String(error)}`).join("; "));
     return;
   }
@@ -254,31 +281,50 @@ async function runLocalUsageJob(range: { from: string; to: string }, category: "
     }
   }
   dashboardCache.clear();
+  logHotLocal(coldRequestId, `summary succeeded=${dates.length - failures.length} failed=${failures.length} elapsed=${elapsedSeconds(startedAt)}`, scheduled);
   if (failures.length > 0) throw new Error(failures.join("; "));
 }
 
-function queueLocalHot(): void {
-  if (localHotPromise) return;
+function queueLocalHot(scheduled = false, correlation: { httpId?: string; requestId?: string; checkId?: string } = {}): void {
+  const jobId = randomUUID();
+  const requestId = correlation.requestId || randomUUID();
+  const context = `${correlation.httpId ? ` httpId=${correlation.httpId}` : ""}${correlation.checkId ? ` checkId=${correlation.checkId}` : ""} requestId=${requestId}`;
+  if (localHotPromise) { logHotLocal(jobId, `job skipped reason=already-running jobId=${localHotJobId}${context}`, scheduled); return; }
   const range = localDateRange(2, usageTimezone);
-  localHotPromise = runLocalUsageJob(range, "hot", false, localHotTimeoutMs)
-    .then(() => { localHotUsageError = null; })
-    .catch((error) => {
-      localHotUsageError = ccusageErrorMessage(error, localCcusageBinary);
-      dashboardCache.clear();
-      console.error(`Local hot usage refresh failed: ${localHotUsageError}`);
+  const startedAt = Date.now();
+  logHotLocal(jobId, `job accepted source=${scheduled ? "scheduled" : "on-demand"}${context} range=${range.from}..${range.to}`, scheduled);
+  localHotJobId = jobId;
+  localHotPromise = runLocalUsageJob(range, "hot", false, localHotTimeoutMs, jobId, scheduled)
+    .then(() => {
+      const recovered = localUsageHealth.hotError !== null;
+      localUsageHealth.hotError = null;
+      logHotLocal(jobId, `job complete status=success duration=${elapsedSeconds(startedAt)}${context}`, scheduled);
+      if (recovered) logHotLocal(jobId, `health recovered${context}`, false);
     })
-    .finally(() => { localHotPromise = null; });
+    .catch((error) => {
+      localUsageHealth.hotError = ccusageErrorMessage(error, localCcusageBinary);
+      dashboardCache.clear();
+      logHotLocal(jobId, `job complete status=failure duration=${elapsedSeconds(startedAt)} error=${safeCcusageLogSummary(error)}${context}`, scheduled, true);
+      console.error(`Local hot usage refresh failed: ${safeCcusageLogSummary(error)}`);
+    })
+    .finally(() => { localHotPromise = null; localHotJobId = null; });
 }
 
 function startLocalHotScheduler(): void {
   if (localHotTimer) return;
   const trigger = () => {
-    if (localHotSchedulePromise) return;
+    const checkId = randomUUID();
+    if (localHotSchedulePromise) { logHotLocal(checkId, "scheduler check skipped reason=check-already-running", true); return; }
     localHotSchedulePromise = loadConfig()
       .then((config) => {
-        if (USAGE_SOURCE_IDS.some((id) => config.usageSources[id].enabled)) queueLocalHot();
+        if (!USAGE_SOURCE_IDS.some((id) => config.usageSources[id].enabled)) {
+          logHotLocal(checkId, "scheduler check complete reason=disabled", true);
+          return;
+        }
+        logHotLocal(checkId, "scheduler check complete reason=enabled", true);
+        queueLocalHot(true, { checkId });
       })
-      .catch((error) => console.error(`Local hot scheduler failed: ${error instanceof Error ? error.message : String(error)}`))
+      .catch(() => { logHotLocal(checkId, "scheduler check failure error=scheduler-failure", true, true); console.error("Local hot scheduler failed: scheduler-failure"); })
       .finally(() => { localHotSchedulePromise = null; });
   };
   localHotTimer = setInterval(trigger, localHotIntervalMs);
@@ -287,14 +333,19 @@ function startLocalHotScheduler(): void {
 
 type LocalColdQueueResult = "accepted" | "duplicate" | "full" | "shutdown";
 
-function queueLocalCold(from: string, to: string, offline: boolean, requestId: string = randomUUID()): LocalColdQueueResult {
-  if (shuttingDown) return "shutdown";
+function queueLocalCold(from: string, to: string, offline: boolean, requestId: string = randomUUID(), scheduled = false): LocalColdQueueResult {
+  if (shuttingDown) { logColdLocal(requestId, `local enqueue skipped reason=shutdown range=${from}..${to}`, false, scheduled); return "shutdown"; }
   const key = `${from}:${to}:${offline ? "offline" : "online"}`;
-  if (localColdQueued.has(key)) return "duplicate";
-  if (localColdQueue.length >= MAX_LOCAL_COLD_QUEUE) return "full";
+  if (localColdQueued.has(key)) {
+    const originalJobId = localColdQueuedJobIds.get(key) || "unknown";
+    logColdLocal(requestId, `local enqueue deduplicated jobId=${originalJobId} range=${from}..${to} mode=${offline ? "offline" : "online"}`, false, scheduled);
+    return "duplicate";
+  }
+  if (localColdQueue.length >= MAX_LOCAL_COLD_QUEUE) { logColdLocal(requestId, `local enqueue skipped reason=full range=${from}..${to} mode=${offline ? "offline" : "online"}`, false, scheduled); return "full"; }
   localColdQueued.add(key);
-  localColdQueue.push({ from, to, offline, requestId });
-  logColdLocal(requestId, `local enqueue range=${from}..${to} mode=${offline ? "offline" : "online"}`);
+  localColdQueuedJobIds.set(key, requestId);
+  localColdQueue.push({ from, to, offline, requestId, scheduled });
+  logColdLocal(requestId, `local enqueue range=${from}..${to} mode=${offline ? "offline" : "online"}`, false, scheduled);
   void drainLocalColdQueue();
   return "accepted";
 }
@@ -304,13 +355,19 @@ async function drainLocalColdQueue(): Promise<void> {
   const job = localColdQueue.shift();
   if (!job) return;
   const key = `${job.from}:${job.to}:${job.offline ? "offline" : "online"}`;
-  logColdLocal(job.requestId, `local dequeue range=${job.from}..${job.to} mode=${job.offline ? "offline" : "online"}`);
-  localColdPromise = runLocalUsageJob({ from: job.from, to: job.to }, "cold", job.offline, localColdTimeoutMs, job.requestId)
+  logColdLocal(job.requestId, `local dequeue range=${job.from}..${job.to} mode=${job.offline ? "offline" : "online"}`, false, job.scheduled);
+  localColdPromise = runLocalUsageJob({ from: job.from, to: job.to }, "cold", job.offline, localColdTimeoutMs, job.requestId, job.scheduled)
+    .then(() => {
+      const recovered = localUsageHealth.coldError !== null;
+      localUsageHealth.coldError = null;
+      if (recovered) logColdLocal(job.requestId, "health recovered", false);
+    })
     .catch((error) => {
       dashboardCache.clear();
-      logColdLocal(job.requestId, `job failed error=${ccusageErrorMessage(error, localCcusageBinary)}`, true);
+      localUsageHealth.coldError = ccusageErrorMessage(error, localCcusageBinary);
+      logColdLocal(job.requestId, `job failed error=${safeCcusageLogSummary(error)}`, true, job.scheduled);
     })
-    .finally(() => { localColdPromise = null; localColdQueued.delete(key); });
+    .finally(() => { localColdPromise = null; localColdQueued.delete(key); localColdQueuedJobIds.delete(key); });
   await localColdPromise;
   if (!shuttingDown) void drainLocalColdQueue();
 }
@@ -336,26 +393,33 @@ function previousDate(value: string): string {
   return date.toISOString().slice(0, 10);
 }
 
-async function scheduleLocalColdDate(): Promise<void> {
+async function scheduleLocalColdDate(checkId: string): Promise<void> {
   const config = await loadConfig();
-  if (!USAGE_SOURCE_IDS.some((id) => config.usageSources[id].enabled)) return;
+  if (!USAGE_SOURCE_IDS.some((id) => config.usageSources[id].enabled)) {
+    logColdLocal(checkId, "scheduler check complete reason=disabled", false, true);
+    return;
+  }
   const rolling = rollingDateRange(usageTimezone, new Date(), localRollingDays);
   const newestColdDate = previousDate(localDateRange(2, usageTimezone).from);
   const coveredDates = await usageStore.readStoredDates(localHostId, rolling.from, newestColdDate);
   for (let date = newestColdDate; date >= rolling.from; date = previousDate(date)) {
     if (!coveredDates.has(date)) {
-      queueLocalCold(date, date, localColdMode === "offline");
+      const requestId = randomUUID();
+      const result = queueLocalCold(date, date, localColdMode === "offline", requestId, true);
+      logColdLocal(checkId, `scheduler check complete reason=${result === "accepted" ? "queued" : result} jobId=${requestId}`, false, true);
       return;
     }
   }
+  logColdLocal(checkId, "scheduler check complete reason=covered", false, true);
 }
 
 function startLocalColdScheduler(): void {
   if (localColdTimer) return;
   const trigger = () => {
-    if (localColdSchedulePromise) return;
-    localColdSchedulePromise = scheduleLocalColdDate()
-      .catch((error) => console.error(`Local cold scheduler failed: ${error instanceof Error ? error.message : String(error)}`))
+    const checkId = randomUUID();
+    if (localColdSchedulePromise) { logColdLocal(checkId, "scheduler check skipped reason=check-already-running", false, true); return; }
+    localColdSchedulePromise = scheduleLocalColdDate(checkId)
+      .catch(() => { logColdLocal(checkId, "scheduler check failure error=scheduler-failure", true); console.error("Local cold scheduler failed: scheduler-failure"); })
       .finally(() => { localColdSchedulePromise = null; });
   };
   localColdTimer = setInterval(trigger, localColdIntervalMs);
@@ -392,7 +456,7 @@ async function buildUsage(url: URL, config: AppConfig) {
     const hostRecords = records.filter((record) => record.hostId === hostId);
     const isLocal = hostId === localHostId;
     const ingestError = remotePersistenceErrors.get(hostId) || state?.ingestError || null;
-    const storageError = ingestError || (isLocal ? localHotUsageError : null) || null;
+    const storageError = ingestError || (isLocal ? localUsageHealth.hotError : null) || null;
     storageErrorsByHost.set(hostId, storageError);
     const error = storageError || state?.error?.error || state?.status?.error || null;
     const coveredDates = storedDatesByHost.get(hostId) ?? new Set<string>();
@@ -478,15 +542,17 @@ async function body(request: import("node:http").IncomingMessage): Promise<Reque
   return value ? JSON.parse(value) : {};
 }
 
-function publishRemoteRefresh(category: "hot" | "cold", from: string, to: string, mode: "online" | "offline", requestId: string = randomUUID()): void {
+function publishRemoteRefresh(category: "hot" | "cold", from: string, to: string, mode: "online" | "offline", requestId: string = randomUUID(), httpId?: string): void {
   for (const hostId of Object.keys(remoteUsageStore.getSnapshot().hosts)) {
     if (hostId === localHostId) continue;
     if (category === "cold") logColdLocal(requestId, `remote dispatch target=${hostId} range=${from}..${to} mode=${mode}`);
-    void remoteUsageStore.publishCommand(hostId, { requestId, category, from, to, mode });
+    void remoteUsageStore.publishCommand(hostId, { requestId, category, from, to, mode }).then((published) => {
+      dailyLogger.log(`[${category}] [remote] [${requestId}] command ${published ? "published" : "failed"}${httpId ? ` httpId=${httpId}` : ""} target=${hostId} range=${from}..${to} mode=${mode}`);
+    });
   }
 }
 
-async function handleApi(request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse, url: URL): Promise<void> {
+async function handleApi(request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse, url: URL, httpId: string): Promise<void> {
   const config = await loadConfig();
   if (request.method === "GET" && url.pathname === "/api/v1/providers") {
     const statuses = Object.fromEntries(await Promise.all(config.providerOrder.map(async (id) => [id, providerStatus({ id, config: config.providers[id], result: { configured: await isProviderConfigured(id) } })])));
@@ -499,8 +565,10 @@ async function handleApi(request: import("node:http").IncomingMessage, response:
   if (request.method === "GET" && url.pathname === "/api/v1/dashboard") return json(response, 200, await dashboard(url, config));
   if (request.method === "POST" && url.pathname === "/api/v1/usage/refresh") {
     const range = localDateRange(2, usageTimezone);
-    queueLocalHot();
-    publishRemoteRefresh("hot", range.from, range.to, "online");
+    const requestId = randomUUID();
+    logHotLocal(requestId, `API receipt httpId=${httpId} requestId=${requestId} range=${range.from}..${range.to}`);
+    queueLocalHot(false, { httpId, requestId });
+    publishRemoteRefresh("hot", range.from, range.to, "online", requestId, httpId);
     return json(response, 202, { accepted: true, category: "hot", from: range.from, to: range.to });
   }
   if (request.method === "POST" && url.pathname === "/api/v1/usage/cold") {
@@ -519,7 +587,7 @@ async function handleApi(request: import("node:http").IncomingMessage, response:
     const requestId = typeof input.requestId === "string" ? input.requestId : randomUUID();
     const hostId = input.hostId as string | undefined;
     const target = hostId || "all";
-    logColdLocal(requestId, `API receipt target=${target} range=${from}..${to} mode=${mode}`);
+    logColdLocal(requestId, `API receipt httpId=${httpId} target=${target} range=${from}..${to} mode=${mode}`);
     let localAccepted: boolean | undefined;
     if (!hostId || hostId === localHostId) {
       const queueResult = queueLocalCold(from, to, mode === "offline", requestId);
@@ -532,10 +600,10 @@ async function handleApi(request: import("node:http").IncomingMessage, response:
       if (!hostId && (queueResult === "accepted" || queueResult === "duplicate")) localAccepted = true;
     }
     if (hostId && hostId !== localHostId) {
-      logColdLocal(requestId, `remote dispatch target=${hostId} range=${from}..${to} mode=${mode}`);
-      void remoteUsageStore.publishCommand(hostId, { requestId, category: "cold", from, to, mode });
+      logColdLocal(requestId, `remote dispatch httpId=${httpId} target=${hostId} range=${from}..${to} mode=${mode}`);
+      void remoteUsageStore.publishCommand(hostId, { requestId, category: "cold", from, to, mode }).then((published) => dailyLogger.log(`[cold] [remote] [${requestId}] command ${published ? "published" : "failed"} httpId=${httpId} target=${hostId} range=${from}..${to} mode=${mode}`));
     }
-    if (!hostId) publishRemoteRefresh("cold", from, to, mode, requestId);
+    if (!hostId) publishRemoteRefresh("cold", from, to, mode, requestId, httpId);
     return json(response, 202, { accepted: true, requestId, ...(localAccepted === undefined ? {} : { localAccepted }), category: "cold", from, to, mode, hostId: target });
   }
   if (request.method === "GET" && url.pathname === "/api/v1/quotas") {
@@ -605,9 +673,25 @@ async function serveStatic(response: import("node:http").ServerResponse, pathnam
 }
 
 const server = createServer(async (request, response) => {
+  const httpId = randomUUID();
+  const startedAt = Date.now();
+  let pathname = "/";
+  try { pathname = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`).pathname; } catch { /* malformed request URL */ }
+  const requestLog = createHttpRequestLog({ id: httpId, method: request.method || "UNKNOWN", pathname, startedAt });
+  dailyLogger.log(requestLog.arrival);
+  let completed = false;
+  const complete = (aborted: boolean) => {
+    if (completed) return;
+    completed = true;
+    const line = requestLog.completion(response.statusCode, Date.now() - startedAt, aborted);
+    dailyLogger.log(line);
+    console.log(`[${formatLocalTimestamp(new Date())}] ${line}`);
+  };
+  response.once("finish", () => complete(false));
+  response.once("close", () => { if (!response.writableFinished) complete(true); });
   try {
     const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
-    if (url.pathname.startsWith("/api/")) await handleApi(request, response, url);
+    if (url.pathname.startsWith("/api/")) await handleApi(request, response, url, httpId);
     else await serveStatic(response, url.pathname);
   } catch (error) {
     const message = error && typeof error === "object" && "message" in error && typeof error.message === "string" ? error.message : "Internal server error";
@@ -630,8 +714,8 @@ async function shutdown(): Promise<void> {
   await localHotSchedulePromise?.catch(() => undefined);
   await localColdSchedulePromise?.catch(() => undefined);
   await Promise.all([localHotPromise, localColdPromise].map((job) => job?.catch(() => undefined)));
-  await remoteUsageStore.stop().catch((error) => console.error(`Remote MQTT shutdown failed: ${error instanceof Error ? error.message : String(error)}`));
-  server.close(() => process.exit(0));
+  await remoteUsageStore.stop().catch(() => { dailyLogger.log("mqtt shutdown failed error=connection-failure"); console.error("Remote MQTT shutdown failed: connection-failure"); });
+  server.close(() => { void dailyLogger.close(2000).finally(() => process.exit(0)); });
 }
 
 process.once("SIGINT", () => void shutdown());
