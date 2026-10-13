@@ -101,6 +101,25 @@ test("does not block MQTT message acceptance on asynchronous persistence", async
   assert.equal(persisted, true);
 });
 
+test("traces accepted and rejected MQTT messages without exposing payloads", () => {
+  const entries: string[] = [];
+  const store = new RemoteMqttStore({ mqttUrl: "mqtt://broker", infoLog: (entry) => entries.push(entry) });
+  const topic = "quota-dashboard/v1/hosts/workstation/usage/2026-09-13";
+  assert.equal(store.processMessage(topic, usage()), true);
+  const secret = "private-payload-token";
+  assert.equal(store.processMessage(topic, secret), false);
+  assert.equal(store.processMessage(`${secret}/unknown/topic`, usage()), false);
+  assert.match(entries[0], /message received kind=usage host=workstation date=2026-09-13/);
+  assert.match(entries[1], /message rejected reason=validation/);
+  assert.match(entries[2], /message rejected reason=validation/);
+  assert.doesNotMatch(entries.join(" "), new RegExp(secret));
+});
+
+test("subscriber logging failures do not change message acceptance", () => {
+  const store = new RemoteMqttStore({ mqttUrl: "mqtt://broker", infoLog: () => { throw new Error("sink failed"); } });
+  assert.equal(store.processMessage("quota-dashboard/v1/hosts/workstation/usage/2026-09-13", usage()), true);
+});
+
 test("stores status and error independently of date-level usage", () => {
   const store = new RemoteMqttStore({ mqttUrl: "mqtt://broker" });
   const usageTopic = "quota-dashboard/v1/hosts/workstation/usage/2026-09-13";

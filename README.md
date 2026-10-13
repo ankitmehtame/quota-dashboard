@@ -73,6 +73,7 @@ Provider enablement and dashboard order are stored in `~/.config/quota-dashboard
 - `CCUSAGE_BIN` (defaults to `ccusage`)
 - `USAGE_TIMEZONE` (server-authoritative IANA timezone; defaults to the server timezone)
 - `USAGE_DATA_DIR` (defaults to `~/.local/share/quota-dashboard/usage`)
+- `QUOTA_LOG_DIR` (optional daily-log directory; see Logging below)
 - `CCUSAGE_HOT_INTERVAL_MS` (local hot refresh interval; defaults to 600000)
 - `CCUSAGE_HOT_TIMEOUT_MS` (local hot command timeout; defaults to 600000)
 - `CCUSAGE_COLD_TIMEOUT_MS` (local cold command timeout; defaults to 1800000)
@@ -187,7 +188,46 @@ The remote publisher accepts these environment variables when run without the se
 script: `MQTT_URL`, `MQTT_USERNAME`, `MQTT_PASSWORD`, `MQTT_PREFIX`, `MQTT_HOST_ID`,
 `CCUSAGE_TIMEZONE`, `CCUSAGE_DAYS`, `MQTT_INTERVAL_MS`, `CCUSAGE_HOT_TIMEOUT_MS`,
 `CCUSAGE_COLD_TIMEOUT_MS`, `CCUSAGE_COLD_INTERVAL_MS`, `CCUSAGE_COLD_MODE`,
-`CCUSAGE_BIN`, `CCUSAGE_MAX_BUFFER`, and optional `CCUSAGE_VERSION`.
+`CCUSAGE_BIN`, `CCUSAGE_MAX_BUFFER`, optional `CCUSAGE_VERSION`, and optional
+`QUOTA_LOG_DIR`. Set `QUOTA_LOG_DIR` when running setup to preserve an override in
+`remote.env`; setup does not require it or prompt for it. Rerunning setup preserves
+an existing override. Set `QUOTA_LOG_DIR` to an empty string during setup to remove it.
+
+## Logging
+
+The server and remote publisher write separate daily files named
+`server-info-YYYY-MM-DD.log` and `remote-info-YYYY-MM-DD.log`. The default directory is
+`~/Library/Logs/quota-dashboard` on macOS and
+`~/.local/state/quota-dashboard/logs` on Linux. Both accept `QUOTA_LOG_DIR` and create
+the directory automatically. Server overrides can also be set in
+`~/.config/quota-dashboard/.env`.
+
+Dates and timestamps use the process host's local timezone, not `USAGE_TIMEZONE`
+or `CCUSAGE_TIMEZONE`. Retention keeps today's file and the previous six calendar
+dates. Cleanup runs at startup and rollover and only removes that process's matching
+daily files. Future-dated files are preserved if the host clock moves backwards.
+Queued entries delayed beyond the retention window go into the current file with their
+original timestamp. Existing macOS stdout/stderr files and Linux journal logging are unchanged.
+
+Daily files trace on-demand and scheduled jobs, MQTT application traffic, and HTTP
+request arrival and completion. HTTP completion records also go to stdout. Correlation
+IDs connect requests and jobs where the existing protocol provides them. Skipped or
+deduplicated jobs are logged without changing scheduling behavior. Accepted background
+refreshes continue if an HTTP client disconnects.
+
+Routine scheduled job progress and success stay out of main logs. Errors and the
+first successful hot or cold run after a failure remain visible there. Recovery is
+tracked separately for hot and cold jobs and resets when the process restarts.
+
+Logs omit credentials, HTTP query strings, raw MQTT payloads, and usage contents.
+File logging is asynchronous and does not stop usage collection or HTTP handling if
+the disk fails. A queue of at most 1,000 pending entries drops new info entries under
+overload; stderr reports failures and dropped-entry counts. File logging retries and announces
+recovery, and records lost-entry gaps in the daily file. Each message is limited to
+8,192 characters, with control characters replaced to prevent forged log lines.
+Shutdown allows up to two seconds to flush pending entries.
+
+## Remote transport security
 
 The first version intentionally uses ordinary MQTT username/password authentication.
 Credentials and usage metadata are unencrypted with an `mqtt://` URL. Keep the broker

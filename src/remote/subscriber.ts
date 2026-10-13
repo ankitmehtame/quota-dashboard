@@ -59,6 +59,8 @@ export type RemoteMqttSubscriberConfig = {
   onUsage?: (message: UsageSnapshot) => void | Promise<void>;
   onUsageError?: (message: UsageSnapshot, error: unknown) => void;
   onChange?: (snapshot: RemoteMqttStoreSnapshot) => void;
+  /** Optional, payload-free operational trace hook. */
+  infoLog?: (message: string) => void;
 };
 
 export type RemoteMqttSubscriberDependencies = {
@@ -269,6 +271,10 @@ export class RemoteMqttStore {
   private stopped = true;
   private startPromise: Promise<void> | null = null;
 
+  private info(message: string): void {
+    try { this.config.infoLog?.(message); } catch { /* Logging must never change MQTT behavior. */ }
+  }
+
   constructor(config: RemoteMqttSubscriberConfig = readRemoteMqttSubscriberConfig(), dependencies: RemoteMqttSubscriberDependencies = {}) {
     const mqttUrl = typeof config.mqttUrl === "string" && config.mqttUrl.trim() ? config.mqttUrl.trim() : null;
     const enabled = config.enabled !== false && Boolean(mqttUrl);
@@ -363,8 +369,21 @@ export class RemoteMqttStore {
 
   processMessage(topic: string, payload: Buffer | Uint8Array | string): boolean {
     const parsed = parseRemoteMqttMessage(topic, payload, this.config.mqttPrefix, this.config.maxPayloadBytes);
-    if (!parsed || parsed.topic.kind === "command") return false;
-    if (!this.hosts.has(parsed.topic.hostId) && this.hosts.size >= MAX_REMOTE_HOSTS) return false;
+    if (!parsed || parsed.topic.kind === "command") {
+      this.info("message rejected reason=validation");
+      return false;
+    }
+    const { hostId, kind, date } = parsed.topic;
+    const details = kind === "usage"
+      ? ` category=${(parsed.message as UsageSnapshot).category} runId=${(parsed.message as UsageSnapshot).runId}`
+      : kind === "status"
+        ? ` status=${(parsed.message as StatusMessage).status}`
+        : "";
+    this.info(`message received kind=${kind} host=${hostId}${date ? ` date=${date}` : ""}${details}`);
+    if (!this.hosts.has(hostId) && this.hosts.size >= MAX_REMOTE_HOSTS) {
+      this.info(`message rejected reason=host-limit kind=${kind} host=${hostId}`);
+      return false;
+    }
     const state = this.hosts.get(parsed.topic.hostId) || { usage: null, usageByDate: Object.create(null) as Record<string, UsageSnapshot>, status: null, error: null, ingestError: null };
     if (parsed.topic.kind === "usage") {
       const message = parsed.message as UsageSnapshot;
@@ -372,10 +391,11 @@ export class RemoteMqttStore {
         state.ingestError = `Timezone ${message.timezone} does not match ${this.config.usageTimezone}`;
         this.hosts.set(parsed.topic.hostId, state);
         this.emitChange();
+        this.info(`message rejected reason=timezone host=${parsed.topic.hostId} date=${message.date}`);
         return false;
       }
       const current = state.usageByDate[message.date] || null;
-      if (!shouldReplace(current, message)) return false;
+      if (!shouldReplace(current, message)) { this.info(`message ignored reason=stale kind=usage host=${parsed.topic.hostId} date=${message.date} runId=${message.runId}`); return false; }
       const accepted = copyAndFreeze(message);
       state.usageByDate[message.date] = accepted;
       state.usage = latestUsage(state.usageByDate);
@@ -391,11 +411,11 @@ export class RemoteMqttStore {
       }
     } else if (parsed.topic.kind === "status") {
       const message = parsed.message as StatusMessage;
-      if (!shouldReplace(state.status, message, message.status === "offline")) return false;
+      if (!shouldReplace(state.status, message, message.status === "offline")) { this.info(`message ignored reason=stale kind=status host=${parsed.topic.hostId}`); return false; }
       state.status = copyAndFreeze(message);
     } else {
       const message = parsed.message as ErrorMessage;
-      if (!shouldReplace(state.error, message)) return false;
+      if (!shouldReplace(state.error, message)) { this.info(`message ignored reason=stale kind=error host=${parsed.topic.hostId}`); return false; }
       state.error = copyAndFreeze(message);
     }
     this.hosts.set(parsed.topic.hostId, state);
