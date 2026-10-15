@@ -34,6 +34,7 @@ export const DEFAULT_MQTT_URL = "mqtt://127.0.0.1:1883";
 export const DEFAULT_MQTT_PREFIX = "quota-dashboard/v1";
 export const DEFAULT_PUBLISH_INTERVAL_MS = 10 * 60 * 1000;
 export const DEFAULT_COLD_INTERVAL_MS = 24 * 60 * 60 * 1000;
+export const DEFAULT_MQTT_RECONNECT_TIMEOUT_MS = 90_000;
 const MAX_ACTIVE_COMMANDS = 256;
 
 export type RemotePublisherConfig = {
@@ -44,6 +45,7 @@ export type RemotePublisherConfig = {
   ccusageBinary: string;
   rollingDays: number;
   publishIntervalMs: number;
+  reconnectTimeoutMs?: number;
   /** Kept as an optional compatibility input. New callers should use hotTimeoutMs. */
   ccusageTimeoutMs?: number;
   hotTimeoutMs?: number;
@@ -72,6 +74,8 @@ export type PublisherDependencies = {
   infoLog?: (message: string) => void;
   /** Owns and drains the daily file logger. */
   closeLog?: (timeoutMs?: number) => Promise<void>;
+  /** Fatal watchdog exit. Do not wait for jobs or MQTT acknowledgements. */
+  exit?: (code: number) => void;
   /** Injectable observation seam for command handling without touching MQTT callbacks. */
   onCommand?: (command: ParsedMqttCommand) => void;
 };
@@ -121,6 +125,7 @@ export function readRemotePublisherConfig(env: NodeJS.ProcessEnv = process.env):
     ccusageBinary: env.CCUSAGE_BIN?.trim() || "ccusage",
     rollingDays: Math.max(1, Math.trunc(positiveNumber(env.CCUSAGE_DAYS, 370))),
     publishIntervalMs: positiveNumber(env.MQTT_INTERVAL_MS || env.MQTT_PUBLISH_INTERVAL_MS, DEFAULT_PUBLISH_INTERVAL_MS),
+    reconnectTimeoutMs: positiveNumber(env.MQTT_RECONNECT_TIMEOUT_MS, DEFAULT_MQTT_RECONNECT_TIMEOUT_MS),
     hotTimeoutMs: positiveNumber(env.CCUSAGE_HOT_TIMEOUT_MS, legacyTimeout),
     coldTimeoutMs: positiveNumber(env.CCUSAGE_COLD_TIMEOUT_MS, DEFAULT_COLD_CCUSAGE_TIMEOUT_MS),
     coldIntervalMs: positiveNumber(env.CCUSAGE_COLD_INTERVAL_MS, DEFAULT_COLD_INTERVAL_MS),
@@ -233,7 +238,7 @@ function safeError(error: unknown): string {
 
 export class RemoteMqttPublisher {
   private readonly config: NormalizedPublisherConfig;
-  private readonly dependencies: Required<Pick<PublisherDependencies, "connect" | "runCcusage" | "now" | "log" | "infoLog">> & PublisherDependencies;
+  private readonly dependencies: Required<Pick<PublisherDependencies, "connect" | "runCcusage" | "now" | "log" | "infoLog" | "exit">> & PublisherDependencies;
   private readonly topics;
   private readonly publisherId = randomUUID();
   private connectionId = randomUUID();
@@ -241,6 +246,7 @@ export class RemoteMqttPublisher {
   private client: MqttClient | null = null;
   private timer: NodeJS.Timeout | null = null;
   private coldTimer: NodeJS.Timeout | null = null;
+  private reconnectTimer: NodeJS.Timeout | null = null;
   private hotInFlight: Promise<void> | null = null;
   private coldInFlight: Promise<void> | null = null;
   private readonly hotQueue: UsageJob[] = [];
@@ -269,6 +275,7 @@ export class RemoteMqttPublisher {
       now: () => new Date(),
       log: (message: string) => console.error(message),
       infoLog: (message: string) => dailyLogger!.log(message),
+      exit: (code: number) => { process.exit(code); },
       ...(dailyLogger ? { closeLog: (timeoutMs?: number) => dailyLogger.close(timeoutMs) } : {}),
       ...dependencies,
     };
@@ -325,7 +332,9 @@ export class RemoteMqttPublisher {
     client.on("message", this.onMessage);
     client.on("reconnect", this.onReconnect);
     client.on("offline", this.onOffline);
+    client.on("close", this.onClose);
     client.on("error", this.onError);
+    this.armReconnectWatchdog();
   }
 
   /** Run today's and yesterday's hot jobs, with at most one hot job in flight. */
@@ -578,6 +587,7 @@ export class RemoteMqttPublisher {
 
   private async stopNow(): Promise<void> {
     this.stopped = true;
+    this.clearReconnectWatchdog();
     if (this.timer) clearInterval(this.timer);
     this.timer = null;
     if (this.coldTimer) clearInterval(this.coldTimer);
@@ -592,6 +602,7 @@ export class RemoteMqttPublisher {
     client.off("message", this.onMessage);
     client.off("reconnect", this.onReconnect);
     client.off("offline", this.onOffline);
+    client.off("close", this.onClose);
     client.off("error", this.onError);
     if (wasConnected) {
       try {
@@ -610,6 +621,7 @@ export class RemoteMqttPublisher {
 
   private readonly onConnect = (): void => {
     if (this.stopped || !this.client || this.connected) return;
+    this.clearReconnectWatchdog();
     this.connected = true;
     this.log(`MQTT connected to ${sanitizeMqttUrl(this.config.mqttUrl)}`);
     const client = this.client;
@@ -617,9 +629,9 @@ export class RemoteMqttPublisher {
     if (!this.coldTimer) this.coldTimer = setInterval(() => this.scheduleColdHistory(), this.config.coldIntervalMs);
     void subscribe(client, makeCommandTopic(this.config.mqttPrefix, this.config.hostId))
       .then(() => this.send(client, this.topics.status, makeStatusMessage(this.nextMetadata(rollingDateRange(this.config.timezone, this.dependencies.now(), 1).to, "hot", "lifecycle"), "online")))
-      .then(() => {
-        this.scheduleColdHistory();
-        return this.publishHot();
+      .then(async () => {
+        await this.publishHot();
+        if (!this.stopped && this.connected) this.scheduleColdHistory();
       })
       .catch((error: unknown) => this.log(`MQTT reconnect publish failed: ${safeError(error)}`));
   };
@@ -634,12 +646,37 @@ export class RemoteMqttPublisher {
 
   private readonly onOffline = (): void => {
     this.connected = false;
+    this.armReconnectWatchdog();
     this.log("MQTT connection lost (offline)");
   };
+
+  private readonly onClose = (): void => {
+    this.connected = false;
+    this.armReconnectWatchdog();
+  };
+
+  private clearReconnectWatchdog(): void {
+    if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
+    this.reconnectTimer = null;
+  }
+
+  private armReconnectWatchdog(): void {
+    if (this.stopped || this.connected || this.reconnectTimer) return;
+    const timeoutMs = this.config.reconnectTimeoutMs ?? DEFAULT_MQTT_RECONNECT_TIMEOUT_MS;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      if (this.stopped || this.connected) return;
+      this.stopped = true;
+      this.log(`FATAL: MQTT connection unavailable for ${timeoutMs}ms; exiting with code 1 for supervisor restart`);
+      // Graceful shutdown can hang on queued QoS 1 publications while offline.
+      this.dependencies.exit(1);
+    }, timeoutMs);
+  }
 
   private readonly onReconnect = (): void => {
     if (this.stopped || !this.client) return;
     this.connected = false;
+    this.armReconnectWatchdog();
     this.log("MQTT reconnecting...");
     this.connectionId = randomUUID();
     const date = rollingDateRange(this.config.timezone, this.dependencies.now(), 1).to;

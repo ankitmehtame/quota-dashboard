@@ -186,12 +186,19 @@ loginctl enable-linger "$USER"
 
 The remote publisher accepts these environment variables when run without the setup
 script: `MQTT_URL`, `MQTT_USERNAME`, `MQTT_PASSWORD`, `MQTT_PREFIX`, `MQTT_HOST_ID`,
-`CCUSAGE_TIMEZONE`, `CCUSAGE_DAYS`, `MQTT_INTERVAL_MS`, `CCUSAGE_HOT_TIMEOUT_MS`,
+`MQTT_RECONNECT_TIMEOUT_MS`, `CCUSAGE_TIMEZONE`, `CCUSAGE_DAYS`, `MQTT_INTERVAL_MS`, `CCUSAGE_HOT_TIMEOUT_MS`,
 `CCUSAGE_COLD_TIMEOUT_MS`, `CCUSAGE_COLD_INTERVAL_MS`, `CCUSAGE_COLD_MODE`,
 `CCUSAGE_BIN`, `CCUSAGE_MAX_BUFFER`, optional `CCUSAGE_VERSION`, and optional
 `QUOTA_LOG_DIR`. Set `QUOTA_LOG_DIR` when running setup to preserve an override in
 `remote.env`; setup does not require it or prompt for it. Rerunning setup preserves
 an existing override. Set `QUOTA_LOG_DIR` to an empty string during setup to remove it.
+
+The remote publisher exits with code 1 if MQTT stays disconnected for 90 seconds,
+including at startup. Set `MQTT_RECONNECT_TIMEOUT_MS` to a positive duration in
+milliseconds to change this limit. A successful connection resets the watchdog.
+The installed launchd and systemd services restart the process automatically.
+On connection, the publisher finishes the initial hot collection before scheduling
+cold history collection.
 
 ## Logging
 
