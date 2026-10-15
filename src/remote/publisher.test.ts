@@ -43,9 +43,9 @@ async function flush(): Promise<void> {
   await new Promise((resolve) => setImmediate(resolve));
 }
 
-function startPublisher(dependencies: Record<string, unknown> = {}): { publisher: RemoteMqttPublisher; client: FakeClient } {
+function startPublisher(dependencies: Record<string, unknown> = {}, overrides: Partial<RemotePublisherConfig> = {}): { publisher: RemoteMqttPublisher; client: FakeClient } {
   const client = new FakeClient();
-  const publisher = new RemoteMqttPublisher(config, {
+  const publisher = new RemoteMqttPublisher({ ...config, ...overrides }, {
     connect: ((_url: string, options: Record<string, any>) => {
       client.options = options;
       return client;
@@ -399,6 +399,11 @@ test("reads timeout defaults and keeps URL logging redacted", () => {
   assert.equal(result.hotTimeoutMs, 600_000);
   assert.equal(result.coldTimeoutMs, 1_800_000);
   assert.equal(result.coldMode, "offline");
+  assert.equal(result.reconnectTimeoutMs, 90_000);
+  assert.equal(readRemotePublisherConfig({ MQTT_RECONNECT_TIMEOUT_MS: "60000" }).reconnectTimeoutMs, 60_000);
+  for (const value of ["", "0", "-1", "NaN", "Infinity"]) {
+    assert.equal(readRemotePublisherConfig({ MQTT_RECONNECT_TIMEOUT_MS: value }).reconnectTimeoutMs, 90_000);
+  }
   assert.equal(sanitizeMqttUrl("mqtt://user:pass@broker.local:1883/path?token=secret"), "mqtt://broker.local:1883");
 });
 
@@ -430,7 +435,7 @@ test("rejects impossible calendar dates for cold jobs", async () => {
   await publisher.stop();
 });
 
-test("reconnect schedules the newest stale date alongside hot collection", async () => {
+test("reconnect schedules the newest stale date after hot collection", async () => {
   const calls: string[] = [];
   const { publisher, client } = startPublisher({
     runCcusage: (async ({ range, offline }: any) => {
@@ -445,6 +450,109 @@ test("reconnect schedules the newest stale date alongside hot collection", async
   client.emit("reconnect");
   client.emit("connect");
   await flush();
-  assert.deepEqual(calls, ["cold:2026-09-11..2026-09-11", "hot:2026-09-12..2026-09-13"]);
+  assert.deepEqual(calls, ["hot:2026-09-12..2026-09-13", "cold:2026-09-11..2026-09-11"]);
   await publisher.stop();
+});
+
+for (const hotFails of [false, true]) {
+  test(`startup waits for hot collection before cold collection, hotFails=${hotFails}`, async (t) => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const calls: string[] = [];
+    const { publisher, client } = startPublisher({
+      runCcusage: async ({ offline }: { offline?: boolean }) => {
+        calls.push(offline ? "cold" : "hot");
+        if (!offline) {
+          await gate;
+          if (hotFails) throw new Error("hot failed");
+        }
+        return { document: { daily: [] }, stdout: "{}", stderr: "" };
+      },
+    });
+    t.after(async () => { release(); await publisher.stop(); });
+    await publisher.start();
+    client.emit("connect");
+    await flush();
+    assert.deepEqual(calls, ["hot"]);
+    release();
+    await flush();
+    assert.deepEqual(calls, ["hot", "cold"]);
+  });
+}
+
+test("watchdog exits on sustained startup failure without resetting on retries", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const exits: number[] = [];
+  const logs: string[] = [];
+  const { publisher, client } = startPublisher({ exit: (code: number) => exits.push(code), log: (line: string) => logs.push(line) }, { reconnectTimeoutMs: 60_000 });
+  t.after(() => publisher.stop());
+  await publisher.start();
+  for (let attempt = 0; attempt < 11; attempt += 1) {
+    t.mock.timers.tick(5_000);
+    client.emit("error", new Error("connect EHOSTUNREACH"));
+    client.emit("reconnect");
+    client.emit("close");
+    client.emit("offline");
+  }
+  assert.deepEqual(exits, []);
+  t.mock.timers.tick(5_000);
+  assert.deepEqual(exits, [1]);
+  assert.ok(logs.some((line) => line.includes("FATAL") && line.includes("60000ms")));
+  t.mock.timers.tick(60_000);
+  assert.deepEqual(exits, [1]);
+});
+
+for (const event of ["offline", "close"]) {
+  test(`watchdog resets on successful connection and rearms on ${event}`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    const exits: number[] = [];
+    const { publisher, client } = startPublisher({ exit: (code: number) => exits.push(code) });
+    t.after(() => publisher.stop());
+    await publisher.start();
+    t.mock.timers.tick(80_000);
+    client.emit("connect");
+    await flush();
+    client.emit("error", new Error("nonfatal MQTT error"));
+    t.mock.timers.tick(100_000);
+    assert.deepEqual(exits, []);
+    client.emit(event);
+    t.mock.timers.tick(80_000);
+    client.emit("connect");
+    await flush();
+    t.mock.timers.tick(100_000);
+    assert.deepEqual(exits, []);
+    client.emit(event);
+    t.mock.timers.tick(89_999);
+    assert.deepEqual(exits, []);
+    t.mock.timers.tick(1);
+    assert.deepEqual(exits, [1]);
+  });
+}
+
+test("stop cancels the watchdog", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const exits: number[] = [];
+  const { publisher, client } = startPublisher({ exit: (code: number) => exits.push(code) });
+  await publisher.start();
+  await publisher.stop();
+  t.mock.timers.tick(180_000);
+  assert.deepEqual(exits, []);
+  assert.equal(client.listenerCount("close"), 0);
+});
+
+test("watchdog exits even while a job is stuck waiting for an MQTT acknowledgement", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const exits: number[] = [];
+  const { publisher, client } = startPublisher({ exit: (code: number) => exits.push(code) });
+  let acknowledge!: () => void;
+  client.publish = (_topic, _payload, _options, callback) => { acknowledge = () => callback(null); };
+  t.after(async () => { acknowledge?.(); await publisher.stop(); });
+  await publisher.start();
+  const job = publisher.publishHot();
+  await flush();
+  client.emit("offline");
+  t.mock.timers.tick(90_000);
+  assert.deepEqual(exits, [1]);
+  acknowledge();
+  await job;
 });
