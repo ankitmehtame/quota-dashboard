@@ -1,8 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:net";
-import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -18,7 +19,13 @@ test("built server shares Claude fetches across routes, enforces cooldowns, isol
   const configPath = join(root, "config.json");
   const logs = join(root, "logs");
   let time = Date.now();
-  const control = async (status = 200, retryAfter?: string) => writeFile(controlPath, JSON.stringify({ now: time, status, retryAfter }));
+  const control = async (status = 200, retryAfter?: string) => {
+    // Date.now in the child reads this during response completion as well as fetches.
+    // Replace a complete file so it never sees a truncated or partially written JSON document.
+    const temporary = `${controlPath}.${randomUUID()}.tmp`;
+    await writeFile(temporary, JSON.stringify({ now: time, status, retryAfter }));
+    await rename(temporary, controlPath);
+  };
   await mkdir(home);
   await control();
   await writeFile(credentialsPath, JSON.stringify({ claudeAiOauth: { accessToken: "FAKE_ACCOUNT_A_TOKEN", scopes: ["user:profile"] } }));
@@ -129,6 +136,14 @@ globalThis.fetch = async (url, init) => {
     const failedC = await request("/api/v1/providers/claude/test", "POST");
     assert.deepEqual(failedC.quota.windows, []);
     assert.deepEqual((await request("/api/v1/dashboard")).quotas.claude.windows, []);
+    // Keep HTTP completion hooks reading the controls while the parent updates them.
+    // These requests do not fetch quotas or depend on which complete snapshot they see.
+    for (let iteration = 0; iteration < 50; iteration++) {
+      time += 1;
+      await Promise.all([request("/api/v1/providers"), control(503)]);
+    }
+    await request("/api/v1/providers");
+    assert.equal(child.exitCode, null, output);
     const daily = (await Promise.all((await readdir(logs)).map((name) => readFile(join(logs, name), "utf8")))).join("\n");
     assert.doesNotMatch(JSON.stringify([first, changed, failedC, daily, output]), /FAKE_ACCOUNT|RAW_RESPONSE_SECRET|credentials\.json|identity|authorization|[a-f0-9]{64}/i);
     assert.equal((await readFile(credentialsPath, "utf8")), JSON.stringify({ claudeAiOauth: { accessToken: "FAKE_ACCOUNT_C_TOKEN" } }));
