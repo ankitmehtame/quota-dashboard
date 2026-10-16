@@ -205,6 +205,7 @@ dialog { color: var(--text); background: var(--surface-raised); border: 1px soli
   .chart-card, .models-card { height: 375px; min-height: 375px; }
 }
 
+.chart-topline { gap: 22px; }
 .usage-metrics { display: flex; gap: 22px; }
 .usage-metric + .usage-metric { border-left: 1px solid var(--line); padding-left: 22px; }
 .usage-metric strong { display: block; }
