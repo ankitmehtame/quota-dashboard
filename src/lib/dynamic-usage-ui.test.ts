@@ -13,6 +13,19 @@ test("known source names and colors remain curated and fallback colors are stabl
   assert.equal(result[6], result[7]);
 });
 
+test("expanded fallback palette has matching bar, legend, and tooltip styles", () => {
+  const styles = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+  const colors: string[] = Array.from(runInNewContext(`${presentation}; Array.from({ length: 128 }, (_, index) => usageSourceColor('future-tool-' + index))`));
+  assert.equal(new Set(colors).size, 8);
+  for (const color of ["rose", "yellow", "teal"]) {
+    assert.ok(colors.includes(color));
+    assert.ok(styles.includes(`--${color}:`));
+    for (const selector of ["legend-key", "chart-segment", "tooltip-harness-dot"]) {
+      assert.ok(styles.includes(`.${selector}.${color}`));
+    }
+  }
+});
+
 test("settings list dynamic sources, honor saved toggles, and escape labels and IDs", async () => {
   const settings = app.slice(app.indexOf("async function loadSettings("), app.indexOf("function showToast("));
   const elements = new Map<string, { innerHTML: string }>();
