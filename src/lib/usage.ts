@@ -110,6 +110,7 @@ export function parseCcusage(document: unknown): UsageRecord[] {
       if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
       for (const model of modelRows(row)) {
         const modelName = typeof model.modelName === "string" && model.modelName.trim() ? model.modelName.trim() : "unknown";
+        const isFreeModel = modelName.toLowerCase().endsWith(":free");
         records.push({
           date,
           provider: String(model.provider ?? model.source ?? row.provider ?? row.source ?? rowProvider(row)).trim().toLowerCase(),
@@ -120,7 +121,7 @@ export function parseCcusage(document: unknown): UsageRecord[] {
           outputTokens: nonNegative(model.outputTokens),
           reasoningTokens: nonNegative(model.reasoningTokens),
           costUsd: typeof model.cost === "number" ? nonNegative(model.cost) : 0,
-          missingPricing: model.missingPricing === true || unpricedModels.has(modelName) || typeof model.cost !== "number" || !Number.isFinite(model.cost) || model.cost < 0,
+          missingPricing: !isFreeModel && (model.missingPricing === true || unpricedModels.has(modelName) || typeof model.cost !== "number" || !Number.isFinite(model.cost) || model.cost < 0),
         });
       }
     }

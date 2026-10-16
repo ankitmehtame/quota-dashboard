@@ -22,6 +22,27 @@ test("missing, invalid, flagged, and hinted prices stay distinct from reported z
   assert.equal(fallback[0].costUsd, 1.75);
 });
 
+test(":free suffix overrides missing pricing hints and flags, regardless of case or whitespace", () => {
+  const costs = [undefined, null, NaN, Infinity, -1, "invalid", "", false, {}, 0, 1.75];
+  const modelName = "nvidia/nemotron-3-nano-30b-a3b:FrEe";
+  const records = parseCcusage({ totals: { unpricedModels: [modelName] }, daily: [{ date: "2026-10-09", modelBreakdowns: costs.map((cost) => ({
+    modelName: `  ${modelName}  `, cost, missingPricing: true,
+  })) }] });
+  assert.deepEqual(records.map((record) => record.model), costs.map(() => modelName));
+  assert.deepEqual(records.map((record) => record.missingPricing), costs.map(() => false));
+  assert.deepEqual(records.map((record) => record.costUsd), costs.map((_, index) => index === 10 ? 1.75 : 0));
+  assert.equal(summarizeUsage(records).missingPricing, false);
+});
+
+test("free models stay distinct from genuinely unpriced models", () => {
+  const modelNames = ["model:free", "model", "model:free-preview", "free"];
+  const records = parseCcusage({ totals: { unpricedModels: modelNames }, daily: [{ date: "2026-10-09", modelBreakdowns: modelNames.map((modelName) => ({ modelName })) }] });
+  assert.deepEqual(records.map((record) => record.missingPricing), [false, true, true, true]);
+  const summary = summarizeUsage(records);
+  assert.equal(summary.missingPricing, true);
+  assert.equal(summary.byModel.find((model) => model.model === "model:free")?.missingPricing, false);
+});
+
 const collector = {
   totals: { totalCost: 999, totalTokens: 99999, unpricedModels: ["unknown-price"] },
   daily: [
@@ -74,6 +95,35 @@ test("aggregation keeps missing pricing when the same model also has priced usag
 });
 
 for (const representation of ["day", "week", "month"]) {
+  test(`${representation} rendering treats hinted free usage as complete pricing`, () => {
+    const freeModel = "nvidia/nemotron-3-nano-30b-a3b:free";
+    const records = parseCcusage({ totals: { unpricedModels: [freeModel] }, daily: [{ date: "2026-10-09", agent: "codex", modelBreakdowns: [
+      { modelName: freeModel, inputTokens: 20, missingPricing: true },
+      { modelName: "paid", cost: 1.75, inputTokens: 10 },
+    ] }] }).map((record) => ({ ...record, hostId: "local" }));
+    const usage = { records, from: "2026-10-09", to: "2026-10-09", providers: ["codex"], hosts: [{ hostId: "local", status: "ok", usable: true }] };
+    const elements = new Map<string, { textContent: string; innerHTML: string; hidden: boolean }>();
+    const get = (selector: string) => {
+      if (!elements.has(selector)) elements.set(selector, { textContent: "", innerHTML: "", hidden: false });
+      return elements.get(selector)!;
+    };
+    const context = {
+      usage, state: { range: "relative-7", modelsRange: "selected", representation, days: 1, chartScrollLeft: 0, hostSelections: new Map() },
+      document: { querySelector: () => null, querySelectorAll: () => [] },
+      $: (selector: string) => Object.assign(get(selector), { querySelectorAll: () => [], setAttribute() {}, classList: { add() {} }, showModal() {} }),
+      escapeHtml: String, closeHostStatusPopover() {}, bindChartTooltips() {}, activeChartTooltip: null,
+    };
+    runInNewContext(`${presentation}\n${formatting}\n${dates}\n${rendering}\nrenderUsage(usage);`, context);
+    assert.equal(get("#usage-total").textContent, "$1.75");
+    assert.equal(get("#today-total").textContent, "$1.75");
+    assert.equal(get("#pricing-status").hidden, true);
+    assert.match(get("#models-list").innerHTML, /nemotron-3-nano-30b-a3b:free.*\$0\.00/);
+    assert.doesNotMatch(get("#models-list").innerHTML, /Pricing unavailable/);
+    assert.doesNotMatch(get("#usage-chart").innerHTML, /Pricing unavailable|\$[\d.]+\+/);
+    runInNewContext(`openUsageDetails(usageBuckets(summarizeSelectedRecords(usage.records), "${representation}")[0], "${representation}");`, context);
+    assert.doesNotMatch(get("#day-details-content").innerHTML, /Pricing unavailable|\$[\d.]+\+/);
+  });
+
   test(`${representation} rendering retains pricing warnings in totals, models, charts, and details`, () => {
     const records = parseCcusage(collector).map((record) => ({ ...record, hostId: record.missingPricing ? "unpriced" : "priced" }));
     const usage = { records, from: "2026-10-08", to: "2026-10-09", providers: ["codex"], hosts: ["priced", "unpriced"].map((hostId) => ({ hostId, status: "ok", usable: true })) };
