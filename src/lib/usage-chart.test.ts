@@ -6,7 +6,7 @@ import { runInNewContext } from "node:vm";
 // Exercise the compiled renderer without running the dashboard's startup requests.
 const app = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const renderer = app.slice(app.indexOf("function renderUsage("), app.indexOf("function openUsageDetails("));
-const presentation = app.slice(app.indexOf("function usageSourceName("), app.indexOf("const HOT_USAGE_POLL_INTERVAL_MS"));
+const presentation = app.slice(app.indexOf("const usageSourceNames ="), app.indexOf("const HOT_USAGE_POLL_INTERVAL_MS"));
 
 function renderChart(days: Array<{ date: string; costs: number[]; tokens?: number[] }>, representation = "day", providers = ["codex", "opencode", "hermes", "antigravity"]): string {
   const buckets = days.map(({ date, costs, tokens }) => ({

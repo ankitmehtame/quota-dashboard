@@ -75,6 +75,8 @@ Providers saves each tool's preference under `usageSources` by its sanitized too
 including preferences for tools no longer present on disk. Known tools keep their display
 names and colors; other tools use title-cased names and stable palette colors. Shared
 multi-agent rows are included whenever at least one usage source is enabled.
+Discovery scans are cached for 30 seconds and invalidated after each successful ingest.
+Files added directly by another process appear after the cache expires.
 
 No machine-specific absolute paths or identifiers are stored in the application. Provider credentials and machine-specific overrides remain server-side and can be supplied through environment variables:
 

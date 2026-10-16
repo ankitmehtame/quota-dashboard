@@ -21,6 +21,9 @@ const state: AppState & { hour12: boolean } = { days: 1, range: "today", modelsR
 const $ = (selector: string): any => document.querySelector(selector);
 const element = (target: EventTarget | null): HTMLElement => target as HTMLElement;
 const escapeHtml = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] || character);
+const usageSourceNames: Record<string, string> = { codex: "Codex", opencode: "OpenCode", hermes: "Hermes", antigravity: "Antigravity", claude: "Claude", shared: "Shared" };
+const usageSourceColors: Record<string, string> = { codex: "mint", opencode: "violet", hermes: "orange", antigravity: "blue", claude: "neutral", shared: "neutral" };
+const usageColorPalette = ["mint", "violet", "orange", "blue", "neutral", "rose", "yellow", "teal"] as const;
 function usageSourceName(id: string): string {
   return (Object.hasOwn(usageSourceNames, id) ? usageSourceNames[id] : "") || id.split(/[-_.~\s]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ") || id;
 }
@@ -32,9 +35,6 @@ function usageSourceColor(id: string): string {
   return usageColorPalette[(hash >>> 0) % usageColorPalette.length];
 }
 let providerOrder = ["codex", "openrouter", "opencode-go", "ollama", "claude"];
-const usageSourceNames: Record<string, string> = { codex: "Codex", opencode: "OpenCode", hermes: "Hermes", antigravity: "Antigravity", claude: "Claude", shared: "Shared" };
-const usageSourceColors: Record<string, string> = { codex: "mint", opencode: "violet", hermes: "orange", antigravity: "blue", claude: "neutral", shared: "neutral" };
-const usageColorPalette = ["mint", "violet", "orange", "blue", "neutral", "rose", "yellow", "teal"] as const;
 type UsageSourceConfig = { enabled: boolean };
 const HOT_USAGE_POLL_INTERVAL_MS = 5_000;
 const HOT_USAGE_RETRY_GRACE_PERIOD_MS = 15_000;

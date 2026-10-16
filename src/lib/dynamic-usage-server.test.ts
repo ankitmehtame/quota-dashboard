@@ -88,7 +88,8 @@ test("server discovers tools across dates and hosts and persists dynamic toggles
     const usage = (await get("usage?days=1")).usage;
     assert.deepEqual(usage.records.map((record: UsageRecord) => record.provider).sort(), ["new-tool", "shared"]);
     await ingest("new-host", "2020-01-03", "late-agent");
-    assert.deepEqual((await get("providers")).usageSources["late-agent"], { enabled: true });
+    // External filesystem writes are picked up on cache expiry, not on every request.
+    assert.equal((await get("providers")).usageSources["late-agent"], undefined);
     for (const id of ["new-tool", "historic-agent", "late-agent"]) {
       assert.equal((await request(`usage-sources/${id}/enabled`, false)).status, 200);
     }
