@@ -1,7 +1,9 @@
+import { isUsageSourceId } from "./usage-source-id.js";
+
 export const PROVIDER_IDS = ["codex", "openrouter", "opencode-go", "ollama", "claude"] as const;
 export type ProviderId = typeof PROVIDER_IDS[number];
 export const USAGE_SOURCE_IDS = ["codex", "opencode", "hermes", "antigravity"] as const;
-export type UsageSourceId = typeof USAGE_SOURCE_IDS[number];
+export type UsageSourceId = string;
 
 export type QuotaWindow = {
   name: string;
@@ -224,9 +226,9 @@ export function normalizeConfig(raw: unknown): AppConfig {
       config.providers[id].enabled = input.providers[id].enabled;
     }
   }
-  for (const id of USAGE_SOURCE_IDS) {
-    if (input.usageSources?.[id] && typeof input.usageSources[id].enabled === "boolean") {
-      config.usageSources[id].enabled = input.usageSources[id].enabled;
+  for (const [id, source] of Object.entries(input.usageSources ?? {})) {
+    if (isUsageSourceId(id) && source && typeof source.enabled === "boolean") {
+      config.usageSources[id] = { enabled: source.enabled };
     }
   }
   return config;

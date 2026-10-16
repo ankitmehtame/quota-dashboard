@@ -4,6 +4,8 @@ import { join } from "node:path";
 
 import { sanitizeHostId } from "../remote/protocol.js";
 import { parseCcusage, type UsageRecord } from "./usage.js";
+import { isUsageSourceId, normalizeUsageToolId } from "./usage-source-id.js";
+export { normalizeUsageToolId } from "./usage-source-id.js";
 
 const MAX_ID_LENGTH = 128;
 const MAX_RAW_ARCHIVES = 3;
@@ -82,29 +84,6 @@ function validateGeneratedAt(value: unknown): asserts value is string {
   if (!Number.isFinite(Date.parse(value))) throw new Error("generatedAt must be a valid date");
 }
 
-/**
- * Make a provider/tool ID safe as one filename segment.
- *
- * Host IDs intentionally use the existing MQTT convention. Tool IDs are
- * stricter because they come from the ccusage document and are used directly
- * as filenames.
- */
-export function normalizeUsageToolId(value: unknown): string {
-  if (typeof value !== "string" || value.trim().length === 0) throw new Error("tool ID must be a non-empty string");
-  const input = value.trim().normalize("NFKC");
-  if (input === "." || input === ".." || input.includes("/") || input.includes("\\") || input.includes("..")) {
-    throw new Error(`Unsafe tool ID: ${value}`);
-  }
-  const normalized = input
-    .toLowerCase()
-    .replace(/[^a-z0-9._~-]+/g, "-")
-    .replace(/^[.-]+|[.-]+$/g, "")
-    .slice(0, MAX_ID_LENGTH);
-  if (!normalized) throw new Error(`Tool ID cannot be used as a filename: ${value}`);
-  if (normalized === "raw" || normalized.startsWith("raw.")) throw new Error(`Reserved tool ID: ${value}`);
-  return normalized;
-}
-
 function validateContainer(input: RawUsageContainer): RawUsageContainer {
   if (!isObject(input)) throw new Error("usage container must be an object");
   if (!Number.isSafeInteger(input.schemaVersion) || input.schemaVersion < 1) throw new Error("schemaVersion must be a positive integer");
@@ -143,7 +122,7 @@ function toolRecords(records: UsageRecord[]): Map<string, UsageRecord[]> {
   for (const record of records) {
     const toolId = normalizeUsageToolId(record.provider);
     const values = grouped.get(toolId) || [];
-    values.push(record);
+    values.push({ ...record, provider: toolId });
     grouped.set(toolId, values);
   }
   return grouped;
@@ -368,7 +347,9 @@ export class FilesystemUsageStore {
         try {
           const value = await readJson(join(directory, name));
           if (!isObject(value) || !Array.isArray(value.records)) throw new Error(`Invalid normalized usage file: ${name}`);
-          result.push(value as unknown as NormalizedToolUsage);
+          const toolId = normalizeUsageToolId(value.toolId);
+          const file = value as unknown as NormalizedToolUsage;
+          result.push({ ...file, toolId, records: file.records.map((record) => ({ ...record, provider: toolId })) });
         } catch (error) {
           this.log(`Skipping unreadable normalized usage file ${join(directory, name)}: ${error instanceof Error ? error.message : String(error)}`);
         }
@@ -459,6 +440,38 @@ export class FilesystemUsageStore {
     const hosts = await this.listHostIds();
     const files = await Promise.all(hosts.map((hostId) => this.readNormalized(hostId, from, to)));
     return files.flat();
+  }
+
+  /** Discover tools across all stored hosts and dates, independent of the UI range. */
+  async listToolIds(): Promise<string[]> {
+    const ids = new Set<string>();
+    const directories = async (path: string, pattern: RegExp): Promise<string[]> => {
+      try {
+        return (await readdir(path, { withFileTypes: true }))
+          .filter((entry) => entry.isDirectory() && pattern.test(entry.name)).map((entry) => entry.name);
+      } catch (error) {
+        if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") return [];
+        throw error;
+      }
+    };
+    for (const hostId of await this.listHostIds()) {
+      const hostRoot = join(this.dataRoot, hostId);
+      for (const year of await directories(hostRoot, /^\d{4}$/)) {
+        for (const month of await directories(join(hostRoot, year), /^\d{2}$/)) {
+          for (const day of await directories(join(hostRoot, year, month), /^\d{2}$/)) {
+            const date = `${year}-${month}-${day}`;
+            if (!isCalendarDate(date)) continue;
+            const directory = join(hostRoot, year, month, day);
+            for (const file of await readdir(directory, { withFileTypes: true })) {
+              if (!file.isFile() || !file.name.endsWith(".json")) continue;
+              const id = file.name.slice(0, -5);
+              if (isUsageSourceId(id)) ids.add(id);
+            }
+          }
+        }
+      }
+    }
+    return [...ids].sort();
   }
 
   async readRecords(hostId: string, from: string, to: string): Promise<UsageRecord[]> {

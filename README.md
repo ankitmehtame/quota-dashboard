@@ -68,7 +68,15 @@ tar -xzf quota-dashboard-remote-agent-vX.Y.Z.tar.gz --strip-components=1 -C "${R
 
 ## Configuration
 
-Provider enablement and dashboard order are stored in `~/.config/quota-dashboard/config.json` with mode `0600`. No machine-specific absolute paths or identifiers are stored in the application. Provider credentials and machine-specific overrides remain server-side and can be supplied through environment variables:
+Provider enablement and dashboard order are stored in `~/.config/quota-dashboard/config.json` with mode `0600`.
+Usage sources are discovered from normalized tool files across all stored hosts and dates,
+not just the selected chart range. Newly discovered tools default to enabled. Manage
+Providers saves each tool's preference under `usageSources` by its sanitized tool ID,
+including preferences for tools no longer present on disk. Known tools keep their display
+names and colors; other tools use title-cased names and stable palette colors. Shared
+multi-agent rows are included whenever at least one usage source is enabled.
+
+No machine-specific absolute paths or identifiers are stored in the application. Provider credentials and machine-specific overrides remain server-side and can be supplied through environment variables:
 
 - `CCUSAGE_BIN` (defaults to `ccusage`)
 - `USAGE_TIMEZONE` (server-authoritative IANA timezone; defaults to the server timezone)

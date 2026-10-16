@@ -78,6 +78,24 @@ test("lists hosts and reads normalized records across the configured range", asy
   });
 });
 
+test("discovers distinct tools across hosts and historical dates, including empty tool files", async () => {
+  await withStore(async (store, root) => {
+    assert.deepEqual(await store.listToolIds(), []);
+    await store.ingest(container({ daily: [row("New Tool", 2), row("codex", 1)] }));
+    const date = "2025-01-02";
+    await store.ingest(container({ daily: [{ ...row("another-agent", 0), date, modelBreakdowns: [] }, { ...row("new-tool", 3), date }] }, { hostId: "remote-box", date }));
+    await store.ingest(container({ daily: [{ ...row("all", 1), metadata: { agents: ["new-tool", "codex"] } }] }));
+    const directory = join(root, "my-laptop", "2026", "09", "18");
+    await writeFile(join(directory, ".tmp-incomplete"), "{}");
+    await writeFile(join(directory, "raw.archive.json"), "{}");
+    await writeFile(join(directory, "constructor.json"), "{}");
+    assert.deepEqual(await store.listToolIds(), ["another-agent", "codex", "new-tool"]);
+    const persisted = new FilesystemUsageStore({ dataRoot: root });
+    assert.deepEqual(await persisted.listToolIds(), ["another-agent", "codex", "new-tool"]);
+    assert.equal((await store.readRecords("my-laptop", "2026-09-18", "2026-09-18")).find((record) => record.costUsd === 2)?.provider, "new-tool");
+  });
+});
+
 test("replaces present tools, retains missing tools, and archives a shrinking raw set", async () => {
   await withStore(async (store, root) => {
     await store.ingest(container({ daily: [row("codex", 1), row("opencode", 2)] }));
