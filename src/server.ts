@@ -6,7 +6,8 @@ import { homedir, hostname } from "node:os";
 import { dirname, extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { type AppConfig, type ProviderId, type UsageSourceId, DEFAULT_CONFIG, PROVIDER_IDS, USAGE_SOURCE_IDS, localDateRange, normalizeConfig, normalizeProviderOrder, providerStatus } from "./lib/core.js";
+import { type AppConfig, type ProviderId, DEFAULT_CONFIG, PROVIDER_IDS, localDateRange, normalizeConfig, normalizeProviderOrder, providerStatus } from "./lib/core.js";
+import { isUsageSourceId } from "./lib/usage-source-id.js";
 import type { ProviderResult } from "./lib/core.js";
 import { processColdDays } from "./lib/cold-range.js";
 import { fetchClaude, resolveClaudeCredentials, isProviderConfigured, PROVIDER_FETCHERS } from "./lib/providers.js";
@@ -156,11 +157,14 @@ type DashboardValue = {
 type RequestBody = { enabled?: unknown; order?: unknown; hostId?: unknown; from?: unknown; to?: unknown; mode?: unknown; requestId?: unknown };
 
 async function loadConfig(): Promise<AppConfig> {
+  let config: AppConfig;
   try {
-    return normalizeConfig(JSON.parse(await readFile(configPath, "utf8")));
+    config = normalizeConfig(JSON.parse(await readFile(configPath, "utf8")));
   } catch {
-    return structuredClone(DEFAULT_CONFIG);
+    config = structuredClone(DEFAULT_CONFIG);
   }
+  for (const id of await usageStore.listToolIds()) config.usageSources[id] ??= { enabled: true };
+  return config;
 }
 
 async function saveConfig(config: AppConfig): Promise<void> {
@@ -334,7 +338,7 @@ function startLocalHotScheduler(): void {
     if (localHotSchedulePromise) { logHotLocal(checkId, "scheduler check skipped reason=check-already-running", true); return; }
     localHotSchedulePromise = loadConfig()
       .then((config) => {
-        if (!USAGE_SOURCE_IDS.some((id) => config.usageSources[id].enabled)) {
+        if (!Object.values(config.usageSources).some((source) => source.enabled)) {
           logHotLocal(checkId, "scheduler check complete reason=disabled", true);
           return;
         }
@@ -412,7 +416,7 @@ function previousDate(value: string): string {
 
 async function scheduleLocalColdDate(checkId: string): Promise<void> {
   const config = await loadConfig();
-  if (!USAGE_SOURCE_IDS.some((id) => config.usageSources[id].enabled)) {
+  if (!Object.values(config.usageSources).some((source) => source.enabled)) {
     logColdLocal(checkId, "scheduler check complete reason=disabled", false, true);
     return;
   }
@@ -445,7 +449,7 @@ function startLocalColdScheduler(): void {
 
 async function buildUsage(url: URL, config: AppConfig) {
   const range = localDateRange(Number(url.searchParams.get("days") || 30), usageTimezone, url.searchParams.get("range") || "relative");
-  const usageSources = USAGE_SOURCE_IDS.filter((id) => config.usageSources[id].enabled);
+  const usageSources = Object.keys(config.usageSources).filter((id) => config.usageSources[id].enabled);
   const normalizedFiles = usageSources.length ? await usageStore.readNormalizedAll(range.from, range.to) : [];
   const today = localDateRange(1, usageTimezone).to;
   const localHotFiles = usageSources.length ? await usageStore.readNormalized(localHostId, today, today) : [];
@@ -667,11 +671,13 @@ async function handleApi(request: import("node:http").IncomingMessage, response:
     return json(response, 200, { providerOrder: config.providerOrder });
   }
   const usageMatch = url.pathname.match(/^\/api\/v1\/usage-sources\/([^/]+)\/enabled$/);
-  if (usageMatch && USAGE_SOURCE_IDS.includes(usageMatch[1] as UsageSourceId) && request.method === "PUT") {
+  if (usageMatch && request.method === "PUT") {
+    let id: string;
+    try { id = decodeURIComponent(usageMatch[1]); } catch { return json(response, 400, { error: "Invalid usage source ID" }); }
+    if (!isUsageSourceId(id)) return json(response, 400, { error: "Invalid usage source ID" });
     const input = await body(request);
     if (typeof input.enabled !== "boolean") return json(response, 400, { error: "enabled must be boolean" });
-    const id = usageMatch[1] as UsageSourceId;
-    config.usageSources[id].enabled = input.enabled;
+    config.usageSources[id] = { enabled: input.enabled };
     await saveConfig(config);
     dashboardCache.clear();
     return json(response, 200, { source: id, enabled: input.enabled });

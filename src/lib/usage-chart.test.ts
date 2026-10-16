@@ -6,18 +6,19 @@ import { runInNewContext } from "node:vm";
 // Exercise the compiled renderer without running the dashboard's startup requests.
 const app = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const renderer = app.slice(app.indexOf("function renderUsage("), app.indexOf("function openUsageDetails("));
+const presentation = app.slice(app.indexOf("function usageSourceName("), app.indexOf("const HOT_USAGE_POLL_INTERVAL_MS"));
 
-function renderChart(days: Array<{ date: string; costs: number[]; tokens?: number[] }>, representation = "day"): string {
+function renderChart(days: Array<{ date: string; costs: number[]; tokens?: number[] }>, representation = "day", providers = ["codex", "opencode", "hermes", "antigravity"]): string {
   const buckets = days.map(({ date, costs, tokens }) => ({
     date, from: date, to: date, days: [],
     costUsd: costs.reduce((total, cost) => total + cost, 0),
     totalTokens: (tokens || []).reduce((total, count) => total + count, 0),
-    byProvider: Object.fromEntries(costs.map((costUsd, index) => [["codex", "opencode", "hermes", "antigravity"][index], { costUsd, totalTokens: tokens?.[index] || 0 }])),
+    byProvider: Object.fromEntries(costs.map((costUsd, index) => [providers[index], { costUsd, totalTokens: tokens?.[index] || 0 }])),
   }));
   const chart = { innerHTML: "", querySelectorAll: () => [] };
   const elements = new Map<string, { innerHTML?: string; textContent?: string }>();
-  const usage = { from: days[0].date, to: days.at(-1)!.date, daily: buckets, providers: ["codex", "opencode", "hermes", "antigravity"] };
-  runInNewContext(`${renderer}\nrenderUsage(usage);`, {
+  const usage = { from: days[0].date, to: days.at(-1)!.date, daily: buckets, providers };
+  runInNewContext(`${presentation}\n${renderer}\nrenderUsage(usage);`, {
     usage, state: { chartScrollLeft: 0, hostSelections: new Map() },
     document: { querySelector: () => null, querySelectorAll: () => [] },
     $: (selector: string) => {
@@ -36,6 +37,17 @@ function renderChart(days: Array<{ date: string; costs: number[]; tokens?: numbe
   });
   return chart.innerHTML;
 }
+
+test("dynamic sources receive fallback labels and consistent colored bars and tooltip dots", () => {
+  for (const dates of [["2026-10-04"], ["2026-10-04", "2026-10-05"]]) {
+    const html = renderChart(dates.map((date) => ({ date, costs: [2, 3] })), "day", ["new-tool", "another-agent"]);
+    assert.match(html, /New Tool/);
+    assert.match(html, /Another Agent/);
+    const colors = [...html.matchAll(/class="chart-segment ([a-z]+)"/g)].map((match) => match[1]);
+    assert.ok(new Set(colors).size > 1);
+    for (const color of colors) assert.ok(html.includes(`tooltip-harness-dot ${color}`));
+  }
+});
 
 function stackGeometry(html: string): Array<{ height: number; segments: Array<{ height: number }> }> {
   return [...html.matchAll(/<div class="chart-stack" style="([^"]*)">(.*?)<\/button>/g)].map((match) => ({

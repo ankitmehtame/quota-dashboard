@@ -7,6 +7,7 @@ const app = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const helpers = app.slice(app.indexOf("function recordTokens("), app.indexOf("function emptyUsageDay("));
 const todaySpend = app.slice(app.indexOf("function todaySpend("), app.indexOf("function renderSpendMetrics("));
 const renderer = app.slice(app.indexOf("function renderTopModels("), app.indexOf("function renderUsage("));
+const presentation = app.slice(app.indexOf("function usageSourceName("), app.indexOf("const HOT_USAGE_POLL_INTERVAL_MS"));
 const record = (date: string, model: string, costUsd: number, hostId = "one", provider = "codex") => ({ date, model, costUsd, hostId, provider, inputTokens: 10, cachedInputTokens: 0, cacheCreationTokens: 0, outputTokens: 0, reasoningTokens: 0 });
 type Host = { hostId: string; status: string; usable: boolean; complete?: boolean };
 
@@ -23,7 +24,7 @@ function dashboard(records = [record("2026-10-08", "Yesterday", 20), record("202
     },
     usageSourceNames: { codex: "Codex" }, escapeHtml: (value: string) => value.replace(/</g, "&lt;"), money: (value: number) => `$${value.toFixed(2)}`,
   };
-  const render = () => runInNewContext(`${helpers}\n${todaySpend}\n${renderer}\n{ const { hosts, usableHosts, selectedHostIds } = reconcileHostSelections(usage); renderTopModels(usage, hosts, usableHosts, filterUsageByHosts(usage, selectedHostIds), selectedHostIds); }`, context);
+  const render = () => runInNewContext(`{ ${presentation}\n${helpers}\n${todaySpend}\n${renderer}\nconst { hosts, usableHosts, selectedHostIds } = reconcileHostSelections(usage); renderTopModels(usage, hosts, usableHosts, filterUsageByHosts(usage, selectedHostIds), selectedHostIds); }`, context);
   render();
   return { state, buttons, render, list: () => elements.get("#models-list")!.innerHTML, picker: () => elements.get("#models-range-picker")!, status: () => elements.get("#models-status")! };
 }
@@ -67,6 +68,17 @@ test("today models respect host and enabled-source filters and include zero-cost
   assert.match(view.list(), /Included/);
   assert.match(view.list(), /\$0\.00/);
   assert.doesNotMatch(view.list(), /Other host|Disabled source|Older/);
+});
+
+test("dynamic-only model selection keeps shared rows and title-cases unknown tools", () => {
+  const view = dashboard([
+    record("2026-10-09", "Dynamic model", 2, "one", "new-tool"),
+    record("2026-10-09", "Mixed model", 1, "one", "shared"),
+    record("2026-10-09", "Disabled model", 3, "one", "codex"),
+  ], [{ hostId: "one", status: "ok", usable: true }], ["one"], ["new-tool"]);
+  assert.match(view.list(), /New Tool/);
+  assert.match(view.list(), /Mixed model/);
+  assert.doesNotMatch(view.list(), /Disabled model/);
 });
 
 test("today models distinguish healthy zero, unavailable data, and explicit deselection", () => {

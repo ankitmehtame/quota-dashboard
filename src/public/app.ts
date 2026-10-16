@@ -12,6 +12,7 @@ type UsageHost = { hostId: string; generatedAt?: string | null; category?: strin
 type Usage = { totalCostUsd: number; totalTokens?: number; from?: string; to?: string; providers?: string[]; daily?: UsageDay[]; byModel?: UsageModel[]; byProvider?: Array<{ provider: string; costUsd: number; totalTokens: number }>; records?: UsageRecord[]; error?: string | null; hosts?: UsageHost[]; mqtt?: { configured: boolean; connection: string } };
 type Dashboard = { version: string; providerOrder: string[]; providers: Record<string, Provider>; quotas: Record<string, { windows?: QuotaWindow[]; creditBalance?: { includedUsd: number; purchasedUsd: number | null }; planType?: string; subscriptionActiveUntil?: string | null; resetCredits?: Array<{ id: string; title: string; description?: string | null; expiresAt?: string | null }>; fetchedAt?: string; error?: string | null; errorKind?: string; cooldownUntil?: number; stale?: boolean; cached?: boolean }>; usage: Usage; serverNow: string; cache?: { fetchedAt?: string } };
 type UsageResponse = { version: string; apiVersion: number; serverNow: string; timezone: string; from: string; to: string; usage: Usage };
+type ProvidersResponse = { providerOrder: string[]; providers: Record<string, Provider>; usageSources: Record<string, UsageSourceConfig> };
 type AppState = { days: number; range: string; modelsRange: "today" | "selected"; representation: ChartRepresentation; dashboard: Dashboard | null; hostSelections: Map<string, boolean>; chartScrollLeft: number; serverClock?: { time: number; monotonic: number } };
 const timeFormatStorageKey = "quota-dashboard.time-format";
 const storedTimeFormat = localStorage.getItem(timeFormatStorageKey);
@@ -20,9 +21,21 @@ const state: AppState & { hour12: boolean } = { days: 1, range: "today", modelsR
 const $ = (selector: string): any => document.querySelector(selector);
 const element = (target: EventTarget | null): HTMLElement => target as HTMLElement;
 const escapeHtml = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] || character);
+function usageSourceName(id: string): string {
+  return (Object.hasOwn(usageSourceNames, id) ? usageSourceNames[id] : "") || id.split(/[-_.~\s]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ") || id;
+}
+function usageSourceColor(id: string): string {
+  if (Object.hasOwn(usageSourceColors, id)) return usageSourceColors[id];
+  // FNV-1a keeps unknown IDs stable without depending on source list order.
+  let hash = 2166136261;
+  for (let index = 0; index < id.length; index++) hash = Math.imul(hash ^ id.charCodeAt(index), 16777619);
+  return usageColorPalette[(hash >>> 0) % usageColorPalette.length];
+}
 let providerOrder = ["codex", "openrouter", "opencode-go", "ollama", "claude"];
-const usageSourceOrder = ["codex", "opencode", "hermes", "antigravity"];
-const usageSourceNames: Record<string, string> = { codex: "Codex", opencode: "OpenCode", hermes: "Hermes", antigravity: "Antigravity" };
+const usageSourceNames: Record<string, string> = { codex: "Codex", opencode: "OpenCode", hermes: "Hermes", antigravity: "Antigravity", claude: "Claude", shared: "Shared" };
+const usageSourceColors: Record<string, string> = { codex: "mint", opencode: "violet", hermes: "orange", antigravity: "blue", claude: "neutral", shared: "neutral" };
+const usageColorPalette = ["mint", "violet", "orange", "blue", "neutral"] as const;
+type UsageSourceConfig = { enabled: boolean };
 const HOT_USAGE_POLL_INTERVAL_MS = 5_000;
 const HOT_USAGE_RETRY_GRACE_PERIOD_MS = 15_000;
 const HOT_USAGE_POLL_TIMEOUT_MS = 2 * 60 * 1000;
@@ -437,7 +450,7 @@ function hostHealthy(host: UsageHost): boolean {
 function enabledUsageProviders(usage: Usage): Set<string> | null {
   if (!usage.providers) return null;
   const providers = new Set(usage.providers);
-  if (providers.has("opencode") || providers.has("hermes") || providers.has("antigravity")) providers.add("shared");
+  if (providers.size > 0) providers.add("shared");
   return providers;
 }
 
@@ -639,12 +652,12 @@ function renderTopModels(usage: Usage, hosts: UsageHost[], usableHosts: UsageHos
   const status = $("#models-status");
   status.hidden = !today?.partial;
   status.textContent = today?.partial ? "Today's usage is incomplete. Showing available models." : "";
-  const sourceNames: Record<string, string> = { ...usageSourceNames, shared: "Shared" };
+  const sourceNames = usageSourceName;
   const noHostsSelected = usableHosts.length > 0 && selectedHostIds.size === 0;
   let emptyMessage = "No model breakdown available.";
   if (noHostsSelected) emptyMessage = "No hosts selected.";
   else if (today) emptyMessage = !today.known ? "Today's usage is unavailable." : today.partial ? "No model breakdown available for today's incomplete usage." : "No model usage today.";
-  $("#models-list").innerHTML = models?.length ? models.map((model, index) => `<div class="model-row"><span class="model-rank">${String(index + 1).padStart(2, "0")}</span><span class="model-name"><span class="model-name-text" title="${escapeHtml(model.model)}">${escapeHtml(model.model)}</span>${model.provider ? `<small class="model-provider">${escapeHtml(sourceNames[model.provider] || model.provider)}</small>` : ""}</span><span class="model-value">${money(model.costUsd)}</span></div>`).join("") : `<div class="quota-empty">${escapeHtml(emptyMessage)}</div>`;
+  $("#models-list").innerHTML = models?.length ? models.map((model, index) => `<div class="model-row"><span class="model-rank">${String(index + 1).padStart(2, "0")}</span><span class="model-name"><span class="model-name-text" title="${escapeHtml(model.model)}">${escapeHtml(model.model)}</span>${model.provider ? `<small class="model-provider">${escapeHtml(sourceNames(model.provider))}</small>` : ""}</span><span class="model-value">${money(model.costUsd)}</span></div>`).join("") : `<div class="quota-empty">${escapeHtml(emptyMessage)}</div>`;
 }
 
 function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve"): void {
@@ -659,10 +672,10 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
   renderSpendMetrics(usage, hosts, usableHosts, selectedUsage, selectedHostIds);
   updateRepresentationControls();
   $("#axis-start").textContent = selectedUsage.from || "—";
-  const sourceNames: Record<string, string> = { ...usageSourceNames, shared: "Shared" };
-  const sourceColors: Record<string, string> = { codex: "mint", opencode: "violet", hermes: "orange", antigravity: "blue", shared: "neutral" };
+  const sourceNames = usageSourceName;
+  const sourceColors = usageSourceColor;
   const enabledSources = new Set(usage.providers || []);
-  $(".chart-legend").innerHTML = [...enabledSources].map((provider) => `<span class="legend-key ${sourceColors[provider] || "mint"}"></span> ${escapeHtml(sourceNames[provider] || provider)}`).join("") || "No local usage sources enabled";
+  $(".chart-legend").innerHTML = [...enabledSources].map((provider) => `<span class="legend-key ${sourceColors(provider)}"></span> ${escapeHtml(sourceNames(provider))}`).join("") || "No local usage sources enabled";
   $("#usage-hosts").innerHTML = hosts.map((host, index) => {
     const usable = hostUsable(usage, host);
     const hasRecords = hostHasRecords(usage, host);
@@ -692,15 +705,15 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
   $("#axis-current-label").innerHTML = `<i></i> ${axisCurrentLabel}`;
   const hasUsage = Boolean(selectedUsage.records?.length || selectedUsage.daily?.length);
   const buckets = hasUsage ? usageBuckets(selectedUsage, representation) : [];
-  const providers = [...enabledSources, ...(enabledSources.has("opencode") || enabledSources.has("hermes") || enabledSources.has("antigravity") ? ["shared"] : [])];
+  const providers = [...new Set([...enabledSources, ...(enabledSources.size > 0 ? ["shared"] : [])])];
   const colors = sourceColors;
   const max = Math.max(...buckets.map((bucket) => bucket.costUsd), 0);
   const usageTooltip = (bucket: UsageBucket, hoveredProvider: string, segments: Array<{ provider: string; costUsd: number; totalTokens: number }>): string => {
     const sortedSegments = [...segments].sort((a, b) => b.costUsd - a.costUsd);
-    const harnesses = sortedSegments.map((segment) => `<span class="harness-row ${segment.provider === hoveredProvider ? "hovered" : ""}"><i class="tooltip-harness-dot ${colors[segment.provider] || "mint"}"></i><span class="harness-name">${escapeHtml(sourceNames[segment.provider] || segment.provider)}</span><span class="harness-detail"> · ${money(segment.costUsd)} · ${formatTokens(segment.totalTokens)} tokens</span></span>`).join("");
+    const harnesses = sortedSegments.map((segment) => `<span class="harness-row ${segment.provider === hoveredProvider ? "hovered" : ""}"><i class="tooltip-harness-dot ${colors(segment.provider)}"></i><span class="harness-name">${escapeHtml(sourceNames(segment.provider))}</span><span class="harness-detail"> · ${money(segment.costUsd)} · ${formatTokens(segment.totalTokens)} tokens</span></span>`).join("");
     return `<span class="chart-tooltip"><strong>${money(bucket.costUsd)} total · ${formatTokens(bucket.totalTokens)} tokens</strong><span>${escapeHtml(usageBucketLabel(bucket, representation))}</span><div class="tooltip-separator"></div>${harnesses}</span>`;
   };
-  const renderSegment = (bucket: UsageBucket, segment: { provider: string; costUsd: number; totalTokens: number }, segments: Array<{ provider: string; costUsd: number; totalTokens: number }>, height: number) => { const color = colors[segment.provider] || "mint"; return `<div class="chart-segment ${color}" style="flex:${height} 1 0%">${usageTooltip(bucket, segment.provider, segments)}</div>`; };
+  const renderSegment = (bucket: UsageBucket, segment: { provider: string; costUsd: number; totalTokens: number }, segments: Array<{ provider: string; costUsd: number; totalTokens: number }>, height: number) => { const color = colors(segment.provider); return `<div class="chart-segment ${color}" style="flex:${height} 1 0%">${usageTooltip(bucket, segment.provider, segments)}</div>`; };
   const todayOnly = selectedUsage.from === selectedUsage.to;
   const chartScroll = document.querySelector<HTMLElement>(".chart-scroll");
   chart.innerHTML = buckets.length ? buckets.map((bucket, bucketIndex) => {
@@ -709,7 +722,7 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
     const displayedTotal = fallback.reduce((total, segment) => total + segment.costUsd, 0);
     const label = usageBucketLabel(bucket, representation);
     if (todayOnly) {
-      return (fallback.length ? fallback : [{ provider: "other", costUsd: 0, totalTokens: 0 }]).map((segment) => `<button class="chart-column today-harness" type="button" data-bucket-index="${bucketIndex}" aria-label="${escapeHtml(label)} ${escapeHtml(segment.provider)}: ${money(segment.costUsd)}"><div class="chart-stack">${segment.costUsd > 0 || segment.totalTokens > 0 ? `<div class="chart-segment ${colors[segment.provider] || "mint"}" style="height:${max ? Math.max(2, (segment.costUsd / max) * 100) : 2}%;bottom:0">${usageTooltip(bucket, segment.provider, fallback)}</div>` : ""}</div></button>`).join("");
+      return (fallback.length ? fallback : [{ provider: "other", costUsd: 0, totalTokens: 0 }]).map((segment) => `<button class="chart-column today-harness" type="button" data-bucket-index="${bucketIndex}" aria-label="${escapeHtml(label)} ${escapeHtml(sourceNames(segment.provider))}: ${money(segment.costUsd)}"><div class="chart-stack">${segment.costUsd > 0 || segment.totalTokens > 0 ? `<div class="chart-segment ${colors(segment.provider)}" style="height:${max ? Math.max(2, (segment.costUsd / max) * 100) : 2}%;bottom:0">${usageTooltip(bucket, segment.provider, fallback)}</div>` : ""}</div></button>`).join("");
     }
     const isCurrentBucket = bucket.to === selectedUsage.to;
     // Size every stack by total spend. Keep small or token-only sources visible
@@ -745,7 +758,7 @@ function openUsageDetails(bucket: UsageBucket | undefined, representation: Concr
   const label = usageBucketLabel(bucket, representation);
   $("#day-details-title").textContent = representation === "day" ? label : `${representation === "week" ? "Week" : "Month"} · ${label}`;
   $("#day-details-summary").innerHTML = `<span><strong>${money(bucket.costUsd)}</strong> total</span><span><strong>${formatTokens(bucket.totalTokens)}</strong> tokens</span>`;
-  const modelDetails = (bucket.byModel || []).map((group) => { const sortedModels = [...group.models].sort((a, b) => b.costUsd - a.costUsd); const providerName = usageSourceNames[group.provider] || group.provider; return `<section class="detail-group"><h3>${escapeHtml(providerName)}</h3>${sortedModels.map((model) => `<div class="detail-model"><span>${escapeHtml(model.model)}</span><span>${money(model.costUsd)} · ${formatTokens(model.totalTokens)} tokens</span></div>`).join("")}</section>`; }).join("");
+  const modelDetails = (bucket.byModel || []).map((group) => { const sortedModels = [...group.models].sort((a, b) => b.costUsd - a.costUsd); const providerName = usageSourceName(group.provider); return `<section class="detail-group"><h3><i class="legend-key ${usageSourceColor(group.provider)}"></i>${escapeHtml(providerName)}</h3>${sortedModels.map((model) => `<div class="detail-model"><span>${escapeHtml(model.model)}</span><span>${money(model.costUsd)} · ${formatTokens(model.totalTokens)} tokens</span></div>`).join("")}</section>`; }).join("");
   const dailyDetails = representation === "day" ? "" : `<section class="detail-group detail-days"><h3>By day</h3>${bucket.days.map((day) => `<div class="detail-model"><span>${escapeHtml(day.date)}</span><span>${money(day.costUsd)} · ${formatTokens(day.totalTokens)} tokens</span></div>`).join("")}</section>`;
   $("#day-details-content").innerHTML = modelDetails + dailyDetails || `<p class="quota-empty">No usage details available.</p>`;
   $("#day-details-dialog").showModal();
@@ -1009,15 +1022,22 @@ function renderColdUsageSettings(usage: Usage | undefined): void {
 
 async function loadSettings(): Promise<void> {
   const response = await fetch("/api/v1/providers");
-  const data = await response.json();
+  const data = await response.json() as ProvidersResponse;
   providerOrder = data.providerOrder;
   const quotaSettings = providerOrder.map((id, index) => { const provider = data.providers[id]; return `<div class="setting-row" data-provider-row="${id}"><div class="setting-copy"><div class="provider-name">${provider.name}</div><div class="provider-sub">${provider.description}${provider.configured ? " · configured" : " · credentials not detected"}</div></div><div class="order-actions"><button class="order-button" type="button" data-order-direction="up" data-provider="${id}" aria-label="Move ${provider.name} up" ${index === 0 ? "disabled" : ""}>↑</button><button class="order-button" type="button" data-order-direction="down" data-provider="${id}" aria-label="Move ${provider.name} down" ${index === providerOrder.length - 1 ? "disabled" : ""}>↓</button><input class="switch" type="checkbox" data-kind="provider" data-provider="${id}" ${provider.enabled ? "checked" : ""} aria-label="Enable ${provider.name}" /></div></div>`; }).join("");
-  const usageNames: Record<string, string> = usageSourceNames;
-  const usageSettings = usageSourceOrder.map((id) => `<label class="setting-row"><div class="setting-copy"><div class="provider-name">${usageNames[id]} usage</div><div class="provider-sub">Provider group from shared ccusage output</div></div><input class="switch" type="checkbox" data-kind="usage" data-provider="${id}" ${data.usageSources?.[id]?.enabled ? "checked" : ""} aria-label="Enable ${usageNames[id]} usage" /></label>`).join("");
+  const usageNames = usageSourceName;
+  const usageIds = Object.keys(data.usageSources || {}).sort((left, right) => {
+    const knownOrder = ["codex", "opencode", "hermes", "antigravity", "claude"];
+    const leftIndex = knownOrder.indexOf(left);
+    const rightIndex = knownOrder.indexOf(right);
+    if (leftIndex >= 0 || rightIndex >= 0) return (leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex) - (rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex);
+    return left.localeCompare(right);
+  });
+  const usageSettings = usageIds.map((id) => `<label class="setting-row"><div class="setting-copy"><div class="provider-name">${escapeHtml(usageNames(id))} usage</div><div class="provider-sub">Provider group from shared ccusage output</div></div><input class="switch" type="checkbox" data-kind="usage" data-provider="${escapeHtml(id)}" ${data.usageSources?.[id]?.enabled ? "checked" : ""} aria-label="Enable ${escapeHtml(usageNames(id))} usage" /></label>`).join("");
    $("#provider-settings").innerHTML = `<p class="settings-group">DISPLAY</p><label class="setting-row"><div class="setting-copy"><div class="provider-name">12-hour clock</div><div class="provider-sub">Show times with AM and PM</div></div><input class="switch" type="checkbox" data-kind="time-format" ${state.hour12 ? "checked" : ""} aria-label="Use 12-hour clock" /></label><p class="settings-group">QUOTA PROVIDERS</p>${quotaSettings}<p class="settings-group">LOCAL USAGE SOURCES</p>${usageSettings}`;
    renderColdUsageSettings(state.dashboard?.usage);
   document.querySelectorAll<HTMLButtonElement>(".order-button").forEach((button) => button.addEventListener("click", async () => { const id = button.dataset.provider || ""; const index = providerOrder.indexOf(id); const nextIndex = index + (button.dataset.orderDirection === "up" ? -1 : 1); if (index < 0 || nextIndex < 0 || nextIndex >= providerOrder.length) return; const nextOrder = [...providerOrder]; [nextOrder[index], nextOrder[nextIndex]] = [nextOrder[nextIndex], nextOrder[index]]; document.querySelectorAll<HTMLButtonElement>(".order-button").forEach((item) => { item.disabled = true; }); try { const save = await fetch("/api/v1/providers/order", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ order: nextOrder }) }); if (!save.ok) throw new Error("Provider order could not be saved"); providerOrder = nextOrder; if (state.dashboard) renderQuotas(state.dashboard); await loadSettings(); showToast("Provider order saved"); } catch (error) { showToast(error instanceof Error ? error.message : "Provider order could not be saved"); await loadSettings(); } }));
-  document.querySelectorAll<HTMLInputElement>(".switch").forEach((input) => input.addEventListener("change", async (event) => { const target = event.target as HTMLInputElement; const id = target.dataset.provider || ""; const kind = target.dataset.kind || ""; if (kind === "time-format") { state.hour12 = target.checked; localStorage.setItem(timeFormatStorageKey, state.hour12 ? "12" : "24"); renderClock(); if (state.dashboard) { renderQuotas(state.dashboard); renderStatus(state.dashboard); } showToast(`${state.hour12 ? "12-hour" : "24-hour"} clock enabled`); return; } const path = kind === "usage" ? `/api/v1/usage-sources/${id}/enabled` : `/api/v1/providers/${id}/enabled`; await fetch(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: target.checked }) }); showToast(`${kind === "usage" ? usageNames[id] + " usage" : data.providers[id].name} ${target.checked ? "enabled" : "disabled"}`); await loadDashboard(true); }));
+  document.querySelectorAll<HTMLInputElement>(".switch").forEach((input) => input.addEventListener("change", async (event) => { const target = event.target as HTMLInputElement; const id = target.dataset.provider || ""; const kind = target.dataset.kind || ""; if (kind === "time-format") { state.hour12 = target.checked; localStorage.setItem(timeFormatStorageKey, state.hour12 ? "12" : "24"); renderClock(); if (state.dashboard) { renderQuotas(state.dashboard); renderStatus(state.dashboard); } showToast(`${state.hour12 ? "12-hour" : "24-hour"} clock enabled`); return; } const path = kind === "usage" ? `/api/v1/usage-sources/${encodeURIComponent(id)}/enabled` : `/api/v1/providers/${encodeURIComponent(id)}/enabled`; await fetch(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: target.checked }) }); showToast(`${kind === "usage" ? usageNames(id) + " usage" : data.providers[id].name} ${target.checked ? "enabled" : "disabled"}`); await loadDashboard(true); }));
 }
 
 function showToast(message: string): void { const toast = $("#toast"); toast.textContent = message; toast.classList.add("show"); setTimeout(() => toast.classList.remove("show"), 2200); }

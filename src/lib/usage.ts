@@ -189,7 +189,7 @@ export async function readCcusageUsage({ from, to, timeZone }: { from: string; t
 
 function selectedProviders(enabledProviders: string[]): Set<string> {
   const selected = new Set(enabledProviders);
-  if (selected.has("opencode") || selected.has("hermes") || selected.has("antigravity")) selected.add("shared");
+  if (selected.size > 0) selected.add("shared");
   return selected;
 }
 
