@@ -7,18 +7,20 @@ import { runInNewContext } from "node:vm";
 const app = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const renderer = app.slice(app.indexOf("function renderUsage("), app.indexOf("function openUsageDetails("));
 const presentation = app.slice(app.indexOf("const usageSourceNames ="), app.indexOf("const HOT_USAGE_POLL_INTERVAL_MS"));
+const pricing = app.slice(app.indexOf("function spend("), app.indexOf("function modelSpend("));
 
-function renderChart(days: Array<{ date: string; costs: number[]; tokens?: number[] }>, representation = "day", providers = ["codex", "opencode", "hermes", "antigravity"]): string {
-  const buckets = days.map(({ date, costs, tokens }) => ({
+function renderChart(days: Array<{ date: string; costs: number[]; tokens?: number[]; missingPricing?: boolean[] }>, representation = "day", providers = ["codex", "opencode", "hermes", "antigravity"]): string {
+  const buckets = days.map(({ date, costs, tokens, missingPricing }) => ({
     date, from: date, to: date, days: [],
+    missingPricing: missingPricing?.some(Boolean) || false,
     costUsd: costs.reduce((total, cost) => total + cost, 0),
     totalTokens: (tokens || []).reduce((total, count) => total + count, 0),
-    byProvider: Object.fromEntries(costs.map((costUsd, index) => [providers[index], { costUsd, totalTokens: tokens?.[index] || 0 }])),
+    byProvider: Object.fromEntries(costs.map((costUsd, index) => [providers[index], { costUsd, totalTokens: tokens?.[index] || 0, missingPricing: missingPricing?.[index] || false }])),
   }));
   const chart = { innerHTML: "", querySelectorAll: () => [] };
   const elements = new Map<string, { innerHTML?: string; textContent?: string }>();
   const usage = { from: days[0].date, to: days.at(-1)!.date, daily: buckets, providers };
-  runInNewContext(`${presentation}\n${renderer}\nrenderUsage(usage);`, {
+  runInNewContext(`${presentation}\n${pricing}\n${renderer}\nrenderUsage(usage);`, {
     usage, state: { chartScrollLeft: 0, hostSelections: new Map() },
     document: { querySelector: () => null, querySelectorAll: () => [] },
     $: (selector: string) => {
@@ -57,6 +59,15 @@ function stackGeometry(html: string): Array<{ height: number; segments: Array<{ 
 }
 
 for (const representation of ["day", "week", "month"]) {
+  test(`${representation} chart tooltips and accessible labels mark unpriced usage`, () => {
+    for (const dates of [["2026-10-04"], ["2026-10-04", "2026-10-05"]]) {
+      const html = renderChart(dates.map((date) => ({ date, costs: [1.75, 0], tokens: [10, 10], missingPricing: [false, true] })), representation);
+      assert.match(html, /\$1\.75\+ total/);
+      assert.match(html, /aria-label="[^"]*\+, Pricing unavailable/);
+      assert.match(html, /\$0\.00\+.*Pricing unavailable/);
+    }
+  });
+
   test(`${representation} bars scale by spend even with tiny and token-only sources`, () => {
     const html = renderChart([
       { date: "2026-10-04", costs: [36.15, 0.01, 0], tokens: [100, 1, 10] },

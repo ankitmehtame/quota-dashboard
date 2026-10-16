@@ -8,7 +8,7 @@ import { mergeUsageRecords, parseCcusage, readUsageSources, summarizeUsage } fro
 
 test("normalizes ccusage model breakdowns", () => {
   const records = parseCcusage({ daily: [{ date: "2026-08-12", modelBreakdowns: [{ modelName: "gpt-5", inputTokens: 10, cacheReadTokens: 4, outputTokens: 6, cost: 0.25 }] }] });
-  assert.deepEqual(records, [{ date: "2026-08-12", provider: "unknown", model: "gpt-5", inputTokens: 10, cachedInputTokens: 4, cacheCreationTokens: 0, outputTokens: 6, reasoningTokens: 0, costUsd: 0.25 }]);
+  assert.deepEqual(records, [{ date: "2026-08-12", provider: "unknown", model: "gpt-5", inputTokens: 10, cachedInputTokens: 4, cacheCreationTokens: 0, outputTokens: 6, reasoningTokens: 0, costUsd: 0.25, missingPricing: false }]);
 });
 
 test("normalizes Hermes and OpenCode records using the same parser", () => {
@@ -21,7 +21,7 @@ test("normalizes Hermes and OpenCode records using the same parser", () => {
 
 test("normalizes Antigravity records from ccusage per-agent output", () => {
   const records = parseCcusage({ daily: [{ period: "2026-09-04", agent: "all", agents: [{ agent: "antigravity", modelBreakdowns: [{ modelName: "gemini-3-pro", inputTokens: 8, cacheReadTokens: 3, outputTokens: 5, reasoningTokens: 2, cost: 0.4 }] }] }] });
-  assert.deepEqual(records, [{ date: "2026-09-04", provider: "antigravity", model: "gemini-3-pro", inputTokens: 8, cachedInputTokens: 3, cacheCreationTokens: 0, outputTokens: 5, reasoningTokens: 2, costUsd: 0.4 }]);
+  assert.deepEqual(records, [{ date: "2026-09-04", provider: "antigravity", model: "gemini-3-pro", inputTokens: 8, cachedInputTokens: 3, cacheCreationTokens: 0, outputTokens: 5, reasoningTokens: 2, costUsd: 0.4, missingPricing: false }]);
 });
 
 test("uses ccusage metadata agents when rows are aggregated", () => {
@@ -57,11 +57,12 @@ test("combines local and remote ccusage while enforcing range and timezone", () 
   assert.equal(merged.hosts[1].included, false);
   assert.equal(merged.hosts[1].usable, false);
   assert.match(merged.hosts[1].error || "", /Timezone UTC/);
-  assert.deepEqual(summarizeUsage(merged.records.filter((record) => record.hostId === "macbook")).byModel, [{ provider: "opencode", model: "remote-model", costUsd: 2, totalTokens: 7 }]);
+  assert.deepEqual(summarizeUsage(merged.records.filter((record) => record.hostId === "macbook")).byModel, [{ provider: "opencode", model: "remote-model", costUsd: 2, totalTokens: 7, missingPricing: false }]);
   assert.deepEqual(summarizeUsage(merged.records), {
-    daily: [{ date: "2026-09-13", costUsd: 3, totalTokens: 17, byProvider: { codex: { costUsd: 1, totalTokens: 10 }, opencode: { costUsd: 2, totalTokens: 7 } }, byModel: [{ provider: "codex", models: [{ model: "local-model", costUsd: 1, totalTokens: 10 }] }, { provider: "opencode", models: [{ model: "remote-model", costUsd: 2, totalTokens: 7 }] }] }],
-    byModel: [{ provider: "opencode", model: "remote-model", costUsd: 2, totalTokens: 7 }, { provider: "codex", model: "local-model", costUsd: 1, totalTokens: 10 }],
-    byProvider: [{ provider: "opencode", costUsd: 2, totalTokens: 7 }, { provider: "codex", costUsd: 1, totalTokens: 10 }],
+    missingPricing: false,
+    daily: [{ date: "2026-09-13", costUsd: 3, totalTokens: 17, missingPricing: false, byProvider: { codex: { costUsd: 1, totalTokens: 10, missingPricing: false }, opencode: { costUsd: 2, totalTokens: 7, missingPricing: false } }, byModel: [{ provider: "codex", models: [{ model: "local-model", costUsd: 1, totalTokens: 10, missingPricing: false }] }, { provider: "opencode", models: [{ model: "remote-model", costUsd: 2, totalTokens: 7, missingPricing: false }] }] }],
+    byModel: [{ provider: "opencode", model: "remote-model", costUsd: 2, totalTokens: 7, missingPricing: false }, { provider: "codex", model: "local-model", costUsd: 1, totalTokens: 10, missingPricing: false }],
+    byProvider: [{ provider: "opencode", costUsd: 2, totalTokens: 7, missingPricing: false }, { provider: "codex", costUsd: 1, totalTokens: 10, missingPricing: false }],
     totalCostUsd: 3,
     totalTokens: 17,
   });

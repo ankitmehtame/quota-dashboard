@@ -8,6 +8,7 @@ const helpers = app.slice(app.indexOf("function recordTokens("), app.indexOf("fu
 const todaySpend = app.slice(app.indexOf("function todaySpend("), app.indexOf("function renderSpendMetrics("));
 const renderer = app.slice(app.indexOf("function renderTopModels("), app.indexOf("function renderUsage("));
 const presentation = app.slice(app.indexOf("const usageSourceNames ="), app.indexOf("const HOT_USAGE_POLL_INTERVAL_MS"));
+const pricing = app.slice(app.indexOf("function spend("), app.indexOf("function formatTokens("));
 const record = (date: string, model: string, costUsd: number, hostId = "one", provider = "codex") => ({ date, model, costUsd, hostId, provider, inputTokens: 10, cachedInputTokens: 0, cacheCreationTokens: 0, outputTokens: 0, reasoningTokens: 0 });
 type Host = { hostId: string; status: string; usable: boolean; complete?: boolean };
 
@@ -24,7 +25,7 @@ function dashboard(records = [record("2026-10-08", "Yesterday", 20), record("202
     },
     usageSourceNames: { codex: "Codex" }, escapeHtml: (value: string) => value.replace(/</g, "&lt;"), money: (value: number) => `$${value.toFixed(2)}`,
   };
-  const render = () => runInNewContext(`{ ${presentation}\n${helpers}\n${todaySpend}\n${renderer}\nconst { hosts, usableHosts, selectedHostIds } = reconcileHostSelections(usage); renderTopModels(usage, hosts, usableHosts, filterUsageByHosts(usage, selectedHostIds), selectedHostIds); }`, context);
+  const render = () => runInNewContext(`{ ${presentation}\n${pricing}\n${helpers}\n${todaySpend}\n${renderer}\nconst { hosts, usableHosts, selectedHostIds } = reconcileHostSelections(usage); renderTopModels(usage, hosts, usableHosts, filterUsageByHosts(usage, selectedHostIds), selectedHostIds); }`, context);
   render();
   return { state, buttons, render, list: () => elements.get("#models-list")!.innerHTML, picker: () => elements.get("#models-range-picker")!, status: () => elements.get("#models-status")! };
 }

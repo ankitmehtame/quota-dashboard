@@ -70,6 +70,19 @@ test("counts an empty raw result as a stored date", async () => {
   });
 });
 
+test("persists missing pricing flags and reported subtotals in normalized records", async () => {
+  await withStore(async (store) => {
+    await store.ingest(container({ totals: { unpricedModels: ["unpriced"] }, daily: [
+      row("codex", 0, "unpriced"), row("codex", 0, "free"),
+      { date: "2026-09-18", agent: "opencode", modelBreakdowns: [{ modelName: "partial", cost: 1.75, missingPricing: true }] },
+    ] }));
+    const records = await store.readAllRecords("2026-09-18", "2026-09-18");
+    assert.deepEqual(records.map((record) => [record.model, record.costUsd, record.missingPricing]), [
+      ["unpriced", 0, true], ["free", 0, false], ["partial", 1.75, true],
+    ]);
+  });
+});
+
 test("lists hosts and reads normalized records across the configured range", async () => {
   await withStore(async (store) => {
     await store.ingest(container({ daily: [row("codex", 1)] }, { hostId: "my-laptop", date: "2026-09-18" }));
