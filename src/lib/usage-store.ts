@@ -262,6 +262,9 @@ export class FilesystemUsageStore {
   readonly dataRoot: string;
   private readonly now: () => Date;
   private readonly log: (message: string) => void;
+  private toolDiscoveryRevision = 0;
+  private toolIdsCache: { ids: string[]; expiresAt: number } | null = null;
+  private toolDiscovery: { revision: number; promise: Promise<string[]> } | null = null;
 
   constructor(options: UsageStoreOptions) {
     if (!options || typeof options.dataRoot !== "string" || options.dataRoot.trim() === "") throw new Error("dataRoot is required");
@@ -320,6 +323,8 @@ export class FilesystemUsageStore {
         }
       }
       for (const file of tempFiles) await renameTempFile(file.temp, file.target);
+      this.toolDiscoveryRevision++;
+      this.toolIdsCache = null;
       return { written: true, hostId, date: container.date, toolIds, ...(archivedRawFile ? { archivedRawFile } : {}) };
     } finally {
       for (const file of tempFiles) await rm(file.temp, { force: true }).catch(() => undefined);
@@ -444,6 +449,21 @@ export class FilesystemUsageStore {
 
   /** Discover tools across all stored hosts and dates, independent of the UI range. */
   async listToolIds(): Promise<string[]> {
+    if (this.toolIdsCache && this.now().getTime() < this.toolIdsCache.expiresAt) return [...this.toolIdsCache.ids];
+    const revision = this.toolDiscoveryRevision;
+    if (!this.toolDiscovery || this.toolDiscovery.revision !== revision) {
+      const promise = this.discoverToolIds().then((ids) => {
+        if (this.toolDiscoveryRevision === revision) this.toolIdsCache = { ids, expiresAt: this.now().getTime() + 30_000 };
+        return ids;
+      });
+      this.toolDiscovery = { revision, promise };
+    }
+    const discovery = this.toolDiscovery;
+    try { return [...await discovery.promise]; }
+    finally { if (this.toolDiscovery === discovery) this.toolDiscovery = null; }
+  }
+
+  private async discoverToolIds(): Promise<string[]> {
     const ids = new Set<string>();
     const directories = async (path: string, pattern: RegExp): Promise<string[]> => {
       try {
@@ -462,7 +482,14 @@ export class FilesystemUsageStore {
             const date = `${year}-${month}-${day}`;
             if (!isCalendarDate(date)) continue;
             const directory = join(hostRoot, year, month, day);
-            for (const file of await readdir(directory, { withFileTypes: true })) {
+            let files;
+            try {
+              files = await readdir(directory, { withFileTypes: true });
+            } catch (error) {
+              if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") continue;
+              throw error;
+            }
+            for (const file of files) {
               if (!file.isFile() || !file.name.endsWith(".json")) continue;
               const id = file.name.slice(0, -5);
               if (isUsageSourceId(id)) ids.add(id);

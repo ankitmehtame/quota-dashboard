@@ -7,7 +7,7 @@ const app = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const helpers = app.slice(app.indexOf("function recordTokens("), app.indexOf("function emptyUsageDay("));
 const todaySpend = app.slice(app.indexOf("function todaySpend("), app.indexOf("function renderSpendMetrics("));
 const renderer = app.slice(app.indexOf("function renderTopModels("), app.indexOf("function renderUsage("));
-const presentation = app.slice(app.indexOf("function usageSourceName("), app.indexOf("const HOT_USAGE_POLL_INTERVAL_MS"));
+const presentation = app.slice(app.indexOf("const usageSourceNames ="), app.indexOf("const HOT_USAGE_POLL_INTERVAL_MS"));
 const record = (date: string, model: string, costUsd: number, hostId = "one", provider = "codex") => ({ date, model, costUsd, hostId, provider, inputTokens: 10, cachedInputTokens: 0, cacheCreationTokens: 0, outputTokens: 0, reasoningTokens: 0 });
 type Host = { hostId: string; status: string; usable: boolean; complete?: boolean };
 

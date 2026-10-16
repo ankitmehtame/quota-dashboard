@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import fs from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 
 import { FilesystemUsageStore, normalizeUsageToolId, type RawUsageContainer } from "./usage-store.js";
 
@@ -75,6 +77,78 @@ test("lists hosts and reads normalized records across the configured range", asy
     assert.deepEqual(await store.listHostIds(), ["my-laptop", "remote-box"]);
     const records = await store.readAllRecords("2026-09-17", "2026-09-18");
     assert.deepEqual(records.map((record) => [record.hostId, record.provider]), [["my-laptop", "codex"], ["remote-box", "opencode"]]);
+  });
+});
+
+test("tool discovery caches scans, coalesces requests, expires, and invalidates after ingest", async (t) => {
+  await withStore(async (_store, root) => {
+    let now = Date.parse("2026-09-18T12:00:00Z");
+    const store = new FilesystemUsageStore({ dataRoot: root, now: () => new Date(now) });
+    await store.ingest(container({ daily: [row("codex", 1)] }));
+    const reads = t.mock.method(fs, "readdir");
+    syncBuiltinESMExports();
+    t.after(() => { reads.mock.restore(); syncBuiltinESMExports(); });
+    const results = await Promise.all([store.listToolIds(), store.listToolIds(), store.listToolIds()]);
+    assert.deepEqual(results, [["codex"], ["codex"], ["codex"]]);
+    assert.equal(reads.mock.callCount(), 5);
+    results[0].push("not-a-tool");
+    assert.deepEqual(await store.listToolIds(), ["codex"]);
+    assert.equal(reads.mock.callCount(), 5);
+    const externalStore = new FilesystemUsageStore({ dataRoot: root });
+    await externalStore.ingest(container({ daily: [row("external-tool", 2)] }, { hostId: "other-host" }));
+    const beforeCacheHit = reads.mock.callCount();
+    assert.deepEqual(await store.listToolIds(), ["codex"]);
+    assert.equal(reads.mock.callCount(), beforeCacheHit);
+    now += 30_000;
+    assert.deepEqual(await store.listToolIds(), ["codex", "external-tool"]);
+    await store.ingest(container({ daily: [row("new-tool", 3)] }));
+    assert.deepEqual(await store.listToolIds(), ["codex", "external-tool", "new-tool"]);
+  });
+});
+
+test("tool discovery tolerates a day directory pruned after enumeration", async (t) => {
+  await withStore(async (store, root) => {
+    await store.ingest(container({ daily: [row("codex", 1)] }));
+    const month = join(root, "my-laptop", "2026", "09");
+    const original = fs.readdir;
+    const reads = t.mock.method(fs, "readdir", async (...args: Parameters<typeof fs.readdir>) => {
+      const result = await original(...args);
+      if (String(args[0]) === month) await rm(join(month, "18"), { recursive: true });
+      return result;
+    });
+    syncBuiltinESMExports();
+    t.after(() => { reads.mock.restore(); syncBuiltinESMExports(); });
+    assert.deepEqual(await store.listToolIds(), []);
+  });
+});
+
+test("an in-flight discovery cannot cache a stale snapshot after ingest", async (t) => {
+  await withStore(async (store, root) => {
+    await store.ingest(container({ daily: [row("codex", 1)] }));
+    let entered!: () => void;
+    let release!: () => void;
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const original = fs.readdir;
+    let paused = false;
+    const reads = t.mock.method(fs, "readdir", async (...args: Parameters<typeof fs.readdir>) => {
+      const result = await original(...args);
+      if (!paused && String(args[0]) === root) {
+        paused = true;
+        entered();
+        await gate;
+      }
+      return result;
+    });
+    syncBuiltinESMExports();
+    t.after(() => { reads.mock.restore(); syncBuiltinESMExports(); });
+    const pending = store.listToolIds();
+    try {
+      await started;
+      await store.ingest(container({ daily: [row("new-tool", 2)] }, { hostId: "new-host" }));
+    } finally { release(); }
+    assert.deepEqual(await pending, ["codex"]);
+    assert.deepEqual(await store.listToolIds(), ["codex", "new-tool"]);
   });
 });
 

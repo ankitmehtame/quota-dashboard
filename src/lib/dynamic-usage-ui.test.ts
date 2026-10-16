@@ -4,8 +4,8 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 
 const app = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
-const presentation = app.slice(app.indexOf("function usageSourceName("), app.indexOf("const HOT_USAGE_POLL_INTERVAL_MS"));
-const escape = app.slice(app.indexOf("const escapeHtml ="), app.indexOf("function usageSourceName("));
+const presentation = app.slice(app.indexOf("const usageSourceNames ="), app.indexOf("const HOT_USAGE_POLL_INTERVAL_MS"));
+const escape = app.slice(app.indexOf("const escapeHtml ="), app.indexOf("const usageSourceNames ="));
 
 test("known source names and colors remain curated and fallback colors are stable", () => {
   const result = runInNewContext(`${presentation}; [usageSourceName("opencode"), usageSourceColor("codex"), usageSourceColor("opencode"), usageSourceColor("hermes"), usageSourceColor("antigravity"), usageSourceName("new_tool.v2"), usageSourceColor("new-tool"), usageSourceColor("new-tool")]`);
