@@ -10,9 +10,9 @@ type UsageBucket = UsageDay & { from: string; to: string; days: UsageDay[] };
 type UsageRecord = { hostId?: string; date: string; provider: string; model: string; inputTokens: number; cachedInputTokens: number; cacheCreationTokens: number; outputTokens: number; reasoningTokens: number; costUsd: number };
 type UsageHost = { hostId: string; generatedAt?: string | null; category?: string | null; status: string; severity?: "warning" | "error" | null; error?: string | null; stale?: boolean; local?: boolean; active?: boolean; included?: boolean; complete?: boolean; missingDates?: string[]; usable?: boolean; disabledReason?: string | null };
 type Usage = { totalCostUsd: number; totalTokens?: number; from?: string; to?: string; providers?: string[]; daily?: UsageDay[]; byModel?: UsageModel[]; byProvider?: Array<{ provider: string; costUsd: number; totalTokens: number }>; records?: UsageRecord[]; error?: string | null; hosts?: UsageHost[]; mqtt?: { configured: boolean; connection: string } };
-type Dashboard = { version: string; providerOrder: string[]; providers: Record<string, Provider>; quotas: Record<string, { windows?: QuotaWindow[]; creditBalance?: { includedUsd: number; purchasedUsd: number | null }; planType?: string; subscriptionActiveUntil?: string | null; resetCredits?: Array<{ id: string; title: string; description?: string | null; expiresAt?: string | null }>; fetchedAt?: string; error?: string | null }>; usage: Usage; serverNow: string; cache?: { fetchedAt?: string } };
+type Dashboard = { version: string; providerOrder: string[]; providers: Record<string, Provider>; quotas: Record<string, { windows?: QuotaWindow[]; creditBalance?: { includedUsd: number; purchasedUsd: number | null }; planType?: string; subscriptionActiveUntil?: string | null; resetCredits?: Array<{ id: string; title: string; description?: string | null; expiresAt?: string | null }>; fetchedAt?: string; error?: string | null; errorKind?: string; cooldownUntil?: number; stale?: boolean; cached?: boolean }>; usage: Usage; serverNow: string; cache?: { fetchedAt?: string } };
 type UsageResponse = { version: string; apiVersion: number; serverNow: string; timezone: string; from: string; to: string; usage: Usage };
-type AppState = { days: number; range: string; modelsRange: "today" | "selected"; representation: ChartRepresentation; dashboard: Dashboard | null; hostSelections: Map<string, boolean>; chartScrollLeft: number };
+type AppState = { days: number; range: string; modelsRange: "today" | "selected"; representation: ChartRepresentation; dashboard: Dashboard | null; hostSelections: Map<string, boolean>; chartScrollLeft: number; serverClock?: { time: number; monotonic: number } };
 const timeFormatStorageKey = "quota-dashboard.time-format";
 const storedTimeFormat = localStorage.getItem(timeFormatStorageKey);
 const defaultHour12 = new Intl.DateTimeFormat([], { hour: "numeric" }).resolvedOptions().hour12 ?? true;
@@ -20,7 +20,7 @@ const state: AppState & { hour12: boolean } = { days: 1, range: "today", modelsR
 const $ = (selector: string): any => document.querySelector(selector);
 const element = (target: EventTarget | null): HTMLElement => target as HTMLElement;
 const escapeHtml = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] || character);
-let providerOrder = ["codex", "openrouter", "opencode-go", "ollama"];
+let providerOrder = ["codex", "openrouter", "opencode-go", "ollama", "claude"];
 const usageSourceOrder = ["codex", "opencode", "hermes", "antigravity"];
 const usageSourceNames: Record<string, string> = { codex: "Codex", opencode: "OpenCode", hermes: "Hermes", antigravity: "Antigravity" };
 const HOT_USAGE_POLL_INTERVAL_MS = 5_000;
@@ -296,11 +296,21 @@ function relativeTime(iso: string | null | undefined): string {
   return minutes < 1 ? "just now" : `${minutes}m ago`;
 }
 
-function timeUntil(iso: string | null | undefined): string {
+function sampleServerClock(iso: unknown): void {
+  const time = typeof iso === "string" && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(iso) ? Date.parse(iso) : NaN;
+  state.serverClock = Number.isFinite(time) ? { time, monotonic: performance.now() } : undefined;
+}
+
+function estimatedServerNow(): number {
+  const anchor = state.serverClock;
+  return anchor ? anchor.time + Math.max(0, performance.now() - anchor.monotonic) : Date.now();
+}
+
+function timeUntil(iso: string | null | undefined, now = estimatedServerNow()): string {
   if (!iso) return "no reset reported";
   const timestamp = Date.parse(iso);
   if (!Number.isFinite(timestamp)) return "reset time unavailable";
-  const minutes = Math.max(0, Math.round((timestamp - Date.now()) / 60_000));
+  const minutes = Math.max(0, Math.round((timestamp - now) / 60_000));
   const days = Math.floor(minutes / 1440);
   const hours = Math.floor((minutes % 1440) / 60);
   const remainder = minutes % 60;
@@ -315,8 +325,7 @@ function quotaValue(value: number | null | undefined, unit: string | null | unde
   return unit ? `${formatted} ${unit}` : formatted;
 }
 
-function quotaNowPosition(window: QuotaWindow | undefined): number | null {
-  const now = Date.now();
+function quotaNowPosition(window: QuotaWindow | undefined, now = Date.now()): number | null {
   const resetAt = window?.resetAt ? Date.parse(window.resetAt) : NaN;
   const startAt = window?.windowStart ? Date.parse(window.windowStart)
     : window?.windowSeconds ? resetAt - window.windowSeconds * 1000 : NaN;
@@ -366,6 +375,7 @@ function formatPercent(value: number): string {
 }
 
 function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][string]): string {
+  const now = estimatedServerNow();
   const windows = quota?.windows?.length ? quota.windows : [undefined];
   const status = provider.status === "disabled" ? "off" : provider.status === "error" ? "error" : provider.configured ? "connected" : "setup needed";
   const renewalDate = formatRenewalDate(quota?.subscriptionActiveUntil);
@@ -384,7 +394,7 @@ function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][st
   const content = windows.map((window, index) => {
     const percent = window?.usedPercent;
     const value = window?.balanceLabel ? `<span class="quota-balance-primary">${escapeHtml(window.balanceLabel)}</span><span class="quota-balance-secondary">${escapeHtml(window.spentLabel || "")}</span>` : escapeHtml(window?.valueLabel || "Not available");
-    const nowPosition = quotaNowPosition(window);
+    const nowPosition = quotaNowPosition(window, now);
     const nowExpected = nowPosition === null ? null : Math.floor(nowPosition * 10) / 10;
     const percentageValue = percent == null
       ? value
@@ -393,19 +403,21 @@ function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][st
       ? window?.valueLabel || ""
       : percent == null && window?.valueLabel
         ? ""
-        : window?.valueLabel || (provider.id === "codex" ? "" : provider.configured ? "No balance reported" : "Configure credentials on server");
+        : window?.valueLabel || (["codex", "claude"].includes(provider.id) ? "" : provider.configured ? "No balance reported" : "Configure credentials on server");
     const formattedLimit = window?.unit === "USD" && window.limitValue != null
       ? money(window.limitValue) : quotaValue(window?.limitValue, window?.unit);
     const limitLabel = formattedLimit === null ? "" : `limit ${formattedLimit}`;
     const requestLabel = window?.requestCount == null ? "" : `${window.requestCount.toLocaleString("en-US")} ${window.requestCount === 1 ? "request" : "requests"}`;
     const footLabel = [label, limitLabel, requestLabel].filter(Boolean).join(" · ");
-    const resetLabel = window?.resetAt ? timeUntil(window.resetAt) : provider.id === "ollama" && window?.name === "monthly" ? "reset not reported" : "";
+    const resetLabel = window?.resetAt ? timeUntil(window.resetAt, now) : provider.id === "ollama" && window?.name === "monthly" ? "reset not reported" : "";
     const nowDescription = `${nowExpected}% of window elapsed`;
-    const showWindowName = windows.length > 1 || provider.id === "codex" || provider.id === "ollama";
+    const showWindowName = windows.length > 1 || ["codex", "ollama", "claude"].includes(provider.id);
     return `<div class="quota-window${index ? " quota-window-separated" : ""}">${showWindowName ? `<div class="quota-window-name">${escapeHtml(window?.name || "Usage")}</div>` : ""}<div class="quota-percent ${percent == null && !window?.valueLabel ? "unavailable" : percent == null ? "quota-balance" : "quota-percentage"}">${percentageValue}</div>${percent != null ? `<div class="bar"><span style="width:${Math.min(percent, 100)}%"></span>${nowPosition !== null ? `<button class="quota-now-marker" style="left:${nowPosition}%" type="button" aria-label="Current quota window position"><span class="quota-now-tooltip"><strong>Now</strong><span>${nowDescription}</span><span>Snapshot: ${escapeHtml(formatRefreshTime(refreshedAt))}</span></span></button>` : ""}</div>` : ""}<div class="quota-foot">${resetLabel ? `<span>${escapeHtml(resetLabel)}</span>` : ""}${footLabel ? `<span>${escapeHtml(footLabel)}</span>` : ""}</div></div>`;
   }).join("");
   const accent = /^[a-z-]+$/.test(provider.accent) ? provider.accent : "mint";
-  return `<article class="quota-card" style="--accent: var(--${accent})"><div class="provider-head"><div><div class="provider-name">${escapeHtml(provider.shortName)}</div><div class="provider-sub">${escapeHtml(provider.description)}</div></div><span class="provider-badge">${escapeHtml(status)}</span></div>${plan}<div class="quota-main">${creditBalance}${content}${resetCredits}${quota?.error ? `<div class="quota-error">${escapeHtml(quota.error)}</div>` : ""}</div></article>`;
+  const stale = quota?.stale ? `<div class="quota-error">Stale · last known quota measured ${escapeHtml(formatRefreshTime(quota.fetchedAt))}</div>` : "";
+  const cooldown = quota?.cooldownUntil && quota.cooldownUntil > now ? `<div class="quota-foot">Retry after ${escapeHtml(formatRefreshTime(new Date(quota.cooldownUntil).toISOString()))}</div>` : "";
+  return `<article class="quota-card" style="--accent: var(--${accent})"><div class="provider-head"><div><div class="provider-name">${escapeHtml(provider.shortName)}</div><div class="provider-sub">${escapeHtml(provider.description)}</div></div><span class="provider-badge">${escapeHtml(status)}</span></div>${plan}<div class="quota-main">${stale}${creditBalance}${content}${resetCredits}${quota?.error ? `<div class="quota-error">${escapeHtml(quota.error)}</div>` : ""}${cooldown}</div></article>`;
 }
 
 function renderQuotas(data: Dashboard): void {
@@ -911,6 +923,7 @@ async function loadUsage(silent = false): Promise<Usage | null> {
     const response = await fetch(`/api/v1/usage?${usageQuery()}`);
     if (!response.ok) throw new Error("Usage request failed");
     const data = await response.json() as UsageResponse;
+    sampleServerClock(data.serverNow);
     state.dashboard = { ...state.dashboard, usage: data.usage, serverNow: data.serverNow };
     renderUsage(data.usage, "preserve");
     renderStatus(state.dashboard);
@@ -944,6 +957,7 @@ async function loadDashboard(refresh = false): Promise<void> {
     const response = await fetch(`/api/v1/dashboard?${usageQuery()}${refresh ? "&refresh=1" : ""}`);
     if (!response.ok) throw new Error("Dashboard request failed");
     state.dashboard = await response.json();
+    sampleServerClock(state.dashboard?.serverNow);
     const dashboard = state.dashboard;
     if (dashboard) { providerOrder = dashboard.providerOrder; renderQuotas(dashboard); renderUsage(dashboard.usage, refresh ? "preserve" : "newest"); renderStatus(dashboard); }
   } finally {

@@ -9,7 +9,8 @@ import { fileURLToPath } from "node:url";
 import { type AppConfig, type ProviderId, type UsageSourceId, DEFAULT_CONFIG, PROVIDER_IDS, USAGE_SOURCE_IDS, localDateRange, normalizeConfig, normalizeProviderOrder, providerStatus } from "./lib/core.js";
 import type { ProviderResult } from "./lib/core.js";
 import { processColdDays } from "./lib/cold-range.js";
-import { isProviderConfigured, PROVIDER_FETCHERS } from "./lib/providers.js";
+import { fetchClaude, resolveClaudeCredentials, isProviderConfigured, PROVIDER_FETCHERS } from "./lib/providers.js";
+import { createQuotaCache } from "./lib/quota-cache.js";
 import { filterUsageRecords, summarizeUsage } from "./lib/usage.js";
 import { FilesystemUsageStore } from "./lib/usage-store.js";
 import { aggregateUsageSeverity, offlineUsageWarning, type UsageSeverity } from "./lib/usage-health.js";
@@ -65,8 +66,20 @@ const localColdMode = process.env.CCUSAGE_COLD_MODE?.trim().toLowerCase() === "o
 const localRollingDays = Math.max(3, Math.trunc(positiveNumber(process.env.CCUSAGE_DAYS, DEFAULT_ROLLING_DAYS)));
 const localHotIntervalMs = positiveNumber(process.env.CCUSAGE_HOT_INTERVAL_MS, DEFAULT_PUBLISH_INTERVAL_MS);
 const localColdIntervalMs = positiveNumber(process.env.CCUSAGE_COLD_INTERVAL_MS, DEFAULT_COLD_INTERVAL_MS);
-const quotaCache = new Map<ProviderId, { cachedAt: number; value: ProviderResult }>();
-const dashboardCache = new Map<string, { cachedAt: number; fetchedAt: string; value: DashboardValue }>();
+const dashboardCache = new Map<string, { expiresAt: number; fetchedAt: string; value: DashboardValue }>();
+let quotaRevision = 0;
+const configuredQuotaTtlMs = Number(process.env.QUOTA_CACHE_TTL_SECONDS || 120) * 1000;
+const quotaCache = createQuotaCache({
+  prepare: async (id) => {
+    if (id === "claude") {
+      const credentials = await resolveClaudeCredentials();
+      return { configured: credentials.configured, identity: credentials.identity, fetch: () => fetchClaude(credentials) };
+    }
+    return { configured: await isProviderConfigured(id), fetch: PROVIDER_FETCHERS[id] };
+  },
+  ttl: (id) => id === "claude" ? 300_000 : Number.isFinite(configuredQuotaTtlMs) ? Math.max(0, configuredQuotaTtlMs) : 120_000,
+  onChange: () => { quotaRevision++; dashboardCache.clear(); },
+});
 const localHostId = sanitizeHostId(process.env.LOCAL_HOST_ID?.trim() || hostname());
 const dailyLogger = createDailyLogger({ name: "server" });
 const remotePersistenceErrors = new Map<string, string>();
@@ -156,12 +169,16 @@ async function saveConfig(config: AppConfig): Promise<void> {
 }
 
 async function getQuota(id: ProviderId, force = false): Promise<ProviderResult> {
-  const ttl = Number(process.env.QUOTA_CACHE_TTL_SECONDS || 120) * 1000;
-  const cached = quotaCache.get(id);
-  if (!force && cached && Date.now() - cached.cachedAt < ttl) return cached.value;
-  const value = await PROVIDER_FETCHERS[id]();
-  quotaCache.set(id, { cachedAt: Date.now(), value });
-  return value;
+  return quotaCache.get(id, force);
+}
+
+async function configuredStatus(id: ProviderId, enabled: boolean): Promise<boolean> {
+  if (id !== "claude") return isProviderConfigured(id);
+  if (!enabled) return false;
+  const credentials = await resolveClaudeCredentials();
+  const failure = credentials.error ? await fetchClaude(credentials) : undefined;
+  quotaCache.observe(id, credentials.identity, failure);
+  return Boolean(credentials.accessToken);
 }
 
 function dateList(from: string, to: string): string[] {
@@ -519,15 +536,20 @@ async function dashboard(url: URL, config: AppConfig) {
   const cacheKey = `${range.from}:${range.to}:${range.timeZone}`;
   const forceRefresh = url.searchParams.get("refresh") === "1";
   const cached = dashboardCache.get(cacheKey);
-  if (!forceRefresh && cached && Date.now() - cached.cachedAt < 300_000) return { ...cached.value, cache: { fetchedAt: cached.fetchedAt, expiresAt: new Date(cached.cachedAt + 300_000).toISOString() } };
+  if (!forceRefresh && cached && Date.now() < cached.expiresAt) return { ...cached.value, serverNow: new Date().toISOString(), cache: { fetchedAt: cached.fetchedAt, expiresAt: new Date(cached.expiresAt).toISOString() } };
   const { usage } = await buildUsage(url, config);
   const enabled = config.providerOrder.filter((id) => config.providers[id].enabled);
-  const quotaEntries = await Promise.all(enabled.map(async (id) => [id, await getQuota(id, forceRefresh)]));
+  const quotaEntries = await Promise.all(enabled.map(async (id) => [id, await getQuota(id, forceRefresh)] as const));
   const quotas = Object.fromEntries(quotaEntries);
-  const statuses = Object.fromEntries(await Promise.all(config.providerOrder.map(async (id) => [id, providerStatus({ id, config: config.providers[id], result: quotas[id] ?? { configured: await isProviderConfigured(id) } })])));
+  const revision = quotaRevision;
+  const statuses = Object.fromEntries(await Promise.all(config.providerOrder.map(async (id) => [id, providerStatus({ id, config: config.providers[id], result: quotas[id] ?? { configured: await configuredStatus(id, config.providers[id].enabled) } })])));
   const value = { version: buildInfo.version, apiVersion: 1, serverNow: new Date().toISOString(), timezone: range.timeZone, providerOrder: config.providerOrder, providers: statuses, quotas, usage };
-  dashboardCache.set(cacheKey, { cachedAt: Date.now(), fetchedAt: value.serverNow, value });
-  return { ...value, cache: { fetchedAt: value.serverNow, expiresAt: new Date(Date.now() + 300_000).toISOString() } };
+  // Do not extend a quota TTL or a cooldown by putting it into an aggregate cache.
+  const expiresAt = Math.min(Date.now() + 300_000, ...enabled.map((id) => quotaCache.expiresAt(id)));
+  if (revision === quotaRevision && quotaEntries.every(([id, quota]) => quotaCache.isCurrent(id, quota))) {
+    dashboardCache.set(cacheKey, { expiresAt, fetchedAt: value.serverNow, value });
+  }
+  return { ...value, cache: { fetchedAt: value.serverNow, expiresAt: new Date(expiresAt).toISOString() } };
 }
 
 function json(response: import("node:http").ServerResponse, status: number, body: unknown): void {
@@ -555,7 +577,7 @@ function publishRemoteRefresh(category: "hot" | "cold", from: string, to: string
 async function handleApi(request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse, url: URL, httpId: string): Promise<void> {
   const config = await loadConfig();
   if (request.method === "GET" && url.pathname === "/api/v1/providers") {
-    const statuses = Object.fromEntries(await Promise.all(config.providerOrder.map(async (id) => [id, providerStatus({ id, config: config.providers[id], result: { configured: await isProviderConfigured(id) } })])));
+    const statuses = Object.fromEntries(await Promise.all(config.providerOrder.map(async (id) => [id, providerStatus({ id, config: config.providers[id], result: { configured: await configuredStatus(id, config.providers[id].enabled) } })])));
     return json(response, 200, { version: buildInfo.version, apiVersion: 1, providerOrder: config.providerOrder, providers: statuses, usageSources: config.usageSources });
   }
   if (request.method === "GET" && url.pathname === "/api/v1/usage") {
@@ -624,13 +646,14 @@ async function handleApi(request: import("node:http").IncomingMessage, response:
       if (typeof input.enabled !== "boolean") return json(response, 400, { error: "enabled must be boolean" });
       config.providers[id].enabled = input.enabled;
       await saveConfig(config);
-      if (!input.enabled) quotaCache.delete(id);
+      if (!input.enabled) quotaCache.invalidate(id);
       dashboardCache.clear();
       return json(response, 200, { provider: providerStatus({ id, config: config.providers[id] }) });
     }
     if (request.method === "POST" && providerMatch[2] === "test") {
       if (!config.providers[id].enabled) return json(response, 409, { error: "Provider is disabled" });
-      return json(response, 200, { provider: providerStatus({ id, config: config.providers[id], result: await getQuota(id, true) }), quota: await getQuota(id) });
+      const quota = await getQuota(id, true);
+      return json(response, 200, { provider: providerStatus({ id, config: config.providers[id], result: quota }), quota, verified: quota.status === "ok" && !quota.cached && !quota.stale });
     }
   }
   if (request.method === "PUT" && url.pathname === "/api/v1/providers/order") {
