@@ -7,7 +7,7 @@ const app = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const helpers = app.slice(app.indexOf("function recordTokens("), app.indexOf("function emptyUsageDay("));
 const todaySpend = app.slice(app.indexOf("function todaySpend("), app.indexOf("function renderSpendMetrics("));
 const renderer = app.slice(app.indexOf("function renderTopModels("), app.indexOf("function renderUsage("));
-const record = (date: string, model: string, costUsd: number, hostId = "one", provider = "codex") => ({ date, model, costUsd, hostId, provider, inputTokens: 10, cachedInputTokens: 0, cacheCreationTokens: 0, outputTokens: 0, reasoningTokens: 0 });
+const record = (date: string, model: string, costUsd: number, hostId = "one", provider = "codex", missingPricing = false) => ({ date, model, costUsd, hostId, provider, inputTokens: 10, cachedInputTokens: 0, cacheCreationTokens: 0, outputTokens: 0, reasoningTokens: 0, ...(missingPricing ? { missingPricing: true } : {}) });
 type Host = { hostId: string; status: string; usable: boolean; complete?: boolean };
 
 function dashboard(records = [record("2026-10-08", "Yesterday", 20), record("2026-10-09", "Today A", 2), record("2026-10-09", "Today B", 5)], hosts: Host[] = [{ hostId: "one", status: "ok", usable: true }], selected = ["one"], providers = ["codex"]) {
@@ -21,7 +21,7 @@ function dashboard(records = [record("2026-10-08", "Yesterday", 20), record("202
       if (!elements.has(selector)) elements.set(selector, { hidden: false, textContent: "", innerHTML: "" });
       return elements.get(selector);
     },
-    usageSourceNames: { codex: "Codex" }, escapeHtml: (value: string) => value.replace(/</g, "&lt;"), money: (value: number) => `$${value.toFixed(2)}`,
+    usageSourceNames: { codex: "Codex", claude: "Claude" }, escapeHtml: (value: string) => value.replace(/</g, "&lt;"), money: (value: number) => `$${value.toFixed(2)}`,
   };
   const render = () => runInNewContext(`${helpers}\n${todaySpend}\n${renderer}\n{ const { hosts, usableHosts, selectedHostIds } = reconcileHostSelections(usage); renderTopModels(usage, hosts, usableHosts, filterUsageByHosts(usage, selectedHostIds), selectedHostIds); }`, context);
   render();
@@ -67,6 +67,27 @@ test("today models respect host and enabled-source filters and include zero-cost
   assert.match(view.list(), /Included/);
   assert.match(view.list(), /\$0\.00/);
   assert.doesNotMatch(view.list(), /Other host|Disabled source|Older/);
+});
+
+test("Claude model breakdown follows tool and host selection, including non-Anthropic models", () => {
+  const records = [record("2026-10-09", "other-vendor/example", 2, "one", "claude"), record("2026-10-09", "not-selected", 9, "two", "claude"),
+    record("2026-10-09", "claude-via-opencode", 99, "one", "opencode")];
+  const hosts = [{ hostId: "one", status: "ok", usable: true }, { hostId: "two", status: "ok", usable: true }];
+  const view = dashboard(records, hosts, ["one"], ["claude"]);
+  assert.match(view.list(), /other-vendor\/example/);
+  assert.match(view.list(), /Claude/);
+  assert.doesNotMatch(view.list(), /not-selected|claude-via-opencode/);
+  assert.doesNotMatch(dashboard(records, hosts, ["one"], ["codex"]).list(), /other-vendor\/example/);
+});
+
+test("Claude unpriced models never appear as a known zero and flags survive date aggregation", () => {
+  const records = [record("2026-10-09", "unknown-price", 0, "one", "claude", true),
+    record("2026-10-08", "unknown-price", 1, "one", "claude"), record("2026-10-09", "priced-zero", 0, "one", "claude")];
+  const view = dashboard(records, undefined, undefined, ["claude"]);
+  assert.match(view.list(), /Pricing unavailable/);
+  assert.match(view.list(), /priced-zero[\s\S]*?\$0\.00/);
+  view.buttons[1].onclick();
+  assert.match(view.list(), /\$1\.00\+ · pricing incomplete/);
 });
 
 test("today models distinguish healthy zero, unavailable data, and explicit deselection", () => {

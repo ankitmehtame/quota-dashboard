@@ -1,13 +1,13 @@
 type QuotaWindow = { name?: string; usedPercent?: number | null; usedValue?: number | null; limitValue?: number | null; requestCount?: number | null; windowStart?: string | null; windowEnd?: string | null; unit?: string | null; resetAt?: string | null; windowSeconds?: number | null; valueLabel?: string | null; balanceLabel?: string | null; spentLabel?: string | null };
 type Provider = { id: string; name: string; shortName: string; accent: string; description: string; enabled: boolean; configured: boolean; status: string };
-type ModelUsageItem = { model: string; costUsd: number; totalTokens?: number };
+type ModelUsageItem = { model: string; costUsd: number; totalTokens?: number; missingPricing?: boolean };
 type UsageModel = ModelUsageItem & { provider: string };
 type UsageModelGroup = { provider: string; models: ModelUsageItem[] };
 type UsageDay = { date: string; costUsd: number; totalTokens: number; byProvider?: Record<string, { costUsd: number; totalTokens: number }>; byModel?: UsageModelGroup[] };
 type ChartRepresentation = "auto" | "day" | "week" | "month";
 type ConcreteRepresentation = Exclude<ChartRepresentation, "auto">;
 type UsageBucket = UsageDay & { from: string; to: string; days: UsageDay[] };
-type UsageRecord = { hostId?: string; date: string; provider: string; model: string; inputTokens: number; cachedInputTokens: number; cacheCreationTokens: number; outputTokens: number; reasoningTokens: number; costUsd: number };
+type UsageRecord = { hostId?: string; date: string; provider: string; model: string; inputTokens: number; cachedInputTokens: number; cacheCreationTokens: number; outputTokens: number; reasoningTokens: number; costUsd: number; missingPricing?: boolean };
 type UsageHost = { hostId: string; generatedAt?: string | null; category?: string | null; status: string; severity?: "warning" | "error" | null; error?: string | null; stale?: boolean; local?: boolean; active?: boolean; included?: boolean; complete?: boolean; missingDates?: string[]; usable?: boolean; disabledReason?: string | null };
 type Usage = { totalCostUsd: number; totalTokens?: number; from?: string; to?: string; providers?: string[]; daily?: UsageDay[]; byModel?: UsageModel[]; byProvider?: Array<{ provider: string; costUsd: number; totalTokens: number }>; records?: UsageRecord[]; error?: string | null; hosts?: UsageHost[]; mqtt?: { configured: boolean; connection: string } };
 type Dashboard = { version: string; providerOrder: string[]; providers: Record<string, Provider>; quotas: Record<string, { windows?: QuotaWindow[]; creditBalance?: { includedUsd: number; purchasedUsd: number | null }; planType?: string; subscriptionActiveUntil?: string | null; resetCredits?: Array<{ id: string; title: string; description?: string | null; expiresAt?: string | null }>; fetchedAt?: string; error?: string | null; errorKind?: string; cooldownUntil?: number; stale?: boolean; cached?: boolean }>; usage: Usage; serverNow: string; cache?: { fetchedAt?: string } };
@@ -21,8 +21,8 @@ const $ = (selector: string): any => document.querySelector(selector);
 const element = (target: EventTarget | null): HTMLElement => target as HTMLElement;
 const escapeHtml = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] || character);
 let providerOrder = ["codex", "openrouter", "opencode-go", "ollama", "claude"];
-const usageSourceOrder = ["codex", "opencode", "hermes", "antigravity"];
-const usageSourceNames: Record<string, string> = { codex: "Codex", opencode: "OpenCode", hermes: "Hermes", antigravity: "Antigravity" };
+const usageSourceOrder = ["codex", "opencode", "hermes", "antigravity", "claude"];
+const usageSourceNames: Record<string, string> = { codex: "Codex", opencode: "OpenCode", hermes: "Hermes", antigravity: "Antigravity", claude: "Claude" };
 const HOT_USAGE_POLL_INTERVAL_MS = 5_000;
 const HOT_USAGE_RETRY_GRACE_PERIOD_MS = 15_000;
 const HOT_USAGE_POLL_TIMEOUT_MS = 2 * 60 * 1000;
@@ -430,6 +430,14 @@ function recordTokens(record: UsageRecord): number {
   return record.inputTokens + record.cachedInputTokens + record.cacheCreationTokens + record.outputTokens + record.reasoningTokens;
 }
 
+function formatUsageCost(costUsd: number, missingPricing = false): string {
+  return missingPricing ? costUsd > 0 ? `${money(costUsd)}+ · pricing incomplete` : "Pricing unavailable" : money(costUsd);
+}
+
+function usageHasMissingPricing(day: Pick<UsageDay, "byModel">, provider?: string): boolean {
+  return Boolean(day.byModel?.some((group) => (!provider || group.provider === provider) && group.models.some((model) => model.missingPricing)));
+}
+
 function hostHealthy(host: UsageHost): boolean {
   return ["ok", "online"].includes(host.status) && !host.error && !host.stale && host.included !== false && host.complete !== false;
 }
@@ -437,7 +445,7 @@ function hostHealthy(host: UsageHost): boolean {
 function enabledUsageProviders(usage: Usage): Set<string> | null {
   if (!usage.providers) return null;
   const providers = new Set(usage.providers);
-  if (providers.has("opencode") || providers.has("hermes") || providers.has("antigravity")) providers.add("shared");
+  if (providers.has("opencode") || providers.has("hermes") || providers.has("antigravity") || providers.has("claude")) providers.add("shared");
   return providers;
 }
 
@@ -471,12 +479,14 @@ function summarizeSelectedRecords(records: UsageRecord[]): Pick<Usage, "daily" |
     }
     dayModel.costUsd += record.costUsd;
     dayModel.totalTokens = (dayModel.totalTokens || 0) + totalTokens;
+    if (record.missingPricing) dayModel.missingPricing = true;
     daily.set(record.date, day);
 
     const modelKey = `${record.provider}\u0000${record.model}`;
     const model = byModel.get(modelKey) || { provider: record.provider, model: record.model, costUsd: 0, totalTokens: 0 };
     model.costUsd += record.costUsd;
     model.totalTokens = (model.totalTokens || 0) + totalTokens;
+    if (record.missingPricing) model.missingPricing = true;
     byModel.set(modelKey, model);
     const provider = byProvider.get(record.provider) || { provider: record.provider, costUsd: 0, totalTokens: 0 };
     provider.costUsd += record.costUsd;
@@ -563,6 +573,7 @@ function addUsageDay(bucket: UsageBucket, day: UsageDay): void {
       if (current) {
         current.costUsd += model.costUsd;
         current.totalTokens = (current.totalTokens || 0) + (model.totalTokens || 0);
+        if (model.missingPricing) current.missingPricing = true;
       } else {
         target.models.push({ ...model, totalTokens: model.totalTokens || 0 });
       }
@@ -611,14 +622,19 @@ function renderSpendMetrics(usage: Usage, hosts: UsageHost[], usableHosts: Usage
   const selectedHosts = hosts.filter((host) => selectedHostIds.has(host.hostId));
   const periodKnown = noHostsSelected || Boolean(selectedUsage.records?.length) || selectedHosts.some(hostHealthy);
   const periodAmount = selectedUsage.totalCostUsd;
-  $("#usage-total").textContent = money(periodKnown ? periodAmount : Number.NaN);
+  const missingPricing = selectedUsage.records?.some((record) => record.missingPricing) ?? false;
+  $("#usage-total").textContent = money(periodKnown && (!missingPricing || periodAmount > 0) ? periodAmount : Number.NaN) + (missingPricing && periodAmount > 0 ? "+" : "");
   $("#usage-total-caption").textContent = `Estimated spend · ${usagePresetLabel(state.range)} · ${dateRange}`;
+  const pricingStatus = $("#usage-pricing-status");
+  pricingStatus.hidden = !missingPricing;
+  pricingStatus.textContent = missingPricing ? "Some models have no pricing. Totals include reported costs only; unpriced usage is not free." : "";
 
   const todayMetric = $("#today-metric") as HTMLElement;
   todayMetric.hidden = state.range === "today";
   if (todayMetric.hidden) return;
   const today = todaySpend(usage, hosts, usableHosts, selectedHostIds);
-  $("#today-total").textContent = money(today.known ? today.amount : Number.NaN);
+  const todayMissingPricing = selectedUsage.records?.some((record) => record.date === usage.to && record.missingPricing) ?? false;
+  $("#today-total").textContent = money(today.known && (!todayMissingPricing || today.amount > 0) ? today.amount : Number.NaN) + (todayMissingPricing && today.amount > 0 ? "+" : "");
   $("#today-caption").textContent = `Today so far${today.partial ? " · partial" : ""}`;
 }
 
@@ -644,7 +660,7 @@ function renderTopModels(usage: Usage, hosts: UsageHost[], usableHosts: UsageHos
   let emptyMessage = "No model breakdown available.";
   if (noHostsSelected) emptyMessage = "No hosts selected.";
   else if (today) emptyMessage = !today.known ? "Today's usage is unavailable." : today.partial ? "No model breakdown available for today's incomplete usage." : "No model usage today.";
-  $("#models-list").innerHTML = models?.length ? models.map((model, index) => `<div class="model-row"><span class="model-rank">${String(index + 1).padStart(2, "0")}</span><span class="model-name"><span class="model-name-text" title="${escapeHtml(model.model)}">${escapeHtml(model.model)}</span>${model.provider ? `<small class="model-provider">${escapeHtml(sourceNames[model.provider] || model.provider)}</small>` : ""}</span><span class="model-value">${money(model.costUsd)}</span></div>`).join("") : `<div class="quota-empty">${escapeHtml(emptyMessage)}</div>`;
+  $("#models-list").innerHTML = models?.length ? models.map((model, index) => `<div class="model-row"><span class="model-rank">${String(index + 1).padStart(2, "0")}</span><span class="model-name"><span class="model-name-text" title="${escapeHtml(model.model)}">${escapeHtml(model.model)}</span>${model.provider ? `<small class="model-provider">${escapeHtml(sourceNames[model.provider] || model.provider)}</small>` : ""}</span><span class="model-value">${escapeHtml(formatUsageCost(model.costUsd, model.missingPricing))}</span></div>`).join("") : `<div class="quota-empty">${escapeHtml(emptyMessage)}</div>`;
 }
 
 function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve"): void {
@@ -660,7 +676,7 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
   updateRepresentationControls();
   $("#axis-start").textContent = selectedUsage.from || "—";
   const sourceNames: Record<string, string> = { ...usageSourceNames, shared: "Shared" };
-  const sourceColors: Record<string, string> = { codex: "mint", opencode: "violet", hermes: "orange", antigravity: "blue", shared: "neutral" };
+  const sourceColors: Record<string, string> = { codex: "mint", opencode: "violet", hermes: "orange", antigravity: "blue", claude: "rose", shared: "neutral" };
   const enabledSources = new Set(usage.providers || []);
   $(".chart-legend").innerHTML = [...enabledSources].map((provider) => `<span class="legend-key ${sourceColors[provider] || "mint"}"></span> ${escapeHtml(sourceNames[provider] || provider)}`).join("") || "No local usage sources enabled";
   $("#usage-hosts").innerHTML = hosts.map((host, index) => {
@@ -692,13 +708,13 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
   $("#axis-current-label").innerHTML = `<i></i> ${axisCurrentLabel}`;
   const hasUsage = Boolean(selectedUsage.records?.length || selectedUsage.daily?.length);
   const buckets = hasUsage ? usageBuckets(selectedUsage, representation) : [];
-  const providers = [...enabledSources, ...(enabledSources.has("opencode") || enabledSources.has("hermes") || enabledSources.has("antigravity") ? ["shared"] : [])];
+  const providers = [...enabledSources, ...(enabledSources.has("opencode") || enabledSources.has("hermes") || enabledSources.has("antigravity") || enabledSources.has("claude") ? ["shared"] : [])];
   const colors = sourceColors;
   const max = Math.max(...buckets.map((bucket) => bucket.costUsd), 0);
   const usageTooltip = (bucket: UsageBucket, hoveredProvider: string, segments: Array<{ provider: string; costUsd: number; totalTokens: number }>): string => {
     const sortedSegments = [...segments].sort((a, b) => b.costUsd - a.costUsd);
-    const harnesses = sortedSegments.map((segment) => `<span class="harness-row ${segment.provider === hoveredProvider ? "hovered" : ""}"><i class="tooltip-harness-dot ${colors[segment.provider] || "mint"}"></i><span class="harness-name">${escapeHtml(sourceNames[segment.provider] || segment.provider)}</span><span class="harness-detail"> · ${money(segment.costUsd)} · ${formatTokens(segment.totalTokens)} tokens</span></span>`).join("");
-    return `<span class="chart-tooltip"><strong>${money(bucket.costUsd)} total · ${formatTokens(bucket.totalTokens)} tokens</strong><span>${escapeHtml(usageBucketLabel(bucket, representation))}</span><div class="tooltip-separator"></div>${harnesses}</span>`;
+    const harnesses = sortedSegments.map((segment) => `<span class="harness-row ${segment.provider === hoveredProvider ? "hovered" : ""}"><i class="tooltip-harness-dot ${colors[segment.provider] || "mint"}"></i><span class="harness-name">${escapeHtml(sourceNames[segment.provider] || segment.provider)}</span><span class="harness-detail"> · ${escapeHtml(formatUsageCost(segment.costUsd, usageHasMissingPricing(bucket, segment.provider)))} · ${formatTokens(segment.totalTokens)} tokens</span></span>`).join("");
+    return `<span class="chart-tooltip"><strong>${escapeHtml(formatUsageCost(bucket.costUsd, usageHasMissingPricing(bucket)))} total · ${formatTokens(bucket.totalTokens)} tokens</strong><span>${escapeHtml(usageBucketLabel(bucket, representation))}</span><div class="tooltip-separator"></div>${harnesses}</span>`;
   };
   const renderSegment = (bucket: UsageBucket, segment: { provider: string; costUsd: number; totalTokens: number }, segments: Array<{ provider: string; costUsd: number; totalTokens: number }>, height: number) => { const color = colors[segment.provider] || "mint"; return `<div class="chart-segment ${color}" style="flex:${height} 1 0%">${usageTooltip(bucket, segment.provider, segments)}</div>`; };
   const todayOnly = selectedUsage.from === selectedUsage.to;
@@ -709,7 +725,7 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
     const displayedTotal = fallback.reduce((total, segment) => total + segment.costUsd, 0);
     const label = usageBucketLabel(bucket, representation);
     if (todayOnly) {
-      return (fallback.length ? fallback : [{ provider: "other", costUsd: 0, totalTokens: 0 }]).map((segment) => `<button class="chart-column today-harness" type="button" data-bucket-index="${bucketIndex}" aria-label="${escapeHtml(label)} ${escapeHtml(segment.provider)}: ${money(segment.costUsd)}"><div class="chart-stack">${segment.costUsd > 0 || segment.totalTokens > 0 ? `<div class="chart-segment ${colors[segment.provider] || "mint"}" style="height:${max ? Math.max(2, (segment.costUsd / max) * 100) : 2}%;bottom:0">${usageTooltip(bucket, segment.provider, fallback)}</div>` : ""}</div></button>`).join("");
+      return (fallback.length ? fallback : [{ provider: "other", costUsd: 0, totalTokens: 0 }]).map((segment) => `<button class="chart-column today-harness" type="button" data-bucket-index="${bucketIndex}" aria-label="${escapeHtml(label)} ${escapeHtml(segment.provider)}: ${escapeHtml(formatUsageCost(segment.costUsd, usageHasMissingPricing(bucket, segment.provider)))}"><div class="chart-stack">${segment.costUsd > 0 || segment.totalTokens > 0 ? `<div class="chart-segment ${colors[segment.provider] || "mint"}" style="height:${max ? Math.max(2, (segment.costUsd / max) * 100) : 2}%;bottom:0">${usageTooltip(bucket, segment.provider, fallback)}</div>` : ""}</div></button>`).join("");
     }
     const isCurrentBucket = bucket.to === selectedUsage.to;
     // Size every stack by total spend. Keep small or token-only sources visible
@@ -723,7 +739,7 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
     }).join("");
     const stackHeight = displayedTotal > 0 && max > 0 ? Math.max(2, (displayedTotal / max) * 100) : fallback.length ? 2 : 0;
     const currentClass = isCurrentBucket && fallback.length ? "current-day" : "";
-    return `<button class="chart-column ${currentClass}" type="button" data-bucket-index="${bucketIndex}" aria-label="${escapeHtml(label)}: ${money(displayedTotal)}"><div class="chart-stack" style="height:${stackHeight}%">${markup}</div></button>`;
+    return `<button class="chart-column ${currentClass}" type="button" data-bucket-index="${bucketIndex}" aria-label="${escapeHtml(label)}: ${escapeHtml(formatUsageCost(displayedTotal, usageHasMissingPricing(bucket)))}"><div class="chart-stack" style="height:${stackHeight}%">${markup}</div></button>`;
   }).join("") : `<div class="chart-empty">${escapeHtml(noHostsSelected ? "No usage hosts selected" : usage.error || "No usage data in this range")}</div>`;
   const chartColumnCount = chart.querySelectorAll(":scope > .chart-column").length;
   chartScroll?.style.setProperty("--chart-min-width", `${Math.max(1, chartColumnCount) * 15}px`);
@@ -744,9 +760,9 @@ function openUsageDetails(bucket: UsageBucket | undefined, representation: Concr
   $("#usage-chart").classList.add("suppress-tooltips");
   const label = usageBucketLabel(bucket, representation);
   $("#day-details-title").textContent = representation === "day" ? label : `${representation === "week" ? "Week" : "Month"} · ${label}`;
-  $("#day-details-summary").innerHTML = `<span><strong>${money(bucket.costUsd)}</strong> total</span><span><strong>${formatTokens(bucket.totalTokens)}</strong> tokens</span>`;
-  const modelDetails = (bucket.byModel || []).map((group) => { const sortedModels = [...group.models].sort((a, b) => b.costUsd - a.costUsd); const providerName = usageSourceNames[group.provider] || group.provider; return `<section class="detail-group"><h3>${escapeHtml(providerName)}</h3>${sortedModels.map((model) => `<div class="detail-model"><span>${escapeHtml(model.model)}</span><span>${money(model.costUsd)} · ${formatTokens(model.totalTokens)} tokens</span></div>`).join("")}</section>`; }).join("");
-  const dailyDetails = representation === "day" ? "" : `<section class="detail-group detail-days"><h3>By day</h3>${bucket.days.map((day) => `<div class="detail-model"><span>${escapeHtml(day.date)}</span><span>${money(day.costUsd)} · ${formatTokens(day.totalTokens)} tokens</span></div>`).join("")}</section>`;
+  $("#day-details-summary").innerHTML = `<span><strong>${escapeHtml(formatUsageCost(bucket.costUsd, usageHasMissingPricing(bucket)))}</strong> total</span><span><strong>${formatTokens(bucket.totalTokens)}</strong> tokens</span>`;
+  const modelDetails = (bucket.byModel || []).map((group) => { const sortedModels = [...group.models].sort((a, b) => b.costUsd - a.costUsd); const providerName = usageSourceNames[group.provider] || group.provider; return `<section class="detail-group"><h3>${escapeHtml(providerName)}</h3>${sortedModels.map((model) => `<div class="detail-model"><span>${escapeHtml(model.model)}</span><span>${escapeHtml(formatUsageCost(model.costUsd, model.missingPricing))} · ${formatTokens(model.totalTokens)} tokens</span></div>`).join("")}</section>`; }).join("");
+  const dailyDetails = representation === "day" ? "" : `<section class="detail-group detail-days"><h3>By day</h3>${bucket.days.map((day) => `<div class="detail-model"><span>${escapeHtml(day.date)}</span><span>${escapeHtml(formatUsageCost(day.costUsd, usageHasMissingPricing(day)))} · ${formatTokens(day.totalTokens)} tokens</span></div>`).join("")}</section>`;
   $("#day-details-content").innerHTML = modelDetails + dailyDetails || `<p class="quota-empty">No usage details available.</p>`;
   $("#day-details-dialog").showModal();
 }

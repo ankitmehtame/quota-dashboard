@@ -29,5 +29,17 @@ test("enables new usage sources when normalizing an existing config", () => {
     opencode: { enabled: false },
     hermes: { enabled: false },
     antigravity: { enabled: true },
+    claude: { enabled: true },
   });
+});
+
+test("Claude usage migrates independently of quota and preserves explicit source settings", () => {
+  const config = normalizeConfig({ providers: { claude: { enabled: false } }, usageSources: { opencode: { enabled: false }, codex: { enabled: false } } });
+  assert.equal(config.usageSources.claude.enabled, true);
+  assert.equal(config.providers.claude.enabled, false);
+  assert.equal(config.usageSources.opencode.enabled, false);
+  assert.equal(config.usageSources.codex.enabled, false);
+  const disabled = normalizeConfig({ providers: { claude: { enabled: true } }, usageSources: { claude: { enabled: false } } });
+  assert.equal(disabled.usageSources.claude.enabled, false);
+  assert.equal(disabled.providers.claude.enabled, true);
 });

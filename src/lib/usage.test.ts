@@ -4,11 +4,72 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-import { mergeUsageRecords, parseCcusage, readUsageSources, summarizeUsage } from "./usage.js";
+import { filterUsageRecords, mergeUsageRecords, parseCcusage, readUsageSources, summarizeUsage } from "./usage.js";
+import { claudeUsageDocument } from "./fixtures/claude-usage.js";
 
 test("normalizes ccusage model breakdowns", () => {
   const records = parseCcusage({ daily: [{ date: "2026-08-12", modelBreakdowns: [{ modelName: "gpt-5", inputTokens: 10, cacheReadTokens: 4, outputTokens: 6, cost: 0.25 }] }] });
   assert.deepEqual(records, [{ date: "2026-08-12", provider: "unknown", model: "gpt-5", inputTokens: 10, cachedInputTokens: 4, cacheCreationTokens: 0, outputTokens: 6, reasoningTokens: 0, costUsd: 0.25 }]);
+});
+
+test("Claude tool records preserve token categories, model names, and per-agent totals without counting the parent", () => {
+  const all = parseCcusage(claudeUsageDocument());
+  const claude = filterUsageRecords(["claude"], all);
+  assert.equal(all.length, 5);
+  assert.equal(claude.length, 4);
+  assert.equal(claude[0].date, "2026-05-03");
+  assert.deepEqual([claude[0].inputTokens, claude[0].cachedInputTokens, claude[0].cacheCreationTokens, claude[0].outputTokens], [100, 20, 5, 10]);
+  assert.equal(claude[1].provider, "claude");
+  assert.equal(claude[1].model, "other-vendor/example");
+  assert.equal(claude[2].missingPricing, true);
+  assert.equal(claude[3].missingPricing, undefined);
+  const summary = summarizeUsage(claude);
+  assert.equal(summary.totalCostUsd, 1.75);
+  assert.equal(summary.totalTokens, 150);
+  assert.equal(summary.missingPricing, true);
+  assert.equal(summary.byModel.find((model) => model.model === "unpriced-example")?.missingPricing, true);
+  assert.equal(summary.daily[0].byModel[0].models.find((model) => model.model === "unpriced-example")?.missingPricing, true);
+  assert.equal(summarizeUsage(filterUsageRecords(["opencode"], all)).totalCostUsd, 9);
+  assert.deepEqual(filterUsageRecords([], all), []);
+  assert.equal(summarizeUsage(all).totalCostUsd, 10.75);
+  assert.equal(summarizeUsage(all).totalTokens, 155);
+});
+
+test("Claude metadata and legacy mixed-agent rows use existing shared filtering", () => {
+  const records = parseCcusage({ daily: [
+    { period: "2026-05-03", agent: "all", metadata: { agents: ["claude"] }, totalCost: 2, inputTokens: 3 },
+    { period: "2026-05-03", agent: "all", metadata: { agents: ["claude", "opencode"] }, totalCost: 4, inputTokens: 5 },
+  ] });
+  assert.deepEqual(records.map((record) => record.provider), ["claude", "shared"]);
+  assert.equal(filterUsageRecords(["claude"], records).length, 2);
+  assert.equal(filterUsageRecords(["codex"], records).length, 0);
+});
+
+test("missing pricing survives normalization but known zero costs remain zero", () => {
+  for (const cost of [undefined, null, "", " ", false, true, [], {}, -1, "NaN"]) {
+    const [record] = parseCcusage({ daily: [{ date: "2026-05-03", agent: "claude", modelBreakdowns: [{ modelName: "unknown", cost }] }] });
+    assert.equal(record.costUsd, 0);
+    assert.equal(record.missingPricing, true);
+  }
+  const document = claudeUsageDocument();
+  delete document.daily[0].agents[0].modelBreakdowns[2].missingPricing;
+  assert.equal(parseCcusage(document)[2].missingPricing, true, "top-level pricing hints are recognized");
+  assert.equal(parseCcusage({ daily: [{ period: "2026-05-03", agent: "claude", totalCost: 0 }] })[0].missingPricing, undefined);
+});
+
+test("Claude local and remote usage respect source, host, date, and timezone boundaries", () => {
+  const range = { from: "2026-05-03", to: "2026-05-03", timeZone: "Asia/Singapore" };
+  const remote = { hostId: "remote-fixture", generatedAt: "2026-05-03T12:00:00Z", timezone: range.timeZone,
+    range, status: "ok", error: null, stale: false, data: claudeUsageDocument() };
+  const local = parseCcusage(claudeUsageDocument());
+  const merged = mergeUsageRecords(["claude"], range, local, [remote, { ...remote, hostId: "wrong-timezone", timezone: "UTC" }], "local-fixture");
+  assert.equal(merged.records.length, 8);
+  assert.equal(summarizeUsage(merged.records).totalCostUsd, 3.5);
+  assert.equal(summarizeUsage(merged.records).totalTokens, 300);
+  assert.deepEqual([...new Set(merged.records.map((record) => record.hostId))], ["local-fixture", "remote-fixture"]);
+  assert.equal(merged.hosts[1].included, false);
+  assert.deepEqual(mergeUsageRecords(["claude"], { ...range, from: "2026-05-04", to: "2026-05-04" }, [], [remote]).records, []);
+  assert.deepEqual(mergeUsageRecords(["codex"], range, local, [remote]).records, []);
 });
 
 test("normalizes Hermes and OpenCode records using the same parser", () => {
