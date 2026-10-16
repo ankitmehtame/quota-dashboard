@@ -99,7 +99,9 @@ export function sliceCcusageDocument(document: unknown, date: string): Record<st
     const rowDate = row.date ?? row.period;
     return rowDate === date;
   });
-  return { daily };
+  // Carry pricing hints, never the costs or tokens for the full collection range.
+  const unpricedModels = isObject(document.totals) ? document.totals.unpricedModels : undefined;
+  return { daily, ...(Array.isArray(unpricedModels) ? { totals: { unpricedModels } } : {}) };
 }
 
 export async function runCcusage({

@@ -17,12 +17,14 @@ export type UsageRecord = {
   outputTokens: number;
   reasoningTokens: number;
   costUsd: number;
+  missingPricing: boolean;
 };
 
 export type UsageSummary = {
-  daily: Array<{ date: string; costUsd: number; totalTokens: number; byProvider: Record<string, { costUsd: number; totalTokens: number }>; byModel: Array<{ provider: string; models: Array<{ model: string; costUsd: number; totalTokens: number }> }> }>;
-  byModel: Array<{ provider: string; model: string; costUsd: number; totalTokens: number }>;
-  byProvider: Array<{ provider: string; costUsd: number; totalTokens: number }>;
+  missingPricing: boolean;
+  daily: Array<{ date: string; costUsd: number; totalTokens: number; missingPricing: boolean; byProvider: Record<string, { costUsd: number; totalTokens: number; missingPricing: boolean }>; byModel: Array<{ provider: string; models: Array<{ model: string; costUsd: number; totalTokens: number; missingPricing: boolean }> }> }>;
+  byModel: Array<{ provider: string; model: string; costUsd: number; totalTokens: number; missingPricing: boolean }>;
+  byProvider: Array<{ provider: string; costUsd: number; totalTokens: number; missingPricing: boolean }>;
   totalCostUsd: number;
   totalTokens: number;
 };
@@ -75,6 +77,7 @@ function modelRows(row: Record<string, any>): Array<Record<string, any>> {
     cacheCreationTokens: row.cacheCreationTokens,
     outputTokens: row.outputTokens,
     cost: row.totalCost,
+    missingPricing: row.missingPricing,
   }];
 }
 
@@ -99,6 +102,8 @@ function rowProvider(row: Record<string, any>): string {
 
 export function parseCcusage(document: unknown): UsageRecord[] {
   const records: UsageRecord[] = [];
+  const hints = objectValue(objectValue(document).totals).unpricedModels;
+  const unpricedModels = new Set(Array.isArray(hints) ? hints.filter((name): name is string => typeof name === "string").map((name) => name.trim()) : []);
   for (const parentRow of dailyRows(document)) {
     for (const row of usageRows(parentRow)) {
       const date = row.date ?? row.period ?? parentRow.period;
@@ -114,7 +119,8 @@ export function parseCcusage(document: unknown): UsageRecord[] {
           cacheCreationTokens: nonNegative(model.cacheCreationTokens),
           outputTokens: nonNegative(model.outputTokens),
           reasoningTokens: nonNegative(model.reasoningTokens),
-          costUsd: nonNegative(model.cost),
+          costUsd: typeof model.cost === "number" ? nonNegative(model.cost) : 0,
+          missingPricing: model.missingPricing === true || unpricedModels.has(modelName) || typeof model.cost !== "number" || !Number.isFinite(model.cost) || model.cost < 0,
         });
       }
     }
@@ -123,7 +129,7 @@ export function parseCcusage(document: unknown): UsageRecord[] {
 }
 
 function emptySummary(status = "disabled", error: string | null = null, source: string | null = null): UsageSummary & { status: string; error: string | null; source: string | null } {
-  return { status, error, source, daily: [], byModel: [], byProvider: [], totalCostUsd: 0, totalTokens: 0 };
+  return { status, error, source, daily: [], byModel: [], byProvider: [], totalCostUsd: 0, totalTokens: 0, missingPricing: false };
 }
 
 export function summarizeUsage(records: UsageRecord[]): UsageSummary {
@@ -161,8 +167,12 @@ export function summarizeUsage(records: UsageRecord[]): UsageSummary {
     }
     modelDetail.costUsd += record.costUsd;
     modelDetail.totalTokens += totalTokens;
+    for (const aggregate of [day, model, provider, dayProvider, modelDetail]) {
+      aggregate.missingPricing = Boolean(aggregate.missingPricing || record.missingPricing);
+    }
   }
   return {
+    missingPricing: records.some((record) => record.missingPricing),
     daily: [...daily.values()].map((day) => ({ ...day, byProvider: { ...day.byProvider } })).sort((a, b) => a.date.localeCompare(b.date)),
     byModel: [...byModel.values()].sort((a, b) => b.costUsd - a.costUsd),
     byProvider: [...byProvider.values()].sort((a, b) => b.costUsd - a.costUsd),

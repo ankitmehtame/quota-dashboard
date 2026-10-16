@@ -1,15 +1,16 @@
 type QuotaWindow = { name?: string; usedPercent?: number | null; usedValue?: number | null; limitValue?: number | null; requestCount?: number | null; windowStart?: string | null; windowEnd?: string | null; unit?: string | null; resetAt?: string | null; windowSeconds?: number | null; valueLabel?: string | null; balanceLabel?: string | null; spentLabel?: string | null };
 type Provider = { id: string; name: string; shortName: string; accent: string; description: string; enabled: boolean; configured: boolean; status: string };
-type ModelUsageItem = { model: string; costUsd: number; totalTokens?: number };
+type PricingStatus = { missingPricing?: boolean };
+type ModelUsageItem = PricingStatus & { model: string; costUsd: number; totalTokens?: number };
 type UsageModel = ModelUsageItem & { provider: string };
 type UsageModelGroup = { provider: string; models: ModelUsageItem[] };
-type UsageDay = { date: string; costUsd: number; totalTokens: number; byProvider?: Record<string, { costUsd: number; totalTokens: number }>; byModel?: UsageModelGroup[] };
+type UsageDay = PricingStatus & { date: string; costUsd: number; totalTokens: number; byProvider?: Record<string, PricingStatus & { costUsd: number; totalTokens: number }>; byModel?: UsageModelGroup[] };
 type ChartRepresentation = "auto" | "day" | "week" | "month";
 type ConcreteRepresentation = Exclude<ChartRepresentation, "auto">;
 type UsageBucket = UsageDay & { from: string; to: string; days: UsageDay[] };
-type UsageRecord = { hostId?: string; date: string; provider: string; model: string; inputTokens: number; cachedInputTokens: number; cacheCreationTokens: number; outputTokens: number; reasoningTokens: number; costUsd: number };
+type UsageRecord = PricingStatus & { hostId?: string; date: string; provider: string; model: string; inputTokens: number; cachedInputTokens: number; cacheCreationTokens: number; outputTokens: number; reasoningTokens: number; costUsd: number };
 type UsageHost = { hostId: string; generatedAt?: string | null; category?: string | null; status: string; severity?: "warning" | "error" | null; error?: string | null; stale?: boolean; local?: boolean; active?: boolean; included?: boolean; complete?: boolean; missingDates?: string[]; usable?: boolean; disabledReason?: string | null };
-type Usage = { totalCostUsd: number; totalTokens?: number; from?: string; to?: string; providers?: string[]; daily?: UsageDay[]; byModel?: UsageModel[]; byProvider?: Array<{ provider: string; costUsd: number; totalTokens: number }>; records?: UsageRecord[]; error?: string | null; hosts?: UsageHost[]; mqtt?: { configured: boolean; connection: string } };
+type Usage = PricingStatus & { totalCostUsd: number; totalTokens?: number; from?: string; to?: string; providers?: string[]; daily?: UsageDay[]; byModel?: UsageModel[]; byProvider?: Array<PricingStatus & { provider: string; costUsd: number; totalTokens: number }>; records?: UsageRecord[]; error?: string | null; hosts?: UsageHost[]; mqtt?: { configured: boolean; connection: string } };
 type Dashboard = { version: string; providerOrder: string[]; providers: Record<string, Provider>; quotas: Record<string, { windows?: QuotaWindow[]; creditBalance?: { includedUsd: number; purchasedUsd: number | null }; planType?: string; subscriptionActiveUntil?: string | null; resetCredits?: Array<{ id: string; title: string; description?: string | null; expiresAt?: string | null }>; fetchedAt?: string; error?: string | null; errorKind?: string; cooldownUntil?: number; stale?: boolean; cached?: boolean }>; usage: Usage; serverNow: string; cache?: { fetchedAt?: string } };
 type UsageResponse = { version: string; apiVersion: number; serverNow: string; timezone: string; from: string; to: string; usage: Usage };
 type ProvidersResponse = { providerOrder: string[]; providers: Record<string, Provider>; usageSources: Record<string, UsageSourceConfig> };
@@ -206,6 +207,15 @@ function toggleHostStatusPopover(anchor: HTMLButtonElement): void {
 function money(value: number | null | undefined): string {
   if (!Number.isFinite(value)) return "—";
   return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 2 }).format(value ?? 0);
+}
+
+function spend(value: number, missingPricing = false): string {
+  return `${money(value)}${missingPricing && Number.isFinite(value) ? "+" : ""}`;
+}
+
+function modelSpend(model: ModelUsageItem): string {
+  if (!model.missingPricing) return money(model.costUsd);
+  return model.costUsd > 0 ? `${spend(model.costUsd, true)} · Pricing unavailable` : "Pricing unavailable";
 }
 
 function usagePresetLabel(range: string): string {
@@ -459,16 +469,16 @@ function recordsForHosts(usage: Usage, selectedHostIds: Set<string>): UsageRecor
   return (usage.records || []).filter((record) => record.hostId !== undefined && selectedHostIds.has(record.hostId) && (!providers || providers.has(record.provider)));
 }
 
-function summarizeSelectedRecords(records: UsageRecord[]): Pick<Usage, "daily" | "byModel" | "byProvider" | "totalCostUsd" | "totalTokens"> {
+function summarizeSelectedRecords(records: UsageRecord[]): Pick<Usage, "daily" | "byModel" | "byProvider" | "totalCostUsd" | "totalTokens" | "missingPricing"> {
   const daily = new Map<string, UsageDay>();
   const byModel = new Map<string, UsageModel>();
-  const byProvider = new Map<string, { provider: string; costUsd: number; totalTokens: number }>();
+  const byProvider = new Map<string, PricingStatus & { provider: string; costUsd: number; totalTokens: number }>();
   for (const record of records) {
     const totalTokens = recordTokens(record);
-    const day = daily.get(record.date) || { date: record.date, costUsd: 0, totalTokens: 0, byProvider: {}, byModel: [] };
+    const day = daily.get(record.date) || { date: record.date, costUsd: 0, totalTokens: 0, missingPricing: false, byProvider: {}, byModel: [] };
     day.costUsd += record.costUsd;
     day.totalTokens += totalTokens;
-    const dayProvider = day.byProvider?.[record.provider] || { costUsd: 0, totalTokens: 0 };
+    const dayProvider = day.byProvider?.[record.provider] || { costUsd: 0, totalTokens: 0, missingPricing: false };
     dayProvider.costUsd += record.costUsd;
     dayProvider.totalTokens += totalTokens;
     day.byProvider = { ...day.byProvider, [record.provider]: dayProvider };
@@ -487,16 +497,20 @@ function summarizeSelectedRecords(records: UsageRecord[]): Pick<Usage, "daily" |
     daily.set(record.date, day);
 
     const modelKey = `${record.provider}\u0000${record.model}`;
-    const model = byModel.get(modelKey) || { provider: record.provider, model: record.model, costUsd: 0, totalTokens: 0 };
+    const model = byModel.get(modelKey) || { provider: record.provider, model: record.model, costUsd: 0, totalTokens: 0, missingPricing: false };
     model.costUsd += record.costUsd;
     model.totalTokens = (model.totalTokens || 0) + totalTokens;
     byModel.set(modelKey, model);
-    const provider = byProvider.get(record.provider) || { provider: record.provider, costUsd: 0, totalTokens: 0 };
+    const provider = byProvider.get(record.provider) || { provider: record.provider, costUsd: 0, totalTokens: 0, missingPricing: false };
     provider.costUsd += record.costUsd;
     provider.totalTokens += totalTokens;
     byProvider.set(record.provider, provider);
+    for (const aggregate of [day, dayProvider, dayModel, model, provider]) {
+      aggregate.missingPricing = Boolean(aggregate.missingPricing || record.missingPricing);
+    }
   }
   return {
+    missingPricing: records.some((record) => record.missingPricing),
     daily: [...daily.values()].sort((a, b) => a.date.localeCompare(b.date)),
     byModel: [...byModel.values()].sort((a, b) => b.costUsd - a.costUsd),
     byProvider: [...byProvider.values()].sort((a, b) => b.costUsd - a.costUsd),
@@ -524,7 +538,7 @@ function reconcileHostSelections(usage: Usage): { hosts: UsageHost[]; usableHost
 }
 
 function filterUsageByHosts(usage: Usage, selectedHostIds: Set<string>): Usage {
-  if (!usage.records) return selectedHostIds.size ? { ...usage, daily: [], byModel: [], byProvider: [], totalCostUsd: Number.NaN, totalTokens: 0 } : { ...usage, daily: [], byModel: [], byProvider: [], totalCostUsd: 0, totalTokens: 0 };
+  if (!usage.records) return { ...usage, daily: [], byModel: [], byProvider: [], totalCostUsd: selectedHostIds.size ? Number.NaN : 0, totalTokens: 0, missingPricing: false };
   const records = recordsForHosts(usage, selectedHostIds);
   return { ...usage, records, ...summarizeSelectedRecords(records) };
 }
@@ -554,15 +568,17 @@ function usagePeriodStart(date: string, representation: ConcreteRepresentation):
 }
 
 function addUsageDay(bucket: UsageBucket, day: UsageDay): void {
+  bucket.missingPricing = Boolean(bucket.missingPricing || day.missingPricing);
   bucket.costUsd += day.costUsd;
   bucket.totalTokens += day.totalTokens;
   bucket.from = day.date < bucket.from ? day.date : bucket.from;
   bucket.to = day.date > bucket.to ? day.date : bucket.to;
   bucket.days.push(day);
   for (const [provider, value] of Object.entries(day.byProvider || {})) {
-    const current = bucket.byProvider?.[provider] || { costUsd: 0, totalTokens: 0 };
+    const current = bucket.byProvider?.[provider] || { costUsd: 0, totalTokens: 0, missingPricing: false };
     current.costUsd += value.costUsd;
     current.totalTokens += value.totalTokens;
+    current.missingPricing = Boolean(current.missingPricing || value.missingPricing);
     bucket.byProvider = { ...(bucket.byProvider || {}), [provider]: current };
   }
   for (const group of day.byModel || []) {
@@ -575,6 +591,7 @@ function addUsageDay(bucket: UsageBucket, day: UsageDay): void {
       const current = target.models.find((item) => item.model === model.model);
       if (current) {
         current.costUsd += model.costUsd;
+        current.missingPricing = Boolean(current.missingPricing || model.missingPricing);
         current.totalTokens = (current.totalTokens || 0) + (model.totalTokens || 0);
       } else {
         target.models.push({ ...model, totalTokens: model.totalTokens || 0 });
@@ -601,7 +618,7 @@ function usageBucketLabel(bucket: UsageBucket, representation: ConcreteRepresent
   return representation === "day" ? bucket.date : compactUsageDateRange(bucket.from, bucket.to);
 }
 
-function todaySpend(usage: Usage, hosts: UsageHost[], usableHosts: UsageHost[], selectedHostIds: Set<string>): { amount: number; known: boolean; partial: boolean } {
+function todaySpend(usage: Usage, hosts: UsageHost[], usableHosts: UsageHost[], selectedHostIds: Set<string>): PricingStatus & { amount: number; known: boolean; partial: boolean } {
   // An explicit empty selection is a valid zero. No usable hosts means there
   // is no trustworthy source from which to infer a zero.
   if (!usableHosts.length) return { amount: 0, known: false, partial: false };
@@ -613,6 +630,7 @@ function todaySpend(usage: Usage, hosts: UsageHost[], usableHosts: UsageHost[], 
   const hasTrustworthyAmount = selectedHosts.some(hostHealthy) || currentRecords.length > 0;
   return {
     amount: currentRecords.reduce((total, record) => total + record.costUsd, 0),
+    missingPricing: currentRecords.some((record) => record.missingPricing),
     known: hasTrustworthyAmount,
     partial: hasTrustworthyAmount && selectedHosts.some((host) => !hostHealthy(host)),
   };
@@ -624,14 +642,14 @@ function renderSpendMetrics(usage: Usage, hosts: UsageHost[], usableHosts: Usage
   const selectedHosts = hosts.filter((host) => selectedHostIds.has(host.hostId));
   const periodKnown = noHostsSelected || Boolean(selectedUsage.records?.length) || selectedHosts.some(hostHealthy);
   const periodAmount = selectedUsage.totalCostUsd;
-  $("#usage-total").textContent = money(periodKnown ? periodAmount : Number.NaN);
+  $("#usage-total").textContent = spend(periodKnown ? periodAmount : Number.NaN, selectedUsage.missingPricing);
   $("#usage-total-caption").textContent = `Estimated spend · ${usagePresetLabel(state.range)} · ${dateRange}`;
 
   const todayMetric = $("#today-metric") as HTMLElement;
   todayMetric.hidden = state.range === "today";
   if (todayMetric.hidden) return;
   const today = todaySpend(usage, hosts, usableHosts, selectedHostIds);
-  $("#today-total").textContent = money(today.known ? today.amount : Number.NaN);
+  $("#today-total").textContent = spend(today.known ? today.amount : Number.NaN, today.missingPricing);
   $("#today-caption").textContent = `Today so far${today.partial ? " · partial" : ""}`;
 }
 
@@ -657,7 +675,7 @@ function renderTopModels(usage: Usage, hosts: UsageHost[], usableHosts: UsageHos
   let emptyMessage = "No model breakdown available.";
   if (noHostsSelected) emptyMessage = "No hosts selected.";
   else if (today) emptyMessage = !today.known ? "Today's usage is unavailable." : today.partial ? "No model breakdown available for today's incomplete usage." : "No model usage today.";
-  $("#models-list").innerHTML = models?.length ? models.map((model, index) => `<div class="model-row"><span class="model-rank">${String(index + 1).padStart(2, "0")}</span><span class="model-name"><span class="model-name-text" title="${escapeHtml(model.model)}">${escapeHtml(model.model)}</span>${model.provider ? `<small class="model-provider">${escapeHtml(sourceNames(model.provider))}</small>` : ""}</span><span class="model-value">${money(model.costUsd)}</span></div>`).join("") : `<div class="quota-empty">${escapeHtml(emptyMessage)}</div>`;
+  $("#models-list").innerHTML = models?.length ? models.map((model, index) => `<div class="model-row"><span class="model-rank">${String(index + 1).padStart(2, "0")}</span><span class="model-name"><span class="model-name-text" title="${escapeHtml(model.model)}">${escapeHtml(model.model)}</span>${model.provider ? `<small class="model-provider">${escapeHtml(sourceNames(model.provider))}</small>` : ""}</span><span class="model-value">${modelSpend(model)}</span></div>`).join("") : `<div class="quota-empty">${escapeHtml(emptyMessage)}</div>`;
 }
 
 function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve"): void {
@@ -668,6 +686,8 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
   }
   const { hosts, usableHosts, selectedHostIds } = reconcileHostSelections(usage);
   const selectedUsage = filterUsageByHosts(usage, selectedHostIds);
+  $("#pricing-status").hidden = !selectedUsage.missingPricing;
+  $("#pricing-status").textContent = selectedUsage.missingPricing ? "Pricing unavailable for some models. Totals reflect reported costs only; + marks incomplete spend." : "";
   const noHostsSelected = usableHosts.length > 0 && selectedHostIds.size === 0;
   renderSpendMetrics(usage, hosts, usableHosts, selectedUsage, selectedHostIds);
   updateRepresentationControls();
@@ -708,21 +728,21 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
   const providers = [...new Set([...enabledSources, ...(enabledSources.size > 0 ? ["shared"] : [])])];
   const colors = sourceColors;
   const max = Math.max(...buckets.map((bucket) => bucket.costUsd), 0);
-  const usageTooltip = (bucket: UsageBucket, hoveredProvider: string, segments: Array<{ provider: string; costUsd: number; totalTokens: number }>): string => {
+  const usageTooltip = (bucket: UsageBucket, hoveredProvider: string, segments: Array<PricingStatus & { provider: string; costUsd: number; totalTokens: number }>): string => {
     const sortedSegments = [...segments].sort((a, b) => b.costUsd - a.costUsd);
-    const harnesses = sortedSegments.map((segment) => `<span class="harness-row ${segment.provider === hoveredProvider ? "hovered" : ""}"><i class="tooltip-harness-dot ${colors(segment.provider)}"></i><span class="harness-name">${escapeHtml(sourceNames(segment.provider))}</span><span class="harness-detail"> · ${money(segment.costUsd)} · ${formatTokens(segment.totalTokens)} tokens</span></span>`).join("");
-    return `<span class="chart-tooltip"><strong>${money(bucket.costUsd)} total · ${formatTokens(bucket.totalTokens)} tokens</strong><span>${escapeHtml(usageBucketLabel(bucket, representation))}</span><div class="tooltip-separator"></div>${harnesses}</span>`;
+    const harnesses = sortedSegments.map((segment) => `<span class="harness-row ${segment.provider === hoveredProvider ? "hovered" : ""}"><i class="tooltip-harness-dot ${colors(segment.provider)}"></i><span class="harness-name">${escapeHtml(sourceNames(segment.provider))}</span><span class="harness-detail"> · ${spend(segment.costUsd, segment.missingPricing)} · ${formatTokens(segment.totalTokens)} tokens${segment.missingPricing ? " · Pricing unavailable" : ""}</span></span>`).join("");
+    return `<span class="chart-tooltip"><strong>${spend(bucket.costUsd, bucket.missingPricing)} total · ${formatTokens(bucket.totalTokens)} tokens</strong><span>${escapeHtml(usageBucketLabel(bucket, representation))}</span><div class="tooltip-separator"></div>${harnesses}</span>`;
   };
-  const renderSegment = (bucket: UsageBucket, segment: { provider: string; costUsd: number; totalTokens: number }, segments: Array<{ provider: string; costUsd: number; totalTokens: number }>, height: number) => { const color = colors(segment.provider); return `<div class="chart-segment ${color}" style="flex:${height} 1 0%">${usageTooltip(bucket, segment.provider, segments)}</div>`; };
+  const renderSegment = (bucket: UsageBucket, segment: PricingStatus & { provider: string; costUsd: number; totalTokens: number }, segments: Array<PricingStatus & { provider: string; costUsd: number; totalTokens: number }>, height: number) => { const color = colors(segment.provider); return `<div class="chart-segment ${color}" style="flex:${height} 1 0%">${usageTooltip(bucket, segment.provider, segments)}</div>`; };
   const todayOnly = selectedUsage.from === selectedUsage.to;
   const chartScroll = document.querySelector<HTMLElement>(".chart-scroll");
   chart.innerHTML = buckets.length ? buckets.map((bucket, bucketIndex) => {
-    const segments = providers.map((provider) => ({ provider, costUsd: bucket.byProvider?.[provider]?.costUsd || 0, totalTokens: bucket.byProvider?.[provider]?.totalTokens || 0 })).filter((segment) => segment.costUsd > 0 || segment.totalTokens > 0);
-    const fallback = segments.length ? segments : bucket.costUsd > 0 || bucket.totalTokens > 0 ? [{ provider: "other", costUsd: bucket.costUsd, totalTokens: bucket.totalTokens }] : [];
+    const segments = providers.map((provider) => ({ provider, costUsd: bucket.byProvider?.[provider]?.costUsd || 0, totalTokens: bucket.byProvider?.[provider]?.totalTokens || 0, missingPricing: bucket.byProvider?.[provider]?.missingPricing })).filter((segment) => segment.costUsd > 0 || segment.totalTokens > 0 || segment.missingPricing);
+    const fallback = segments.length ? segments : bucket.costUsd > 0 || bucket.totalTokens > 0 || bucket.missingPricing ? [{ provider: "other", costUsd: bucket.costUsd, totalTokens: bucket.totalTokens, missingPricing: bucket.missingPricing }] : [];
     const displayedTotal = fallback.reduce((total, segment) => total + segment.costUsd, 0);
     const label = usageBucketLabel(bucket, representation);
     if (todayOnly) {
-      return (fallback.length ? fallback : [{ provider: "other", costUsd: 0, totalTokens: 0 }]).map((segment) => `<button class="chart-column today-harness" type="button" data-bucket-index="${bucketIndex}" aria-label="${escapeHtml(label)} ${escapeHtml(sourceNames(segment.provider))}: ${money(segment.costUsd)}"><div class="chart-stack">${segment.costUsd > 0 || segment.totalTokens > 0 ? `<div class="chart-segment ${colors(segment.provider)}" style="height:${max ? Math.max(2, (segment.costUsd / max) * 100) : 2}%;bottom:0">${usageTooltip(bucket, segment.provider, fallback)}</div>` : ""}</div></button>`).join("");
+      return (fallback.length ? fallback : [{ provider: "other", costUsd: 0, totalTokens: 0, missingPricing: false }]).map((segment) => `<button class="chart-column today-harness" type="button" data-bucket-index="${bucketIndex}" aria-label="${escapeHtml(label)} ${escapeHtml(sourceNames(segment.provider))}: ${spend(segment.costUsd, segment.missingPricing)}${segment.missingPricing ? ", Pricing unavailable" : ""}"><div class="chart-stack">${segment.costUsd > 0 || segment.totalTokens > 0 || segment.missingPricing ? `<div class="chart-segment ${colors(segment.provider)}" style="height:${max ? Math.max(2, (segment.costUsd / max) * 100) : 2}%;bottom:0">${usageTooltip(bucket, segment.provider, fallback)}</div>` : ""}</div></button>`).join("");
     }
     const isCurrentBucket = bucket.to === selectedUsage.to;
     // Size every stack by total spend. Keep small or token-only sources visible
@@ -736,7 +756,7 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
     }).join("");
     const stackHeight = displayedTotal > 0 && max > 0 ? Math.max(2, (displayedTotal / max) * 100) : fallback.length ? 2 : 0;
     const currentClass = isCurrentBucket && fallback.length ? "current-day" : "";
-    return `<button class="chart-column ${currentClass}" type="button" data-bucket-index="${bucketIndex}" aria-label="${escapeHtml(label)}: ${money(displayedTotal)}"><div class="chart-stack" style="height:${stackHeight}%">${markup}</div></button>`;
+    return `<button class="chart-column ${currentClass}" type="button" data-bucket-index="${bucketIndex}" aria-label="${escapeHtml(label)}: ${spend(displayedTotal, bucket.missingPricing)}${bucket.missingPricing ? ", Pricing unavailable" : ""}"><div class="chart-stack" style="height:${stackHeight}%">${markup}</div></button>`;
   }).join("") : `<div class="chart-empty">${escapeHtml(noHostsSelected ? "No usage hosts selected" : usage.error || "No usage data in this range")}</div>`;
   const chartColumnCount = chart.querySelectorAll(":scope > .chart-column").length;
   chartScroll?.style.setProperty("--chart-min-width", `${Math.max(1, chartColumnCount) * 15}px`);
@@ -757,9 +777,9 @@ function openUsageDetails(bucket: UsageBucket | undefined, representation: Concr
   $("#usage-chart").classList.add("suppress-tooltips");
   const label = usageBucketLabel(bucket, representation);
   $("#day-details-title").textContent = representation === "day" ? label : `${representation === "week" ? "Week" : "Month"} · ${label}`;
-  $("#day-details-summary").innerHTML = `<span><strong>${money(bucket.costUsd)}</strong> total</span><span><strong>${formatTokens(bucket.totalTokens)}</strong> tokens</span>`;
-  const modelDetails = (bucket.byModel || []).map((group) => { const sortedModels = [...group.models].sort((a, b) => b.costUsd - a.costUsd); const providerName = usageSourceName(group.provider); return `<section class="detail-group"><h3><i class="legend-key ${usageSourceColor(group.provider)}"></i>${escapeHtml(providerName)}</h3>${sortedModels.map((model) => `<div class="detail-model"><span>${escapeHtml(model.model)}</span><span>${money(model.costUsd)} · ${formatTokens(model.totalTokens)} tokens</span></div>`).join("")}</section>`; }).join("");
-  const dailyDetails = representation === "day" ? "" : `<section class="detail-group detail-days"><h3>By day</h3>${bucket.days.map((day) => `<div class="detail-model"><span>${escapeHtml(day.date)}</span><span>${money(day.costUsd)} · ${formatTokens(day.totalTokens)} tokens</span></div>`).join("")}</section>`;
+  $("#day-details-summary").innerHTML = `<span><strong>${spend(bucket.costUsd, bucket.missingPricing)}</strong> total${bucket.missingPricing ? " · Pricing unavailable for some models" : ""}</span><span><strong>${formatTokens(bucket.totalTokens)}</strong> tokens</span>`;
+  const modelDetails = (bucket.byModel || []).map((group) => { const sortedModels = [...group.models].sort((a, b) => b.costUsd - a.costUsd); const providerName = usageSourceName(group.provider); return `<section class="detail-group"><h3><i class="legend-key ${usageSourceColor(group.provider)}"></i>${escapeHtml(providerName)}</h3>${sortedModels.map((model) => `<div class="detail-model"><span>${escapeHtml(model.model)}</span><span>${modelSpend(model)} · ${formatTokens(model.totalTokens)} tokens</span></div>`).join("")}</section>`; }).join("");
+  const dailyDetails = representation === "day" ? "" : `<section class="detail-group detail-days"><h3>By day</h3>${bucket.days.map((day) => `<div class="detail-model"><span>${escapeHtml(day.date)}</span><span>${spend(day.costUsd, day.missingPricing)} · ${formatTokens(day.totalTokens)} tokens</span></div>`).join("")}</section>`;
   $("#day-details-content").innerHTML = modelDetails + dailyDetails || `<p class="quota-empty">No usage details available.</p>`;
   $("#day-details-dialog").showModal();
 }
