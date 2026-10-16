@@ -17,11 +17,14 @@ export type UsageRecord = {
   outputTokens: number;
   reasoningTokens: number;
   costUsd: number;
+  /** When set, costUsd is a reported subtotal, not a complete estimate. */
+  missingPricing?: boolean;
 };
 
 export type UsageSummary = {
-  daily: Array<{ date: string; costUsd: number; totalTokens: number; byProvider: Record<string, { costUsd: number; totalTokens: number }>; byModel: Array<{ provider: string; models: Array<{ model: string; costUsd: number; totalTokens: number }> }> }>;
-  byModel: Array<{ provider: string; model: string; costUsd: number; totalTokens: number }>;
+  missingPricing?: boolean;
+  daily: Array<{ date: string; costUsd: number; totalTokens: number; byProvider: Record<string, { costUsd: number; totalTokens: number }>; byModel: Array<{ provider: string; models: Array<{ model: string; costUsd: number; totalTokens: number; missingPricing?: boolean }> }> }>;
+  byModel: Array<{ provider: string; model: string; costUsd: number; totalTokens: number; missingPricing?: boolean }>;
   byProvider: Array<{ provider: string; costUsd: number; totalTokens: number }>;
   totalCostUsd: number;
   totalTokens: number;
@@ -75,6 +78,7 @@ function modelRows(row: Record<string, any>): Array<Record<string, any>> {
     cacheCreationTokens: row.cacheCreationTokens,
     outputTokens: row.outputTokens,
     cost: row.totalCost,
+    missingPricing: row.missingPricing,
   }];
 }
 
@@ -99,12 +103,15 @@ function rowProvider(row: Record<string, any>): string {
 
 export function parseCcusage(document: unknown): UsageRecord[] {
   const records: UsageRecord[] = [];
+  const unpriced = objectValue(objectValue(document).totals).unpricedModels;
+  const unpricedModels = new Set(Array.isArray(unpriced) ? unpriced.filter((value): value is string => typeof value === "string") : []);
   for (const parentRow of dailyRows(document)) {
     for (const row of usageRows(parentRow)) {
       const date = row.date ?? row.period ?? parentRow.period;
       if (typeof date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
       for (const model of modelRows(row)) {
         const modelName = typeof model.modelName === "string" && model.modelName.trim() ? model.modelName.trim() : "unknown";
+        const cost = typeof model.cost === "number" || typeof model.cost === "string" && model.cost.trim() ? Number(model.cost) : NaN;
         records.push({
           date,
           provider: String(model.provider ?? model.source ?? row.provider ?? row.source ?? rowProvider(row)).trim().toLowerCase(),
@@ -114,7 +121,8 @@ export function parseCcusage(document: unknown): UsageRecord[] {
           cacheCreationTokens: nonNegative(model.cacheCreationTokens),
           outputTokens: nonNegative(model.outputTokens),
           reasoningTokens: nonNegative(model.reasoningTokens),
-          costUsd: nonNegative(model.cost),
+          costUsd: nonNegative(cost),
+          ...(model.missingPricing === true || unpricedModels.has(modelName) || !Number.isFinite(cost) || cost < 0 ? { missingPricing: true } : {}),
         });
       }
     }
@@ -149,7 +157,7 @@ export function summarizeUsage(records: UsageRecord[]): UsageSummary {
     dayProvider.costUsd += record.costUsd;
     dayProvider.totalTokens += totalTokens;
     day.byProvider[record.provider] = dayProvider;
-    let modelGroup = day.byModel.find((entry: { provider: string; models: Array<{ model: string; costUsd: number; totalTokens: number }> }) => entry.provider === record.provider);
+    let modelGroup = day.byModel.find((entry: { provider: string; models: Array<{ model: string; costUsd: number; totalTokens: number; missingPricing?: boolean }> }) => entry.provider === record.provider);
     if (!modelGroup) {
       modelGroup = { provider: record.provider, models: [] };
       day.byModel.push(modelGroup);
@@ -161,6 +169,7 @@ export function summarizeUsage(records: UsageRecord[]): UsageSummary {
     }
     modelDetail.costUsd += record.costUsd;
     modelDetail.totalTokens += totalTokens;
+    if (record.missingPricing) { model.missingPricing = true; modelDetail.missingPricing = true; }
   }
   return {
     daily: [...daily.values()].map((day) => ({ ...day, byProvider: { ...day.byProvider } })).sort((a, b) => a.date.localeCompare(b.date)),
@@ -168,6 +177,7 @@ export function summarizeUsage(records: UsageRecord[]): UsageSummary {
     byProvider: [...byProvider.values()].sort((a, b) => b.costUsd - a.costUsd),
     totalCostUsd: records.reduce((total, record) => total + record.costUsd, 0),
     totalTokens: records.reduce((total, record) => total + record.inputTokens + record.cachedInputTokens + record.cacheCreationTokens + record.outputTokens + record.reasoningTokens, 0),
+    ...(records.some((record) => record.missingPricing) ? { missingPricing: true } : {}),
   };
 }
 
@@ -189,7 +199,7 @@ export async function readCcusageUsage({ from, to, timeZone }: { from: string; t
 
 function selectedProviders(enabledProviders: string[]): Set<string> {
   const selected = new Set(enabledProviders);
-  if (selected.has("opencode") || selected.has("hermes") || selected.has("antigravity")) selected.add("shared");
+  if (selected.has("opencode") || selected.has("hermes") || selected.has("antigravity") || selected.has("claude")) selected.add("shared");
   return selected;
 }
 

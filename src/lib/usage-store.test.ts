@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { FilesystemUsageStore, normalizeUsageToolId, type RawUsageContainer } from "./usage-store.js";
+import { claudeUsageDocument } from "./fixtures/claude-usage.js";
+import { filterUsageRecords, summarizeUsage } from "./usage.js";
 
 async function withStore(run: (store: FilesystemUsageStore, root: string) => Promise<void>): Promise<void> {
   const root = await mkdtemp(join(tmpdir(), "quota-dashboard-store-"));
@@ -65,6 +67,24 @@ test("counts an empty raw result as a stored date", async () => {
     await store.ingest(container({ daily: [] }));
     assert.deepEqual([...await store.readStoredDates("my-laptop", "2026-09-18", "2026-09-18")], ["2026-09-18"]);
     assert.deepEqual(await store.readNormalized("my-laptop", "2026-09-18", "2026-09-18"), []);
+  });
+});
+
+test("Claude usage persists by tool with pricing metadata and re-ingestion does not duplicate totals", async () => {
+  await withStore(async (store, root) => {
+    const data = claudeUsageDocument("2026-09-18");
+    await store.ingest(container(data, { ccusageVersion: "ccusage 20.0.33" }));
+    await store.ingest(container(data, { runId: "second-run", ccusageVersion: "ccusage 20.0.33" }));
+    const directory = join(root, "my-laptop", "2026", "09", "18");
+    const claude = JSON.parse(await readFile(join(directory, "claude.json"), "utf8"));
+    assert.equal(claude.ccusageVersion, "ccusage 20.0.33");
+    assert.equal(claude.records.length, 4);
+    assert.equal(claude.records[2].missingPricing, true);
+    assert.deepEqual(JSON.parse(await readFile(join(directory, "raw.json"), "utf8")).data, data);
+    const records = filterUsageRecords(["claude"], await store.readAllRecords("2026-09-18", "2026-09-18"));
+    assert.equal(summarizeUsage(records).totalCostUsd, 1.75);
+    assert.equal(summarizeUsage(records).totalTokens, 150);
+    assert.deepEqual([...new Set(records.map((record) => record.hostId))], ["my-laptop"]);
   });
 });
 

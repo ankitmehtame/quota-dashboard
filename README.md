@@ -171,7 +171,50 @@ a successful live request, never for stale or cached results. Quota markers and 
 countdowns use a monotonic estimate from fresh dashboard/usage server timestamps,
 subject to network delay and server clock error. Measurement age stays separate.
 
-Local usage is collected in the background for one date at a time. The parsed result is separated into Codex, OpenCode, Hermes, and Antigravity groups using its provider/source fields; those groups are independently toggleable in the Providers dialog. Antigravity usage appears when the installed `ccusage` release supports that source. The dashboard reads normalized records from `USAGE_DATA_DIR` immediately and never waits for a `ccusage` process. Each host/date directory also keeps the exact current document in `raw.json` plus timestamped raw backups when a later complete result omits a previously present tool. The dashboard does not read provider-local databases directly. Codex/ChatGPT quota is fetched directly from `https://chatgpt.com/backend-api/wham/usage` using the Codex OAuth credentials in `~/.codex/auth.json`; an expired access token is refreshed automatically when the endpoint returns `401`. OpenCode Go supports rolling, weekly, and monthly windows when its dashboard returns them.
+Local usage is collected in the background for one date at a time. The parsed result is separated into Codex, OpenCode, Hermes, Antigravity, and Claude groups using its provider/source fields; those groups are independently toggleable in the Providers dialog. Antigravity usage appears when the installed `ccusage` release supports that source. The dashboard reads normalized records from `USAGE_DATA_DIR` immediately and never waits for a `ccusage` process. Each host/date directory also keeps the exact current document in `raw.json` plus timestamped raw backups when a later complete result omits a previously present tool. The dashboard does not read provider-local databases directly. Codex/ChatGPT quota is fetched directly from `https://chatgpt.com/backend-api/wham/usage` using the Codex OAuth credentials in `~/.codex/auth.json`; an expired access token is refreshed automatically when the endpoint returns `401`. OpenCode Go supports rolling, weekly, and monthly windows when its dashboard returns them.
+
+### Claude tool usage
+
+Claude usage uses the existing external `ccusage` collection and local/remote
+storage pipeline. The verified output format is from **ccusage 20.0.33** with
+`daily --json --by-agent --since YYYY-MM-DD --until YYYY-MM-DD --timezone Asia/Singapore --offline`.
+Use the dashboard server's `USAGE_TIMEZONE` in place of the example timezone.
+This records a verified version, not a claim about the oldest compatible release.
+Install a collector version that reports `agent: "claude"` on each contributing host.
+
+The Claude usage switch defaults to enabled, including when migrating an older
+configuration, just like the other usage sources. Existing explicit settings stay
+unchanged. Turn it off under Manage providers to exclude Claude usage. This setting
+is independent of the opt-in Claude quota switch. No subscription OAuth token is
+required for usage reporting.
+
+The group follows the collector's **tool identity**, not the model vendor. A
+non-Anthropic model reported under `agent: "claude"` remains Claude tool usage; an
+Anthropic model used through OpenCode remains OpenCode usage. Per-agent rows take
+precedence over the combined parent totals to avoid counting the same report twice.
+Legacy mixed-agent rows without separate breakdowns remain labeled Shared rather
+than being attributed entirely to Claude. This source does not establish coverage
+of conversations in the Claude web or desktop chat apps.
+
+Token categories and model breakdowns come from the collector. Costs are collector
+estimates, not subscription charges or invoices. `missingPricing`, top-level
+`unpricedModels` hints, and absent or invalid model costs produce pricing warnings.
+Known costs still add up, but incomplete totals carry a `+`; an entirely unpriced
+total shows unavailable instead of a known zero. Model details distinguish unknown
+pricing from a reported zero. Unknown activity is not reconstructed from quota data.
+
+Already persisted Claude records become visible when enabled. Recollect historical
+dates through the existing cold-backfill form if a collector upgrade or old normalized
+records need to pick up Claude data or pricing metadata. Remote publishers already
+transport the per-agent records without a new MQTT schema. Upgrading the collector
+on a remote host is necessary only if its current version does not report Claude.
+Missing-pricing hints held only in top-level totals require the updated publisher
+to preserve them when slicing daily reports; per-model flags work with existing
+publishers. Each host must report only its own activity. Do not publish synchronized
+copies of the same history under different host IDs; there is no cross-host session
+deduplication. Token totals are summed from reported model token categories, so
+collector aggregate totals can differ when they include categories absent from the
+model breakdowns.
 
 ## Remote usage
 

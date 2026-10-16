@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { ccusageArgs, rollingDateRange, runCcusage, sliceCcusageDocument } from "./ccusage.js";
+import { claudeUsageDocument } from "../lib/fixtures/claude-usage.js";
+import { parseCcusage } from "../lib/usage.js";
 
 test("uses daily JSON by-agent with the configured date range and timezone", () => {
   assert.deepEqual(ccusageArgs({ from: "2025-09-09", to: "2026-09-13", timezone: "Asia/Singapore" }), [
@@ -55,6 +57,16 @@ test("slices a multi-day document and synthesizes missing dates", () => {
   assert.deepEqual(sliceCcusageDocument(document, "2026-09-12"), {
     daily: [],
   });
+});
+
+test("daily Claude slices preserve pricing hints without copying aggregate costs or tokens", () => {
+  const document = claudeUsageDocument();
+  delete document.daily[0].agents[0].modelBreakdowns[2].missingPricing;
+  const slice = sliceCcusageDocument(document, "2026-05-03");
+  assert.deepEqual(slice.daily, document.daily);
+  assert.deepEqual(slice.totals, { unpricedModels: ["unpriced-example"] });
+  assert.equal(parseCcusage(slice)[2].missingPricing, true);
+  assert.equal(document.totals.totalTokens, 155);
 });
 
 test("passes offline mode and the caller timeout through to ccusage", async () => {

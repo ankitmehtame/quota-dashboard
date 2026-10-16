@@ -6,7 +6,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { ProviderResult } from "./core.js";
+import { type ProviderResult, USAGE_SOURCE_IDS } from "./core.js";
 
 test("built server shares Claude fetches across routes, enforces cooldowns, isolates accounts, and refreshes response time", { timeout: 20_000 }, async () => {
   const root = await mkdtemp(join(tmpdir(), "quota-claude-server-"));
@@ -24,7 +24,7 @@ test("built server shares Claude fetches across routes, enforces cooldowns, isol
   await writeFile(credentialsPath, JSON.stringify({ claudeAiOauth: { accessToken: "FAKE_ACCOUNT_A_TOKEN", scopes: ["user:profile"] } }));
   await writeFile(configPath, JSON.stringify({
     providers: Object.fromEntries(["claude", "codex", "openrouter", "opencode-go", "ollama"].map((id) => [id, { enabled: id === "claude" }])),
-    usageSources: Object.fromEntries(["codex", "opencode", "hermes", "antigravity"].map((id) => [id, { enabled: false }])),
+    usageSources: Object.fromEntries(USAGE_SOURCE_IDS.map((id) => [id, { enabled: false }])),
   }));
   // This process cannot contact any upstream. All Claude responses use fake data.
   await writeFile(preloadPath, `

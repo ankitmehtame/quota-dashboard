@@ -6,18 +6,20 @@ import { runInNewContext } from "node:vm";
 // Exercise the compiled renderer without running the dashboard's startup requests.
 const app = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const renderer = app.slice(app.indexOf("function renderUsage("), app.indexOf("function openUsageDetails("));
+const costFormatter = app.slice(app.indexOf("function formatUsageCost("), app.indexOf("function hostHealthy("));
 
-function renderChart(days: Array<{ date: string; costs: number[]; tokens?: number[] }>, representation = "day"): string {
-  const buckets = days.map(({ date, costs, tokens }) => ({
+function renderChart(days: Array<{ date: string; costs: number[]; tokens?: number[]; missingClaudePricing?: boolean }>, representation = "day"): string {
+  const buckets = days.map(({ date, costs, tokens, missingClaudePricing }) => ({
     date, from: date, to: date, days: [],
     costUsd: costs.reduce((total, cost) => total + cost, 0),
     totalTokens: (tokens || []).reduce((total, count) => total + count, 0),
-    byProvider: Object.fromEntries(costs.map((costUsd, index) => [["codex", "opencode", "hermes", "antigravity"][index], { costUsd, totalTokens: tokens?.[index] || 0 }])),
+    byProvider: Object.fromEntries(costs.map((costUsd, index) => [["codex", "opencode", "hermes", "antigravity", "claude"][index], { costUsd, totalTokens: tokens?.[index] || 0 }])),
+    byModel: missingClaudePricing ? [{ provider: "claude", models: [{ model: "unpriced", costUsd: costs[4] || 0, missingPricing: true }] }] : [],
   }));
   const chart = { innerHTML: "", querySelectorAll: () => [] };
   const elements = new Map<string, { innerHTML?: string; textContent?: string }>();
-  const usage = { from: days[0].date, to: days.at(-1)!.date, daily: buckets, providers: ["codex", "opencode", "hermes", "antigravity"] };
-  runInNewContext(`${renderer}\nrenderUsage(usage);`, {
+  const usage = { from: days[0].date, to: days.at(-1)!.date, daily: buckets, providers: ["codex", "opencode", "hermes", "antigravity", "claude"] };
+  runInNewContext(`${costFormatter}\n${renderer}\nrenderUsage(usage);`, {
     usage, state: { chartScrollLeft: 0, hostSelections: new Map() },
     document: { querySelector: () => null, querySelectorAll: () => [] },
     $: (selector: string) => {
@@ -31,7 +33,7 @@ function renderChart(days: Array<{ date: string; costs: number[]; tokens?: numbe
     activeRepresentation: () => representation,
     usageBuckets: () => buckets,
     usageBucketLabel: (bucket: { date: string }) => bucket.date,
-    usageSourceNames: {}, escapeHtml: String, money: (value: number) => `$${value.toFixed(2)}`, formatTokens: String,
+    usageSourceNames: { claude: "Claude" }, escapeHtml: String, money: (value: number) => `$${value.toFixed(2)}`, formatTokens: String,
     activeChartTooltip: null,
   });
   return chart.innerHTML;
@@ -75,6 +77,30 @@ test("equal spend has equal stack height despite different provider mixes", () =
   ]));
   const visibleHeight = (stack: typeof stacks[number]) => stack.height * stack.segments.reduce((total, segment) => total + segment.height, 0) / 100;
   assert.ok(Math.abs(visibleHeight(stacks[0]) - visibleHeight(stacks[1])) < 1e-10);
+});
+
+test("Claude has distinct chart and tooltip colors in day, week, and month views", () => {
+  for (const representation of ["day", "week", "month"]) {
+    const html = renderChart([{ date: "2026-05-03", costs: [0, 0, 0, 0, 2], tokens: [0, 0, 0, 0, 150] }], representation);
+    assert.match(html, /chart-segment rose/);
+    assert.match(html, /tooltip-harness-dot rose/);
+    assert.match(html, /harness-name">Claude/);
+    assert.match(html, /150 tokens/);
+    assert.match(html, /\$2\.00/);
+  }
+  const styles = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+  assert.match(styles, /\.legend-key\.rose, \.chart-segment\.rose, \.tooltip-harness-dot\.rose/);
+});
+
+test("unpriced Claude chart tooltips and accessible labels never report known zero cost", () => {
+  const day = { date: "2026-05-03", costs: [0, 0, 0, 0, 0], tokens: [0, 0, 0, 0, 150], missingClaudePricing: true };
+  for (const days of [[day], [day, { ...day, date: "2026-05-04" }]]) {
+    const html = renderChart(days);
+    assert.match(html, /aria-label="[^"]*Pricing unavailable"/);
+    assert.match(html, /chart-segment rose/);
+    assert.match(html, /150 tokens/);
+    assert.doesNotMatch(html, /\$0\.00/);
+  }
 });
 
 test("Hermes and Antigravity share a continuous flex stack with OpenCode", () => {

@@ -99,7 +99,10 @@ export function sliceCcusageDocument(document: unknown, date: string): Record<st
     const rowDate = row.date ?? row.period;
     return rowDate === date;
   });
-  return { daily };
+  // Keep pricing hints, but never copy multi-day token/cost totals into a day slice.
+  const unpriced = isObject(document.totals) ? document.totals.unpricedModels : undefined;
+  const unpricedModels = Array.isArray(unpriced) ? unpriced.filter((model): model is string => typeof model === "string") : [];
+  return { daily, ...(unpricedModels.length ? { totals: { unpricedModels } } : {}) };
 }
 
 export async function runCcusage({

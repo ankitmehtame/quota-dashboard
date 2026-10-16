@@ -6,6 +6,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { USAGE_SOURCE_IDS } from "./core.js";
 
 const serverPath = fileURLToPath(new URL("../server.js", import.meta.url));
 
@@ -54,7 +55,7 @@ async function startServer(options: { enabled: boolean; hotIntervalMs?: number; 
   const port = await freePort();
   await mkdir(home, { recursive: true });
   const enabled = options.enabled;
-  await writeFile(configPath, JSON.stringify({ usageSources: Object.fromEntries(["codex", "opencode", "hermes", "antigravity"].map((id) => [id, { enabled }])) }));
+  await writeFile(configPath, JSON.stringify({ usageSources: Object.fromEntries(USAGE_SOURCE_IDS.map((id) => [id, { enabled }])) }));
   await writeFile(binary, `#!/bin/sh
 case " $* " in
   *" --no-offline "*)
