@@ -695,7 +695,7 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
   const sourceNames = usageSourceName;
   const sourceColors = usageSourceColor;
   const enabledSources = new Set(usage.providers || []);
-  $(".chart-legend").innerHTML = [...enabledSources].map((provider) => `<span class="legend-key ${sourceColors(provider)}"></span> ${escapeHtml(sourceNames(provider))}`).join("") || "No local usage sources enabled";
+  $(".chart-legend").innerHTML = [...enabledSources].map((provider) => `<span class="chart-legend-item"><span class="legend-key ${sourceColors(provider)}"></span>${escapeHtml(sourceNames(provider))}</span>`).join("") || "No local usage sources enabled";
   $("#usage-hosts").innerHTML = hosts.map((host, index) => {
     const usable = hostUsable(usage, host);
     const hasRecords = hostHasRecords(usage, host);
