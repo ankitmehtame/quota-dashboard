@@ -1,4 +1,4 @@
-export const PROVIDER_IDS = ["codex", "openrouter", "opencode-go", "ollama"] as const;
+export const PROVIDER_IDS = ["codex", "openrouter", "opencode-go", "ollama", "claude"] as const;
 export type ProviderId = typeof PROVIDER_IDS[number];
 export const USAGE_SOURCE_IDS = ["codex", "opencode", "hermes", "antigravity"] as const;
 export type UsageSourceId = typeof USAGE_SOURCE_IDS[number];
@@ -37,6 +37,10 @@ export type ProviderResult = {
   planType?: string | null;
   subscriptionActiveUntil?: string | null;
   resetCredits?: RateLimitResetCredit[];
+  errorKind?: "configuration" | "authentication" | "network" | "server" | "rate_limit" | "response" | "internal";
+  cooldownUntil?: number;
+  stale?: boolean;
+  cached?: boolean;
 };
 
 export type ProviderConfig = { enabled: boolean };
@@ -62,6 +66,11 @@ export const PROVIDER_DEFINITIONS: Record<ProviderId, {
   description: string;
   capabilities: Record<string, boolean>;
 }> = {
+  claude: {
+    name: "Claude", shortName: "Claude", accent: "orange",
+    description: "Claude subscription quota windows",
+    capabilities: { quota: true, usage: false, usedPercent: true, remainingValue: false, resetAt: true, historicalUsage: false, cost: false, tokenCounts: false },
+  },
   codex: {
     name: "Codex / ChatGPT",
     shortName: "Codex",
@@ -134,6 +143,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     openrouter: { enabled: true },
     "opencode-go": { enabled: false },
     ollama: { enabled: true },
+    claude: { enabled: false },
   },
   providerOrder: [...PROVIDER_IDS],
   usageSources: {

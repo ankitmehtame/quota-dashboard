@@ -1,6 +1,8 @@
 import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { fetchClaude, resolveClaudeCredentials } from "./claude.js";
+export { fetchClaude, resolveClaudeCredentials, parseClaudeQuota, parseRetryAfter } from "./claude.js";
 
 import { type ProviderId, clampPercent, formatMoney, numberOrNull, usageWindow, type ProviderResult, type QuotaWindow, type RateLimitResetCredit } from "./core.js";
 
@@ -312,9 +314,10 @@ export function parseCodexQuota(payload: unknown): QuotaWindow[] {
   return windows;
 }
 
-export const PROVIDER_FETCHERS: Record<ProviderId, () => Promise<ProviderResult>> = { codex: fetchCodex, openrouter: fetchOpenRouter, "opencode-go": fetchOpenCodeGo, ollama: fetchOllama };
+export const PROVIDER_FETCHERS: Record<ProviderId, () => Promise<ProviderResult>> = { claude: fetchClaude, codex: fetchCodex, openrouter: fetchOpenRouter, "opencode-go": fetchOpenCodeGo, ollama: fetchOllama };
 
 export async function isProviderConfigured(id: ProviderId): Promise<boolean> {
+  if (id === "claude") return Boolean((await resolveClaudeCredentials()).accessToken);
   if (id === "openrouter") {
     const auth = await readJson(authPath);
     return Boolean(process.env.OPENROUTER_API_KEY?.trim() || authValue(auth, ["openrouter"]));

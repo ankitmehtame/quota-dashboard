@@ -90,8 +90,12 @@ Provider enablement and dashboard order are stored in `~/.config/quota-dashboard
 - `OPENCODE_GO_WORKSPACE_ID`
 - `OPENCODE_GO_AUTH_COOKIE`
 - `OPENCODE_AUTH_PATH` (defaults to `~/.local/share/opencode/auth.json`)
-- `QUOTA_CACHE_TTL_SECONDS` (defaults to `120`)
+- `QUOTA_CACHE_TTL_SECONDS` (defaults to `120` for existing providers; Claude uses `300`)
 - `CODEX_AUTH_PATH` (defaults to `~/.codex/auth.json`)
+- `CLAUDE_OAUTH_TOKEN` (Claude subscription OAuth access token, not an API key)
+- `CLAUDE_AUTH_PATH` (explicit Claude credential file)
+- `CLAUDE_CONFIG_DIR` (directory containing `.credentials.json`)
+- `CLAUDE_USER_AGENT` (defaults to `claude-code/2.1.69`)
 - `CONFIG_PATH` (defaults to `~/.config/quota-dashboard/config.json`)
 - `HOST` and `PORT` (server bind address and port)
 
@@ -104,6 +108,68 @@ date. Elapsed time uses the API's actual billing-period dates. A balance summary
 above the quota bar shows total available credits with an included/purchased
 breakdown, including zero purchased credits. Purchased credits do not affect the monthly percentage.
 There is no fallback to `/api/usage` or its old limit response format.
+
+### Claude subscription quota
+
+Enable Claude in Manage providers. It defaults to disabled and does not add a usage
+source. Credential lookup stops at the first selected source:
+
+1. A non-empty `CLAUDE_OAUTH_TOKEN`.
+2. `CLAUDE_AUTH_PATH`, if set.
+3. `<CLAUDE_CONFIG_DIR>/.credentials.json`, if the directory override is set.
+4. `~/.claude/.credentials.json`.
+
+An invalid explicit source never falls back to another account. The supported file
+format has a `claudeAiOauth` object with `accessToken` or `access_token`. Optional
+`expiresAt` or `expires_at` accepts positive epoch seconds below `1e11`, epoch
+milliseconds at or above that threshold, or an ISO timestamp with a timezone.
+Camel-case keys take precedence when both forms are present. Optional `scopes`
+accepts a string array or whitespace-separated string. Malformed metadata fails
+locally; absent metadata is unknown and the upstream service validates the token.
+
+A normal Claude Code subscription login is expected to work. The token needs
+`user:profile`, a permission granted during login, not an extra header or secret.
+An inference-only `claude setup-token` token may lack that permission. Anthropic
+API keys and Admin usage/cost APIs do not provide subscription quota. macOS commonly
+stores credentials in the `Claude Code-credentials` Keychain entry. This version
+does not import Keychain entries; supply a quota-capable token or supported file.
+Do not paste tokens or credential files into issues or chat.
+
+The dashboard reads credentials again for each actual fetch and never changes the
+file or refreshes OAuth tokens. Claude Code or the operator must renew credentials.
+Direct-token deployments must replace expired tokens themselves. Tokens and private
+cache fingerprints never go to the browser or logs. Account/source changes detected
+on credential re-read clear previous measurements, including aggregate snapshots.
+Settings also re-check credentials without requesting quota. Otherwise changes are
+not detected immediately while a cached result or cooldown is active.
+
+Quota comes from the undocumented `https://api.anthropic.com/api/oauth/usage`
+endpoint using `anthropic-beta: oauth-2025-04-20`. Standard 5-hour, weekly, Sonnet,
+and Opus weekly windows appear when reported. Missing utilization remains unavailable,
+not zero. Window start dates are inferred from reset time and fixed duration.
+Scoped `limits[]`, monetary extra usage, browser cookies, billing, and reset credits
+are deferred until their schemas and units are verified.
+
+The default User-Agent version above comes from a reported compatibility test, not
+an authenticated test by this project. Override it with printable ASCII text if
+needed. The API and accepted client identities can change. This is not a published
+API contract or a guarantee against throttling or Cloudflare challenges. The
+dashboard does not rotate identities or bypass challenges.
+
+Claude has a five-minute cache TTL. Concurrent refreshes share one request, and
+forced refresh and provider-test actions cannot bypass cooldowns. Valid
+`Retry-After` delay-seconds or IMF-fixdate values apply even to authentication errors.
+HTTP 429 without a future deadline backs off from five minutes to a one-hour cap;
+a longer server deadline is never shortened. Success resets fallback backoff.
+These are application polling policies, not a published safe API polling rate.
+Cooldowns are in memory and do not survive server restarts.
+
+Network errors, timeouts, HTTP 5xx, and HTTP 429 retain clearly marked stale quota
+with its original measurement time. Authentication, configuration, and schema errors
+clear retained data. The provider-test response includes `verified: true` only for
+a successful live request, never for stale or cached results. Quota markers and reset
+countdowns use a monotonic estimate from fresh dashboard/usage server timestamps,
+subject to network delay and server clock error. Measurement age stays separate.
 
 Local usage is collected in the background for one date at a time. The parsed result is separated into Codex, OpenCode, Hermes, and Antigravity groups using its provider/source fields; those groups are independently toggleable in the Providers dialog. Antigravity usage appears when the installed `ccusage` release supports that source. The dashboard reads normalized records from `USAGE_DATA_DIR` immediately and never waits for a `ccusage` process. Each host/date directory also keeps the exact current document in `raw.json` plus timestamped raw backups when a later complete result omits a previously present tool. The dashboard does not read provider-local databases directly. Codex/ChatGPT quota is fetched directly from `https://chatgpt.com/backend-api/wham/usage` using the Codex OAuth credentials in `~/.codex/auth.json`; an expired access token is refreshed automatically when the endpoint returns `401`. OpenCode Go supports rolling, weekly, and monthly windows when its dashboard returns them.
 
