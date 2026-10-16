@@ -26,6 +26,11 @@ test("expanded fallback palette has matching bar, legend, and tooltip styles", (
   }
 });
 
+test("usage breakdown header badges have spacing before the agent name", () => {
+  const styles = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+  assert.match(styles, /\.detail-group h3 \.legend-key\s*\{[^}]*margin:\s*0 6px 0 0\s*;/);
+});
+
 test("settings list dynamic sources, honor saved toggles, and escape labels and IDs", async () => {
   const settings = app.slice(app.indexOf("async function loadSettings("), app.indexOf("function showToast("));
   const elements = new Map<string, { innerHTML: string }>();
