@@ -12,6 +12,7 @@ import type { ProviderResult } from "./lib/core.js";
 import { processColdDays } from "./lib/cold-range.js";
 import { fetchClaude, resolveClaudeCredentials, isProviderConfigured, PROVIDER_FETCHERS } from "./lib/providers.js";
 import { createQuotaCache } from "./lib/quota-cache.js";
+import { createIconCache, isIconId } from "./lib/provider-icons.js";
 import { filterUsageRecords, summarizeUsage } from "./lib/usage.js";
 import { FilesystemUsageStore } from "./lib/usage-store.js";
 import { aggregateUsageSeverity, offlineUsageWarning, type UsageSeverity } from "./lib/usage-health.js";
@@ -83,6 +84,11 @@ const quotaCache = createQuotaCache({
 });
 const localHostId = sanitizeHostId(process.env.LOCAL_HOST_ID?.trim() || hostname());
 const dailyLogger = createDailyLogger({ name: "server" });
+const iconCache = createIconCache({
+  directory: join(dirname(usageDataRoot), "icons"),
+  bundledDirectory: join(publicRoot, "icons"),
+  log: (message) => dailyLogger.log(message),
+});
 const remotePersistenceErrors = new Map<string, string>();
 const remotePersistenceChains = new Map<string, Promise<void>>();
 let localHotPromise: Promise<void> | null = null;
@@ -579,6 +585,17 @@ function publishRemoteRefresh(category: "hot" | "cold", from: string, to: string
 }
 
 async function handleApi(request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse, url: URL, httpId: string): Promise<void> {
+  if (request.method === "POST" && url.pathname === "/api/v1/icons/refresh") {
+    let allowedOrigin = true;
+    if (request.headers.origin) {
+      try { allowedOrigin = new URL(request.headers.origin).host === request.headers.host; } catch { allowedOrigin = false; }
+    }
+    if (request.headers["sec-fetch-site"] === "cross-site" || !allowedOrigin) return json(response, 403, { error: "Forbidden" });
+    // Snapshot before starting the refresh: background changes appear on a later opening.
+    const icons = await iconCache.manifest();
+    void iconCache.refresh();
+    return json(response, 202, { icons });
+  }
   const config = await loadConfig();
   if (request.method === "GET" && url.pathname === "/api/v1/providers") {
     const statuses = Object.fromEntries(await Promise.all(config.providerOrder.map(async (id) => [id, providerStatus({ id, config: config.providers[id], result: { configured: await configuredStatus(id, config.providers[id].enabled) } })])));
@@ -720,7 +737,25 @@ const server = createServer(async (request, response) => {
   response.once("close", () => { if (!response.writableFinished) complete(true); });
   try {
     const url = new URL(request.url || "/", `http://${request.headers.host || "localhost"}`);
-    if (url.pathname.startsWith("/api/")) await handleApi(request, response, url, httpId);
+    if (url.pathname.startsWith("/icons/")) {
+      const match = url.pathname.match(/^\/icons\/([a-z]+)\.svg$/);
+      if (!match || !isIconId(match[1])) return json(response, 404, { error: "Unknown icon" });
+      if (request.method !== "GET" && request.method !== "HEAD") return json(response, 405, { error: "Method not allowed" });
+      const icon = await iconCache.get(match[1]);
+      const etag = `"${icon.revision}"`;
+      response.setHeader("Content-Type", "image/svg+xml");
+      response.setHeader("Cache-Control", "no-cache");
+      response.setHeader("ETag", etag);
+      response.setHeader("X-Content-Type-Options", "nosniff");
+      response.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; sandbox");
+      if (request.headers["if-none-match"]?.split(",").map((value) => value.trim().replace(/^W\//, "")).includes(etag)) {
+        response.writeHead(304);
+        return response.end();
+      }
+      response.writeHead(200);
+      response.end(request.method === "HEAD" ? undefined : icon.svg);
+    }
+    else if (url.pathname.startsWith("/api/")) await handleApi(request, response, url, httpId);
     else await serveStatic(response, url.pathname);
   } catch (error) {
     const message = error && typeof error === "object" && "message" in error && typeof error.message === "string" ? error.message : "Internal server error";

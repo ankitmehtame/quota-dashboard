@@ -5,10 +5,11 @@ import { runInNewContext } from "node:vm";
 import { parseClaudeQuota, parseOllamaBalance, parseOllamaCreditBalance } from "./providers.js";
 
 const app = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
+const icons = app.slice(app.indexOf("const usageSourceNames ="), app.indexOf("const HOT_USAGE_POLL_INTERVAL_MS"));
 const renderer = app.slice(app.indexOf("function formatTokens("), app.indexOf("function renderQuotas("));
 
 function renderOllama(payload: unknown): string {
-  return runInNewContext(`${renderer}\nquotaCard("ollama", provider, quota);`, {
+  return runInNewContext(`${icons}\n${renderer}\nquotaCard("ollama", provider, quota);`, {
     provider: { id: "ollama", shortName: "Ollama", description: "Monthly cloud credits and balance", accent: "orange", configured: true, status: "ok" },
     quota: { windows: parseOllamaBalance(payload), creditBalance: parseOllamaCreditBalance(payload) },
     state: { hour12: false },
@@ -55,7 +56,7 @@ test("elapsed position uses the reported billing period and never a calendar app
 });
 
 function renderClaude(quota: Record<string, unknown>, status = "ok"): string {
-  return runInNewContext(`${renderer}\nquotaCard("claude", provider, quota);`, {
+  return runInNewContext(`${icons}\n${renderer}\nquotaCard("claude", provider, quota);`, {
     provider: { id: "claude", shortName: "Claude", description: "Subscription quota", accent: "orange", configured: true, status },
     quota, state: { hour12: false },
     escapeHtml: (value: unknown) => String(value).replaceAll("<", "&lt;").replaceAll(">", "&gt;"),
@@ -68,6 +69,17 @@ test("Claude cards label even one window and do not invent a balance", () => {
   assert.match(html, /12\.5%/);
   assert.match(html, /resets in/);
   assert.doesNotMatch(html, /No balance reported|quota-credit-balance|limit /);
+});
+
+test("quota cards use 20px decorative icons for every provider, including Go", () => {
+  for (const [id, icon] of Object.entries({ claude: "claude", codex: "openai", openrouter: "openrouter", ollama: "ollama", "opencode-go": "opencode" })) {
+    const html = runInNewContext(`${icons}\n${renderer}\nquotaCard(id, provider, { windows: [] });`, {
+      id, provider: { shortName: id === "opencode-go" ? "Go" : id, accent: "mint", description: "", configured: false, status: "unconfigured" },
+      state: { hour12: false }, escapeHtml: String,
+    });
+    assert.match(html, new RegExp(`data-icon="${icon}"[^>]*width="20" height="20" alt=""`));
+    assert.match(html, /source-icon-large" aria-hidden="true"/);
+  }
 });
 
 test("Claude stale quota keeps measurement time and error; auth errors have no quota bars", () => {

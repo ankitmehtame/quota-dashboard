@@ -99,6 +99,15 @@ dialog { color: var(--text); background: var(--surface-raised); border: 1px soli
 .chart-legend .chart-legend-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; margin-top: 0; }
 .chart-legend .legend-key { flex-shrink: 0; margin: 0; }
 .detail-group h3 .legend-key { margin: 0 6px 0 0; }
+.quota-card .provider-name { display: flex; align-items: center; gap: 7px; }
+.source-icon, .chart-topline .source-icon, .chart-tooltip .source-icon { display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; flex: 0 0 14px; margin: 0; vertical-align: middle; }
+.source-icon.source-icon-large { width: 20px; height: 20px; flex-basis: 20px; }
+.source-icon img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.source-icon .icon-fallback, .chart-topline .source-icon .icon-fallback, .chart-tooltip .source-icon .icon-fallback { display: none; margin: 0; }
+.source-icon.icon-failed img { display: none; }
+.source-icon.icon-failed .icon-fallback, .chart-topline .source-icon.icon-failed .icon-fallback, .chart-tooltip .source-icon.icon-failed .icon-fallback { display: inline-flex; align-items: center; justify-content: center; }
+.source-icon .legend-key, .source-icon .tooltip-harness-dot, .detail-group h3 .source-icon .legend-key { margin: 0; }
+.detail-group h3 > .source-icon, .chart-tooltip .harness-row > .source-icon { margin-right: 6px; }
 .tooltip-harness-dot { display: inline-block; width: 7px; height: 7px; border-radius: 1px; margin-right: 6px; }.tooltip-harness-dot.mint { background: var(--mint); }.tooltip-harness-dot.violet { background: var(--violet); }.tooltip-harness-dot.orange { background: var(--orange); }.tooltip-harness-dot.blue { background: var(--blue); }.tooltip-harness-dot.neutral { background: var(--neutral); }
 @media (max-width: 560px) { .live-dot { display: none; }.hero { display: block; padding: 48px 0 46px; }.now-panel { border-left: 0; border-top: 1px solid var(--line); padding: 18px 0 0; margin-top: 38px; }.now-panel strong { font-size: 28px; display: inline-block; margin-right: 8px; }.now-panel small { display: inline-block; }.quota-grid { grid-template-columns: 1fr; }.quota-card { min-height: 165px; }.usage-section { margin-top: 51px; }.section-heading { align-items: start; gap: 15px; }.usage-heading { display: block; }.segmented { margin-top: 17px; width: fit-content; }.chart-card, .models-card { padding: 17px; }.chart-legend { display: none !important; }.status-strip { align-items: start; }.status-updated { display: none; }footer { flex-wrap: wrap; }.footer-version { width: 100%; margin: 4px 0 0; }.desktop-only { display: none; } }
 /* Stack early enough that the centered timestamp cannot overlap header controls. */
