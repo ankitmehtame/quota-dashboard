@@ -51,6 +51,12 @@ test("dynamic sources receive fallback labels and consistent colored bars and to
   }
 });
 
+test("known sources have 14px tooltip icons while stacked segments retain palette colors", () => {
+  const html = renderChart([{ date: "2026-10-04", costs: [1, 2, 3, 4] }]);
+  for (const icon of ["openai", "opencode", "hermes", "antigravity"]) assert.match(html, new RegExp(`data-icon="${icon}"[^>]*width="14" height="14"`));
+  for (const color of ["mint", "violet", "orange", "blue"]) assert.match(html, new RegExp(`class="chart-segment ${color}"`));
+});
+
 function stackGeometry(html: string): Array<{ height: number; segments: Array<{ height: number }> }> {
   return [...html.matchAll(/<div class="chart-stack" style="([^"]*)">(.*?)<\/button>/g)].map((match) => ({
     height: Number(match[1].match(/height:([\d.]+)%/)?.[1] ?? 100),

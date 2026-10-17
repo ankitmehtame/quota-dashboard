@@ -78,6 +78,22 @@ multi-agent rows are included whenever at least one usage source is enabled.
 Discovery scans are cached for 30 seconds and invalidated after each successful ingest.
 Files added directly by another process appear after the cache expires.
 
+### Provider and tool icons
+
+Known providers and usage tools display locally served SVG icons. Unknown tools keep
+their palette squares, and chart bars keep their existing colors. Bundled icons work
+without upstream connectivity. Opening the dashboard or returning to its tab asks the
+server to check for updates, at most once per 24 hours across all clients. The server
+contacts only the approved selfh.st and theSVG asset URLs; browsers never contact those
+sites directly. Updates run in the background and appear on a subsequent opening.
+
+Validated icons are stored in an `icons` directory beside `USAGE_DATA_DIR`, by default
+`~/.local/share/quota-dashboard/icons`. Keep this directory writable and persistent
+alongside usage storage when deploying the dashboard. Failed or unsafe updates retain
+the last valid copy and are logged without dashboard alerts. The service worker caches
+icons for offline use. Sources, license notices, and modifications are recorded in
+[`src/public/icons/ATTRIBUTION.md`](src/public/icons/ATTRIBUTION.md).
+
 No machine-specific absolute paths or identifiers are stored in the application. Provider credentials and machine-specific overrides remain server-side and can be supplied through environment variables:
 
 - `CCUSAGE_BIN` (defaults to `ccusage`)
