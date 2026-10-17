@@ -83,3 +83,25 @@ test("settings list dynamic sources, honor saved toggles, and escape labels and 
   assert.doesNotMatch(html, /<tool>|data-provider="odd-"/);
   assert.match(html, /&quot;&lt;tool&gt;/i);
 });
+
+test("settings show icons in both provider sections without changing controls or the display setting", async () => {
+  const settings = app.slice(app.indexOf("async function loadSettings("), app.indexOf("function showToast("));
+  const elements = new Map<string, { innerHTML: string }>();
+  const providerOrder = ["codex", "openrouter", "opencode-go", "ollama", "claude"];
+  const usageSources = Object.fromEntries(["codex", "opencode", "hermes", "antigravity", "custom-agent"].map((id) => [id, { enabled: true }]));
+  await runInNewContext(`${escape}\n${presentation}\n${settings}\nloadSettings();`, {
+    fetch: async () => ({ json: async () => ({ providerOrder, providers: Object.fromEntries(providerOrder.map((id) => [id, { name: id, description: "Example", enabled: true }])), usageSources }) }),
+    state: { hour12: false }, renderColdUsageSettings() {}, document: { querySelectorAll: () => [] },
+    $: (selector: string) => { if (!elements.has(selector)) elements.set(selector, { innerHTML: "" }); return elements.get(selector); },
+  });
+  const html = elements.get("#provider-settings")!.innerHTML;
+  const quota = html.split("QUOTA PROVIDERS</p>")[1].split("<p class=\"settings-group\">LOCAL USAGE SOURCES")[0];
+  const usage = html.split("LOCAL USAGE SOURCES</p>")[1];
+  assert.equal((quota.match(/<img /g) || []).length, 5);
+  assert.equal((usage.match(/<img /g) || []).length, 4);
+  for (const icon of ["openai", "openrouter", "opencode", "ollama", "claude"]) assert.match(quota, new RegExp(`data-icon="${icon}"[^>]*width="14" height="14"`));
+  assert.match(usage, /class="legend-key \w+"><\/span>Custom Agent usage/);
+  assert.match(quota, /data-provider="codex" checked/);
+  assert.match(usage, /data-kind="usage" data-provider="custom-agent" checked/);
+  assert.match(html, /class="provider-name">12-hour clock<\/div>/);
+});

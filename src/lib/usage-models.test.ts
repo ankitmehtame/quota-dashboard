@@ -82,6 +82,16 @@ test("dynamic-only model selection keeps shared rows and title-cases unknown too
   assert.doesNotMatch(view.list(), /Disabled model/);
 });
 
+test("top models show 14px icons beside each known tool and palette squares for unknown tools", () => {
+  const mapping = { codex: "openai", opencode: "opencode", "opencode-go": "opencode", claude: "claude", openrouter: "openrouter", ollama: "ollama", hermes: "hermes", antigravity: "antigravity" };
+  const providers = [...Object.keys(mapping), "custom-agent"];
+  const view = dashboard(providers.map((provider) => record("2026-10-09", provider + " model", 1, "one", provider)), undefined, undefined, providers);
+  for (const icon of Object.values(mapping)) assert.match(view.list(), new RegExp(`data-icon="${icon}"[^>]*width="14" height="14" alt=""`));
+  assert.equal((view.list().match(/<img /g) || []).length, 8);
+  assert.match(view.list(), /<small class="model-provider"><span class="legend-key \w+"><\/span><span class="model-provider-name" title="Custom Agent">Custom Agent<\/span>/);
+  assert.match(view.list(), /source-icon" aria-hidden="true"/);
+});
+
 test("today models distinguish healthy zero, unavailable data, and explicit deselection", () => {
   assert.match(dashboard([]).list(), /No model usage today/);
   assert.match(dashboard([], []).list(), /Today's usage is unavailable/);
