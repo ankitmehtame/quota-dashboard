@@ -35,6 +35,20 @@ function usageSourceColor(id: string): string {
   for (let index = 0; index < id.length; index++) hash = Math.imul(hash ^ id.charCodeAt(index), 16777619);
   return usageColorPalette[(hash >>> 0) % usageColorPalette.length];
 }
+// Brand assets from https://selfh.st/icons/ and https://thesvg.org/.
+// Sources, licenses, and modifications are recorded in icons/ATTRIBUTION.md.
+const sourceIcons: Record<string, string> = { claude: "claude", codex: "openai", openrouter: "openrouter", ollama: "ollama", hermes: "hermes", antigravity: "antigravity", opencode: "opencode", "opencode-go": "opencode" };
+let iconRevisions: Record<string, string> = {};
+function sourceIconUrl(icon: string): string {
+  return `/icons/${icon}.svg${iconRevisions[icon] ? `?v=${iconRevisions[icon]}` : ""}`;
+}
+function sourceIcon(id: string, size = 14, tooltip = false): string {
+  const color = usageSourceColor(id);
+  const swatch = tooltip ? `<i class="tooltip-harness-dot ${color}"></i>` : `<span class="legend-key ${color}"></span>`;
+  const icon = Object.hasOwn(sourceIcons, id) ? sourceIcons[id] : undefined;
+  if (!icon) return swatch;
+  return `<span class="source-icon${size === 20 ? " source-icon-large" : ""}" aria-hidden="true"><span class="icon-fallback">${swatch}</span><img data-icon="${icon}" src="${sourceIconUrl(icon)}" width="${size}" height="${size}" alt="" /></span>`;
+}
 let providerOrder = ["codex", "openrouter", "opencode-go", "ollama", "claude"];
 type UsageSourceConfig = { enabled: boolean };
 const HOT_USAGE_POLL_INTERVAL_MS = 5_000;
@@ -440,7 +454,7 @@ function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][st
   const accent = /^[a-z-]+$/.test(provider.accent) ? provider.accent : "mint";
   const stale = quota?.stale ? `<div class="quota-error">Stale · last known quota measured ${escapeHtml(formatRefreshTime(quota.fetchedAt))}</div>` : "";
   const cooldown = quota?.cooldownUntil && quota.cooldownUntil > now ? `<div class="quota-foot">Retry after ${escapeHtml(formatRefreshTime(new Date(quota.cooldownUntil).toISOString()))}</div>` : "";
-  return `<article class="quota-card" style="--accent: var(--${accent})"><div class="provider-head"><div><div class="provider-name">${escapeHtml(provider.shortName)}</div><div class="provider-sub">${escapeHtml(provider.description)}</div></div><span class="provider-badge">${escapeHtml(status)}</span></div>${plan}<div class="quota-main">${stale}${creditBalance}${content}${resetCredits}${quota?.error ? `<div class="quota-error">${escapeHtml(quota.error)}</div>` : ""}${cooldown}</div></article>`;
+  return `<article class="quota-card" style="--accent: var(--${accent})"><div class="provider-head"><div><div class="provider-name">${sourceIcon(id, 20)}${escapeHtml(provider.shortName)}</div><div class="provider-sub">${escapeHtml(provider.description)}</div></div><span class="provider-badge">${escapeHtml(status)}</span></div>${plan}<div class="quota-main">${stale}${creditBalance}${content}${resetCredits}${quota?.error ? `<div class="quota-error">${escapeHtml(quota.error)}</div>` : ""}${cooldown}</div></article>`;
 }
 
 function renderQuotas(data: Dashboard): void {
@@ -695,7 +709,7 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
   const sourceNames = usageSourceName;
   const sourceColors = usageSourceColor;
   const enabledSources = new Set(usage.providers || []);
-  $(".chart-legend").innerHTML = [...enabledSources].map((provider) => `<span class="chart-legend-item"><span class="legend-key ${sourceColors(provider)}"></span>${escapeHtml(sourceNames(provider))}</span>`).join("") || "No local usage sources enabled";
+  $(".chart-legend").innerHTML = [...enabledSources].map((provider) => `<span class="chart-legend-item">${sourceIcon(provider)}${escapeHtml(sourceNames(provider))}</span>`).join("") || "No local usage sources enabled";
   $("#usage-hosts").innerHTML = hosts.map((host, index) => {
     const usable = hostUsable(usage, host);
     const hasRecords = hostHasRecords(usage, host);
@@ -730,7 +744,7 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
   const max = Math.max(...buckets.map((bucket) => bucket.costUsd), 0);
   const usageTooltip = (bucket: UsageBucket, hoveredProvider: string, segments: Array<PricingStatus & { provider: string; costUsd: number; totalTokens: number }>): string => {
     const sortedSegments = [...segments].sort((a, b) => b.costUsd - a.costUsd);
-    const harnesses = sortedSegments.map((segment) => `<span class="harness-row ${segment.provider === hoveredProvider ? "hovered" : ""}"><i class="tooltip-harness-dot ${colors(segment.provider)}"></i><span class="harness-name">${escapeHtml(sourceNames(segment.provider))}</span><span class="harness-detail"> · ${spend(segment.costUsd, segment.missingPricing)} · ${formatTokens(segment.totalTokens)} tokens${segment.missingPricing ? " · Pricing unavailable" : ""}</span></span>`).join("");
+    const harnesses = sortedSegments.map((segment) => `<span class="harness-row ${segment.provider === hoveredProvider ? "hovered" : ""}">${sourceIcon(segment.provider, 14, true)}<span class="harness-name">${escapeHtml(sourceNames(segment.provider))}</span><span class="harness-detail"> · ${spend(segment.costUsd, segment.missingPricing)} · ${formatTokens(segment.totalTokens)} tokens${segment.missingPricing ? " · Pricing unavailable" : ""}</span></span>`).join("");
     return `<span class="chart-tooltip"><strong>${spend(bucket.costUsd, bucket.missingPricing)} total · ${formatTokens(bucket.totalTokens)} tokens</strong><span>${escapeHtml(usageBucketLabel(bucket, representation))}</span><div class="tooltip-separator"></div>${harnesses}</span>`;
   };
   const renderSegment = (bucket: UsageBucket, segment: PricingStatus & { provider: string; costUsd: number; totalTokens: number }, segments: Array<PricingStatus & { provider: string; costUsd: number; totalTokens: number }>, height: number) => { const color = colors(segment.provider); return `<div class="chart-segment ${color}" style="flex:${height} 1 0%">${usageTooltip(bucket, segment.provider, segments)}</div>`; };
@@ -778,7 +792,7 @@ function openUsageDetails(bucket: UsageBucket | undefined, representation: Concr
   const label = usageBucketLabel(bucket, representation);
   $("#day-details-title").textContent = representation === "day" ? label : `${representation === "week" ? "Week" : "Month"} · ${label}`;
   $("#day-details-summary").innerHTML = `<span><strong>${spend(bucket.costUsd, bucket.missingPricing)}</strong> total${bucket.missingPricing ? " · Pricing unavailable for some models" : ""}</span><span><strong>${formatTokens(bucket.totalTokens)}</strong> tokens</span>`;
-  const modelDetails = (bucket.byModel || []).map((group) => { const sortedModels = [...group.models].sort((a, b) => b.costUsd - a.costUsd); const providerName = usageSourceName(group.provider); return `<section class="detail-group"><h3><i class="legend-key ${usageSourceColor(group.provider)}"></i>${escapeHtml(providerName)}</h3>${sortedModels.map((model) => `<div class="detail-model"><span>${escapeHtml(model.model)}</span><span>${modelSpend(model)} · ${formatTokens(model.totalTokens)} tokens</span></div>`).join("")}</section>`; }).join("");
+  const modelDetails = (bucket.byModel || []).map((group) => { const sortedModels = [...group.models].sort((a, b) => b.costUsd - a.costUsd); const providerName = usageSourceName(group.provider); return `<section class="detail-group"><h3>${sourceIcon(group.provider)}${escapeHtml(providerName)}</h3>${sortedModels.map((model) => `<div class="detail-model"><span>${escapeHtml(model.model)}</span><span>${modelSpend(model)} · ${formatTokens(model.totalTokens)} tokens</span></div>`).join("")}</section>`; }).join("");
   const dailyDetails = representation === "day" ? "" : `<section class="detail-group detail-days"><h3>By day</h3>${bucket.days.map((day) => `<div class="detail-model"><span>${escapeHtml(day.date)}</span><span>${spend(day.costUsd, day.missingPricing)} · ${formatTokens(day.totalTokens)} tokens</span></div>`).join("")}</section>`;
   $("#day-details-content").innerHTML = modelDetails + dailyDetails || `<p class="quota-empty">No usage details available.</p>`;
   $("#day-details-dialog").showModal();
@@ -1123,6 +1137,39 @@ document.addEventListener("pointerdown", (event) => {
 document.addEventListener("focusin", (event) => {
   if (activeHostStatusPopover && !activeHostStatusPopover.anchor.closest(".usage-host-pill")?.contains(element(event.target))) closeHostStatusPopover();
 });
+function markFailedIcon(image: HTMLImageElement): void {
+  image.closest(".source-icon")?.classList.add("icon-failed");
+}
+
+async function checkProviderIcons(): Promise<void> {
+  try {
+    const response = await fetch("/api/v1/icons/refresh", { method: "POST" });
+    if (!response.ok) return;
+    const data = await response.json();
+    const next: Record<string, string> = {};
+    for (const icon of Object.values(sourceIcons)) {
+      if (typeof data.icons?.[icon] === "string" && /^[a-f0-9]{64}$/.test(data.icons[icon])) next[icon] = data.icons[icon];
+    }
+    iconRevisions = next;
+    document.querySelectorAll<HTMLImageElement>("img[data-icon]").forEach((image) => {
+      const icon = image.dataset.icon!;
+      if (!Object.values(sourceIcons).includes(icon)) return;
+      const url = sourceIconUrl(icon);
+      if (image.getAttribute("src") !== url || image.closest(".source-icon")?.classList.contains("icon-failed")) {
+        image.closest(".source-icon")?.classList.remove("icon-failed");
+        image.src = url;
+      }
+    });
+  } catch { /* Offline: the service worker and bundled icons remain usable. */ }
+}
+
+// Image errors do not bubble. Capture handles both placeholder and dynamically rendered icons.
+document.addEventListener("error", (event) => {
+  if (event.target instanceof HTMLImageElement && event.target.matches("img[data-icon]")) markFailedIcon(event.target);
+}, true);
+document.querySelectorAll<HTMLImageElement>("img[data-icon]").forEach((image) => { if (image.complete && !image.naturalWidth) markFailedIcon(image); });
+document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") void checkProviderIcons(); });
+void checkProviderIcons();
 bindHeaderRefreshTooltip();
 bindQuotaTooltipDismissal();
 updateRepresentationControls(); renderClock(); setInterval(renderClock, 30_000); setInterval(() => { if (state.dashboard) renderQuotas(state.dashboard); }, 60_000);

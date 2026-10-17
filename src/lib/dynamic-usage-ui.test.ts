@@ -34,14 +34,19 @@ test("usage breakdown header badges have spacing before the agent name", () => {
 test("chart legend groups each dynamic badge with its escaped label", () => {
   const legend = app.slice(app.indexOf('$(".chart-legend").innerHTML ='), app.indexOf('$("#usage-hosts").innerHTML ='));
   const element = { innerHTML: "" };
-  const render = (providers: string[]) => runInNewContext(`${escape}\n${legend}`, {
+  const render = (providers: string[]) => runInNewContext(`${escape}\n${presentation}\n${legend}`, {
     $: () => element,
     enabledSources: new Set(providers),
     sourceColors: () => "mint",
     sourceNames: (provider: string) => provider,
   });
   render(["Codex", "A long agent name", "<agent>"]);
-  assert.equal(element.innerHTML, ["Codex", "A long agent name", "&lt;agent&gt;"].map((label) => `<span class="chart-legend-item"><span class="legend-key mint"></span>${label}</span>`).join(""));
+  assert.match(element.innerHTML, />Codex<\/span>/);
+  assert.match(element.innerHTML, />A long agent name<\/span>/);
+  assert.match(element.innerHTML, />&lt;agent&gt;<\/span>/);
+  assert.equal((element.innerHTML.match(/class="legend-key /g) || []).length, 3);
+  render(["codex"]);
+  assert.match(element.innerHTML, /data-icon="openai"[^>]*width="14" height="14"/);
   render([]);
   assert.equal(element.innerHTML, "No local usage sources enabled");
 });
@@ -49,9 +54,8 @@ test("chart legend groups each dynamic badge with its escaped label", () => {
 test("placeholder legend groups badges and labels, with non-wrapping flex items", () => {
   const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
   const legend = html.match(/<div class="chart-legend">(.*?)<\/div>/)![1];
-  const entries = [...legend.matchAll(/<span class="chart-legend-item"><span class="legend-key \w+"><\/span>[^<]+<\/span>/g)];
-  assert.equal(entries.length, 4);
-  assert.equal(entries.map(([entry]) => entry).join(""), legend);
+  const expected = runInNewContext(`${escape}\n${presentation}\n["codex", "opencode", "hermes", "antigravity"].map(id => '<span class="chart-legend-item">' + sourceIcon(id) + usageSourceName(id) + '</span>').join('');`);
+  assert.equal(legend, expected);
   const styles = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
   const itemStyles = styles.match(/\.chart-legend \.chart-legend-item\s*\{([^}]*)\}/)![1];
   for (const rule of [/display:\s*inline-flex;/, /align-items:\s*center;/, /white-space:\s*nowrap;/, /gap:\s*6px;/]) {
