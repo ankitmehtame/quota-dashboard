@@ -270,12 +270,27 @@ export async function fetchCodex(): Promise<ProviderResult> {
     return {
       ...result(true, windows),
       planType: typeof payload.plan_type === "string" ? payload.plan_type : null,
-      subscriptionActiveUntil: typeof payload.subscription_active_until === "string" ? payload.subscription_active_until : null,
+      subscriptionActiveUntil: parseCodexRenewalDate(payload.subscription_active_until),
       resetCredits,
     };
   } catch (error) {
     return result(true, [], errorMessage(error, "Codex quota request failed"));
   }
+}
+
+export function parseCodexRenewalDate(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.(\d+))?)?(Z|[+-]\d{2}:\d{2})?$/.exec(value);
+  if (!match || match[0] !== value) return null;
+  const [, year, month, day, hour, minute, second = "00", fraction, zone = "Z"] = match;
+  const leapYear = Number(year) % 4 === 0 && (Number(year) % 100 !== 0 || Number(year) % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  if (Number(month) < 1 || Number(month) > 12 || Number(day) < 1 || Number(day) > daysInMonth[Number(month) - 1]
+    || Number(hour) > 23 || Number(minute) > 59 || Number(second) > 59) return null;
+  if (zone !== "Z" && (Number(zone.slice(1, 3)) > 23 || Number(zone.slice(4)) > 59)) return null;
+  // Unzoned API timestamps are UTC, never the server's local timezone.
+  const timestamp = Date.parse(`${year}-${month}-${day}T${hour}:${minute}:${second}${fraction ? `.${fraction}` : ""}${zone}`);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
 }
 
 export function parseCodexResetCredits(payload: unknown): RateLimitResetCredit[] {

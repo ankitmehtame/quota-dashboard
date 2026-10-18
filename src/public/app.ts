@@ -402,9 +402,11 @@ function bindHeaderRefreshTooltip(): void {
   bindQuotaTooltipTrigger(trigger, tooltip);
 }
 
-function formatRenewalDate(iso: string | null | undefined): string | null {
+function formatRenewalDate(iso: string | null | undefined, includeTime = false): string | null {
   if (!iso || !Number.isFinite(Date.parse(iso))) return null;
-  return new Intl.DateTimeFormat([], { year: "numeric", month: "short", day: "numeric" }).format(new Date(iso));
+  return new Intl.DateTimeFormat([], { year: "numeric", month: "short", day: "numeric",
+    ...(includeTime ? { hour: "2-digit", minute: "2-digit", hour12: state.hour12 } as const : {}),
+  }).format(new Date(iso));
 }
 
 function formatPercent(value: number): string {
@@ -415,7 +417,7 @@ function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][st
   const now = estimatedServerNow();
   const windows = quota?.windows?.length ? quota.windows : [undefined];
   const status = provider.status === "disabled" ? "off" : provider.status === "error" ? "error" : provider.configured ? "connected" : "setup needed";
-  const renewalDate = formatRenewalDate(quota?.subscriptionActiveUntil);
+  const renewalDate = formatRenewalDate(quota?.subscriptionActiveUntil, true);
   const plan = quota?.planType || renewalDate
     ? `<div class="quota-plan">${quota?.planType ? `${escapeHtml(quota.planType)} plan` : ""}${quota?.planType && renewalDate ? '<span class="quota-renewal"> · </span>' : ""}${renewalDate ? `<span class="quota-renewal">Renews ${escapeHtml(renewalDate)}</span>` : ""}</div>`
     : "";
