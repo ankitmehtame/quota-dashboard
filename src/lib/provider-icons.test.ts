@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { createIconCache, ICON_REFRESH_MS, ICON_SOURCES, ICON_TIMEOUT_MS, MAX_ICON_BYTES, validateIconSvg } from "./provider-icons.js";
 
 const bundledDirectory = fileURLToPath(new URL("../public/icons/", import.meta.url));
+const iconCount = Object.keys(ICON_SOURCES).length;
 const svg = (color = "#abc") => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path fill="${color}" d="M0 0h10v10H0z"/></svg>`;
 const response = (body = svg(), headers: Record<string, string> = {}) => new Response(body, { headers: { "content-type": "image/svg+xml", ...headers } });
 
@@ -20,6 +21,10 @@ test("bundled icons validate, retain artwork, and are copied with attribution", 
   assert.match(antigravity, /<filter /);
   assert.match(antigravity, /<mask /);
   assert.match(antigravity, /fill="#3186FF"/);
+  const gemini = await readFile(join(bundledDirectory, "gemini.svg"), "utf8");
+  assert.match(gemini, /fill="#8E75B2"/);
+  assert.match(gemini, /<title>Google Gemini<\/title>/);
+  assert.equal(validateIconSvg(gemini.replace('<svg ', '<svg role="img" ')), gemini);
   const ollama = await readFile(join(bundledDirectory, "ollama.svg"), "utf8");
   // Its white disc relies on implicit black artwork. A global light fill washes it out.
   assert.doesNotMatch(ollama.match(/^<svg[^>]*>/)![0], /fill=/);
@@ -67,12 +72,12 @@ test("refreshes coalesce, serve bundled immediately, persist updates, and revali
   assert.equal((await cache.get("claude")).revision, bundled.revision);
   release();
   await pending;
-  assert.equal(calls, 7);
+  assert.equal(calls, iconCount);
   const updated = await cache.get("claude");
   assert.match(updated.svg, /#abc/);
   assert.notEqual(updated.revision, bundled.revision);
   await cache.refresh();
-  assert.equal(calls, 7);
+  assert.equal(calls, iconCount);
   const requests: Headers[] = [];
   const restarted = createIconCache({ directory, bundledDirectory, now: () => now, fetch: async (_, init) => {
     requests.push(new Headers(init?.headers));
@@ -83,7 +88,7 @@ test("refreshes coalesce, serve bundled immediately, persist updates, and revali
   assert.equal((await restarted.get("claude")).revision, updated.revision);
   now += ICON_REFRESH_MS;
   await restarted.refresh();
-  assert.equal(requests.length, 7);
+  assert.equal(requests.length, iconCount);
   assert.equal(requests[0].get("if-none-match"), '"upstream-v1"');
   assert.equal(requests[0].get("if-modified-since"), "Wed, 01 Jan 2025 00:00:00 GMT");
   assert.equal((await restarted.get("claude")).revision, updated.revision);
@@ -108,12 +113,12 @@ test("failed and unsafe downloads preserve valid files and bound retries across 
   const cache = createIconCache({ directory, bundledDirectory, now: () => now, log: (message) => logs.push(message), fetch: async () => response(svg("#def")) });
   await cache.refresh();
   const good = await cache.get("claude");
-  const failing = createIconCache({ directory, bundledDirectory, now: () => now, log: (message) => logs.push(message), fetch: async () => { attempt++; return failures[attempt - 1](); } });
+  const failing = createIconCache({ directory, bundledDirectory, now: () => now, log: (message) => logs.push(message), fetch: async () => { attempt++; return failures[(attempt - 1) % failures.length](); } });
   now += ICON_REFRESH_MS;
   await failing.refresh();
-  assert.equal(attempt, 7);
+  assert.equal(attempt, iconCount);
   assert.equal((await failing.get("claude")).revision, good.revision);
-  assert.equal(logs.length, 7);
+  assert.equal(logs.length, iconCount);
   assert.doesNotMatch(logs.join("\n"), /secret|evil/);
   let retries = 0;
   const restarted = createIconCache({ directory, bundledDirectory, now: () => now, fetch: async () => { retries++; throw new Error("Should not retry"); } });
@@ -131,7 +136,7 @@ test("missing or invalid durable cache falls back to bundled icons", async (t) =
   const first = await cache.manifest();
   await cache.refresh();
   assert.deepEqual(await cache.manifest(), first);
-  assert.equal(Object.keys(first).length, 7);
+  assert.equal(Object.keys(first).length, iconCount);
 });
 
 test("upstream timeout aborts stalled requests and retains fallback icons", async (t) => {
@@ -142,7 +147,7 @@ test("upstream timeout aborts stalled requests and retains fallback icons", asyn
   let calls = 0;
   const fetching = new Promise<void>((resolve) => { started = resolve; });
   const cache = createIconCache({ directory, bundledDirectory, fetch: async (_, init) => {
-    if (++calls === 7) started();
+    if (++calls === iconCount) started();
     return new Promise<Response>((_, reject) => init!.signal!.addEventListener("abort", () => reject(new Error("aborted"))));
   } });
   const before = await cache.get("claude");

@@ -33,7 +33,7 @@ test("service worker precaches icons, stores refreshed responses, and uses them 
   await lifecycle("activate");
   assert.equal(stores.has("quota-dashboard-shell-v1"), false);
   const shell = stores.get("quota-dashboard-shell-v2")!;
-  assert.equal([...shell.keys()].filter((url) => url.includes("/icons/")).length, 7);
+  assert.equal([...shell.keys()].filter((url) => url.includes("/icons/")).length, 8);
   const request = async (path: string, method = "GET") => {
     const pending: Promise<unknown>[] = [];
     let response: Promise<Response> | undefined;
@@ -49,6 +49,7 @@ test("service worker precaches icons, stores refreshed responses, and uses them 
   network = async () => { throw new Error("Offline"); };
   assert.equal(await (await request("/icons/openai.svg?v=second"))!.text(), "updated");
   assert.equal(await (await request("/icons/hermes.svg?v=second"))!.text(), "bundled /icons/hermes.svg");
+  assert.equal(await (await request("/icons/gemini.svg?v=second"))!.text(), "bundled /icons/gemini.svg");
   network = async () => new Response("Not an SVG", { status: 500 });
   assert.equal(await (await request("/icons/openai.svg"))!.text(), "updated");
   assert.equal(await request("/api/v1/icons/refresh", "POST"), undefined);

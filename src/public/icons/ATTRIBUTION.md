@@ -25,10 +25,13 @@ The collection advertises free personal and commercial use without required attr
 | --- | --- | --- | --- |
 | `hermes.svg` | Nous Research / Hermes | https://thesvg.org/icon/nousresearch-hermes | https://thesvg.org/icons/nousresearch-hermes/default.svg |
 | `antigravity.svg` | Google / Antigravity | https://thesvg.org/icon/google-antigravity | https://thesvg.org/icons/google-antigravity/default.svg |
+| `gemini.svg` | Google / Gemini | https://thesvg.org/icon/google-gemini | https://thesvg.org/icons/google-gemini/default.svg |
 | `opencode.svg` | OpenCode | https://thesvg.org/icon/opencode | https://thesvg.org/icons/opencode/default.svg |
 
 ## Modifications and updates
 
 All bundled and runtime-downloaded SVGs pass through the same static-SVG validation and serialization. Comments and unnecessary namespace declarations are removed. Internal XLink references become SVG `href` attributes. `currentColor` becomes the dashboard's light icon color, `#f0f5f1`. Explicit colors, including multicolor artwork, and implicit SVG black fills are preserved. The OpenAI and OpenRouter light variants are used for contrast on the dark dashboard.
+
+The Gemini asset's root `role="img"` attribute is omitted to match the static-SVG allowlist. The enclosing dashboard markup already handles accessibility.
 
 The server refreshes only these listed sources, at most daily when the dashboard opens. The same modifications apply to accepted updates. Browser clients never contact the source collections directly.
