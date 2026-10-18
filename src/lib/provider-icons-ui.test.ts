@@ -55,11 +55,22 @@ test("offline opening and invalid revision data leave local fallbacks available 
   assert.doesNotMatch(result, /<script>/);
 });
 
+test("Gemini sources use the sparkle while Antigravity keeps its own icon", () => {
+  for (const id of ["gemini", "gemini-cli"]) {
+    const html = runInNewContext(`${presentation}\nsourceIcon('${id}');`);
+    assert.match(html, /data-icon="gemini" src="\/icons\/gemini.svg"/);
+    const tooltip = runInNewContext(`${presentation}\nsourceIcon('${id}', 14, true);`);
+    assert.match(tooltip, /data-icon="gemini"/);
+  }
+  assert.match(runInNewContext(`${presentation}\nsourceIcon('antigravity');`), /data-icon="antigravity"/);
+});
+
 test("day detail breakdowns use icons for known sources and squares for unknown sources", () => {
   const details = app.slice(app.indexOf("function openUsageDetails("), app.indexOf("function ", app.indexOf("function openUsageDetails(") + 10));
   const elements = new Map<string, { innerHTML: string; textContent: string; showModal: () => void; classList: { add: () => void } }>();
   const bucket = { date: "2026-10-04", costUsd: 1, totalTokens: 10, byModel: [
     { provider: "hermes", models: [{ model: "example", costUsd: 1, totalTokens: 10 }] },
+    { provider: "gemini", models: [{ model: "gemini-3-pro", costUsd: 0, totalTokens: 0 }] },
     { provider: "new-tool", models: [{ model: "example", costUsd: 0, totalTokens: 0 }] },
   ] };
   runInNewContext(`${presentation}\n${details}\nopenUsageDetails(bucket, 'day');`, {
@@ -72,5 +83,6 @@ test("day detail breakdowns use icons for known sources and squares for unknown 
   });
   const html = [...elements.values()].map((element) => element.innerHTML).join("");
   assert.match(html, /data-icon="hermes"[^>]*width="14" height="14"/);
+  assert.match(html, /data-icon="gemini"[^>]*width="14" height="14"/);
   assert.match(html, /class="legend-key \w+"><\/span>New Tool/);
 });

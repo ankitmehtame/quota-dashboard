@@ -37,7 +37,7 @@ function usageSourceColor(id: string): string {
 }
 // Brand assets from https://selfh.st/icons/ and https://thesvg.org/.
 // Sources, licenses, and modifications are recorded in icons/ATTRIBUTION.md.
-const sourceIcons: Record<string, string> = { claude: "claude", codex: "openai", openrouter: "openrouter", ollama: "ollama", hermes: "hermes", antigravity: "antigravity", opencode: "opencode", "opencode-go": "opencode" };
+const sourceIcons: Record<string, string> = { claude: "claude", codex: "openai", openrouter: "openrouter", ollama: "ollama", hermes: "hermes", antigravity: "antigravity", gemini: "gemini", "gemini-cli": "gemini", opencode: "opencode", "opencode-go": "opencode" };
 let iconRevisions: Record<string, string> = {};
 function sourceIconUrl(icon: string): string {
   return `/icons/${icon}.svg${iconRevisions[icon] ? `?v=${iconRevisions[icon]}` : ""}`;

@@ -12,6 +12,7 @@ export const ICON_SOURCES = {
   ollama: "https://cdn.jsdelivr.net/gh/selfhst/icons@main/svg/ollama.svg",
   hermes: "https://thesvg.org/icons/nousresearch-hermes/default.svg",
   antigravity: "https://thesvg.org/icons/google-antigravity/default.svg",
+  gemini: "https://thesvg.org/icons/google-gemini/default.svg",
   opencode: "https://thesvg.org/icons/opencode/default.svg",
 } as const;
 export type IconId = keyof typeof ICON_SOURCES;
@@ -59,6 +60,7 @@ export function validateIconSvg(input: string): string {
         continue;
       }
       if (attr.name === "xml:space" && ["preserve", "default"].includes(attr.value)) continue;
+      if (tag.local === "svg" && attr.name === "role" && attr.value === "img") continue;
       let name = attr.local;
       let value = attr.value;
       if (name === "href" && (!attr.uri || attr.uri === "http://www.w3.org/1999/xlink")) {
