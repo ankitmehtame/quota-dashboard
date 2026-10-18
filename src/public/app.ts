@@ -58,6 +58,7 @@ let activeChartTooltip: { anchor: HTMLElement; tooltip: HTMLElement } | null = n
 let activeQuotaTooltip: { anchor: HTMLElement; tooltip: HTMLElement } | null = null;
 let activeHostStatusPopover: { anchor: HTMLButtonElement; popover: HTMLElement } | null = null;
 let activeDetailsTrigger: HTMLButtonElement | null = null;
+let activeModelDetails: { model: string; provider: string } | null = null;
 type HotUsageBaseline = Map<string, { generatedAt: number; error: string | null }>;
 let hotUsagePoller: { timer: number; startedAt: number; baseline: HotUsageBaseline; targetHostIds: Set<string>; retryGraceHostIds: Set<string>; requestInFlight: boolean } | null = null;
 let activeRefreshes = 0;
@@ -691,7 +692,66 @@ function renderTopModels(usage: Usage, hosts: UsageHost[], usableHosts: UsageHos
   let emptyMessage = "No model breakdown available.";
   if (noHostsSelected) emptyMessage = "No hosts selected.";
   else if (today) emptyMessage = !today.known ? "Today's usage is unavailable." : today.partial ? "No model breakdown available for today's incomplete usage." : "No model usage today.";
-  $("#models-list").innerHTML = models?.length ? models.map((model, index) => `<div class="model-row"><span class="model-rank">${String(index + 1).padStart(2, "0")}</span><span class="model-name"><span class="model-name-text" title="${escapeHtml(model.model)}">${escapeHtml(model.model)}</span>${model.provider ? `<small class="model-provider">${sourceIcon(model.provider)}<span class="model-provider-name" title="${escapeHtml(sourceNames(model.provider))}">${escapeHtml(sourceNames(model.provider))}</span></small>` : ""}</span><span class="model-value">${modelSpend(model)}</span></div>`).join("") : `<div class="quota-empty">${escapeHtml(emptyMessage)}</div>`;
+  // Missing model records establish zero only when the selected data is trustworthy.
+  const emptyDetailsKnown = noHostsSelected || hosts.some((host) => selectedHostIds.has(host.hostId) && hostHealthy(host));
+  $("#models-list").innerHTML = models?.length ? models.map((model, index) => `<button class="model-row" type="button" aria-haspopup="dialog" aria-controls="model-details-dialog" data-model="${escapeHtml(model.model)}" data-provider="${escapeHtml(model.provider)}" data-model-index="${index}"><span class="model-rank">${String(index + 1).padStart(2, "0")}</span><span class="model-name"><span class="model-name-text" title="${escapeHtml(model.model)}">${escapeHtml(model.model)}</span>${model.provider ? `<small class="model-provider">${sourceIcon(model.provider)}<span class="model-provider-name" title="${escapeHtml(sourceNames(model.provider))}">${escapeHtml(sourceNames(model.provider))}</span></small>` : ""}</span><span class="model-value">${modelSpend(model)}</span></button>`).join("") : `<div class="quota-empty">${escapeHtml(emptyMessage)}</div>`;
+  document.querySelectorAll<HTMLButtonElement>("#models-list .model-row").forEach((button) => button.addEventListener("click", () => {
+    const model = models?.[Number(button.dataset.modelIndex)];
+    if (model) openModelDetails(model, selectedUsage, emptyDetailsKnown);
+  }));
+  if (activeModelDetails && $("#model-details-dialog").open) renderModelDetails(selectedUsage, emptyDetailsKnown);
+}
+
+function modelUsageDetails(usage: Usage, identity: { model: string; provider: string }, todayOnly: boolean, emptyKnown = true): ReturnType<typeof summarizeSelectedRecords> | null {
+  if (!usage.records || (todayOnly && !usage.to)) return null;
+  const records = usage.records.filter((record) => record.model === identity.model && record.provider === identity.provider
+    && (!usage.from || record.date >= usage.from) && (!usage.to || record.date <= usage.to)
+    && (!todayOnly || record.date === usage.to));
+  if (!records.length && !emptyKnown) return null;
+  return summarizeSelectedRecords(records);
+}
+
+function renderModelDetails(usage: Usage, emptyKnown = true): void {
+  if (!activeModelDetails) return;
+  const todayOnly = state.range === "today" || state.modelsRange === "today";
+  const details = modelUsageDetails(usage, activeModelDetails, todayOnly, emptyKnown);
+  $("#model-details-title").textContent = activeModelDetails.model;
+  $("#model-details-provider").innerHTML = `${sourceIcon(activeModelDetails.provider)}${escapeHtml(usageSourceName(activeModelDetails.provider))}`;
+  $("#model-details-scope").textContent = todayOnly ? `Today · ${usage.to || "Date unavailable"}` : `Selected range · ${compactUsageDateRange(usage.from, usage.to)}`;
+  $("#model-details-stats").innerHTML = details
+    ? `<span><strong>${spend(details.totalCostUsd, details.missingPricing)}</strong> total${details.missingPricing ? " · Pricing unavailable for some usage" : ""}</span><span><strong>${formatTokens(details.totalTokens)}</strong> tokens</span>`
+    : `<span>Cost unavailable</span><span>Token count unavailable</span>`;
+  $("#model-details-content").innerHTML = !details ? `<p class="quota-empty">Daily breakdown unavailable.</p>`
+    : details.daily?.length ? `<section class="detail-group detail-days"><h3>By day</h3>${[...details.daily].reverse().map((day) => `<div class="detail-model"><span>${escapeHtml(day.date)}</span><span>${spend(day.costUsd, day.missingPricing)} · ${formatTokens(day.totalTokens)} tokens${day.missingPricing ? " · Pricing unavailable" : ""}</span></div>`).join("")}</section>`
+    : `<p class="quota-empty">No usage in the current scope.</p>`;
+}
+
+function openModelDetails(model: UsageModel, usage: Usage, emptyKnown = true): void {
+  activeModelDetails = { model: model.model, provider: model.provider };
+  renderModelDetails(usage, emptyKnown);
+  $("#model-details-dialog").showModal();
+}
+
+function bindModelDetailsDialog(): void {
+  const dialog = $("#model-details-dialog") as HTMLDialogElement;
+  $("#close-model-details").addEventListener("click", () => dialog.close());
+  const outsideDialog = (event: MouseEvent): boolean => {
+    const bounds = dialog.getBoundingClientRect();
+    return event.target === dialog && (event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom);
+  };
+  let backdropPointerDown = false;
+  dialog.addEventListener("pointerdown", (event) => { backdropPointerDown = outsideDialog(event); });
+  dialog.addEventListener("click", (event) => {
+    if (backdropPointerDown && outsideDialog(event)) dialog.close();
+    backdropPointerDown = false;
+  });
+  dialog.addEventListener("close", () => {
+    const identity = activeModelDetails;
+    activeModelDetails = null;
+    const trigger = Array.from(document.querySelectorAll<HTMLButtonElement>("#models-list .model-row")).find((button) => button.dataset.model === identity?.model && button.dataset.provider === identity?.provider);
+    const fallback = document.querySelector<HTMLButtonElement>(state.range === "today" ? '[data-range="today"]' : `[data-models-range="${state.modelsRange}"]`);
+    (trigger || fallback)?.focus();
+  });
 }
 
 function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve"): void {
@@ -1126,6 +1186,7 @@ $("#manage-button").addEventListener("click", async () => { await loadSettings()
 $("#close-settings").addEventListener("click", () => $("#settings-dialog").close());
 $("#close-day-details").addEventListener("click", () => $("#day-details-dialog").close());
 $("#day-details-dialog").addEventListener("close", () => { $("#usage-chart").classList.remove("suppress-tooltips"); const trigger = activeDetailsTrigger; activeDetailsTrigger = null; if (trigger?.isConnected) trigger.focus(); else (document.activeElement as HTMLElement | null)?.blur?.(); });
+bindModelDetailsDialog();
 function resetRangeMenuLabels(): void { document.querySelectorAll<HTMLElement>(".range-picker .range-menu").forEach((menu) => { const button = menu.querySelector<HTMLElement>(".range-menu-button"); const label = menu.querySelector("[data-range^='calendar-']") ? "Calendar" : "Relative"; if (button?.firstChild) button.firstChild.textContent = `${label} `; }); }
 document.querySelectorAll<HTMLElement>("[data-range]").forEach((button) => button.addEventListener("click", async (event) => { const current = element(event.currentTarget); const value = current.dataset.range || "today"; state.range = value; state.days = value === "today" ? 1 : value.startsWith("relative-") ? Number(value.slice(9)) : value === "calendar-year" ? 365 : value === "calendar-month" ? 31 : 7; document.querySelectorAll<HTMLElement>(".range-tab").forEach((tab) => tab.classList.toggle("active", value === "today")); document.querySelectorAll<HTMLElement>(".range-menu-items button").forEach((item) => item.classList.toggle("active", item.dataset.range === value)); document.querySelectorAll<HTMLElement>(".range-picker .range-menu-button").forEach((menuButton) => { const menu = menuButton.parentElement; if (!menu) return; const selected = menu.querySelector(`[data-range="${value}"]`); menuButton.classList.toggle("active", Boolean(selected)); menuButton.setAttribute("aria-expanded", "false"); menu.querySelector(".range-menu-items")?.classList.remove("open"); }); if (value !== "today") { const menuButton = current.closest(".range-menu")?.querySelector<HTMLElement>(".range-menu-button"); if (menuButton?.firstChild) menuButton.childNodes[0].textContent = `${current.textContent} `; } else resetRangeMenuLabels(); updateRepresentationControls(); await loadUsage(); }));
 document.querySelectorAll<HTMLElement>("[data-representation]").forEach((button) => button.addEventListener("click", (event) => { const value = element(event.currentTarget).dataset.representation as ChartRepresentation | undefined; if (!value) return; state.representation = value; closeRangeMenus(); updateRepresentationControls(); if (state.dashboard) renderUsage(state.dashboard.usage, "preserve"); }));
