@@ -189,6 +189,40 @@ test("live details distinguish empty unavailable hosts, healthy zero, and absent
   assert.match(view.get("#model-details-content").innerHTML, /Daily breakdown unavailable/);
 });
 
+test("one healthy host cannot confirm zero while another selected host has incomplete data", () => {
+  const view = integration([row("2026-10-08", "model-x", "codex", "a", 2)]);
+  view.context.state.modelsRange = "today";
+  view.rows()[0].listeners.click[0]({});
+  view.context.usage.to = "2026-10-09";
+  view.context.usage.hosts = [
+    { hostId: "a", status: "offline", usable: true, complete: false },
+    { hostId: "b", status: "ok", usable: true, complete: true },
+  ];
+  const refresh = (ids: string[]) => {
+    view.context.selectedIds = new Set(ids);
+    view.run(`renderTopModels(usage, usage.hosts, usage.hosts, filterUsageByHosts(usage, selectedIds), selectedIds);`);
+  };
+  refresh(["a", "b"]);
+  assert.equal(view.dialog().showCount, 1);
+  assert.match(view.get("#model-details-stats").innerHTML, /Cost unavailable/);
+  assert.match(view.get("#model-details-content").innerHTML, /Daily breakdown unavailable/);
+  assert.doesNotMatch(view.get("#model-details-content").innerHTML, /No usage in the current scope/);
+
+  // An unhealthy host outside the selection must not prevent a confirmed zero.
+  refresh(["b"]);
+  assert.match(view.get("#model-details-stats").innerHTML, /\$0\.00/);
+  assert.match(view.get("#model-details-content").innerHTML, /No usage in the current scope/);
+
+  // Explicit deselection remains a known zero rather than unavailable data.
+  refresh([]);
+  assert.match(view.get("#model-details-stats").innerHTML, /\$0\.00/);
+
+  view.context.usage.hosts[0] = { hostId: "a", status: "ok", usable: true, complete: true };
+  refresh(["a", "b"]);
+  assert.match(view.get("#model-details-stats").innerHTML, /\$0\.00/);
+  assert.match(view.get("#model-details-content").innerHTML, /No usage in the current scope/);
+});
+
 test("dialog close control, Escape, and actual backdrop gestures use native dialog close", () => {
   const view = integration([row("2026-10-08", "model-x", "codex", "a", 2)]);
   const dialog = view.dialog();
