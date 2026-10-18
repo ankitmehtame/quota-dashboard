@@ -279,6 +279,7 @@ dialog { color: var(--text); background: var(--surface-raised); border: 1px soli
 .model-row {
   appearance: none;
   width: 100%;
+  padding-inline: 12px;
   border: 0;
   border-bottom: 1px solid #25302b;
   border-radius: 0;
