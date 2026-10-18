@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mock } from "node:test";
 
-import { fetchCodex, fetchOllama, parseCodexQuota, parseCodexResetCredits, parseOllamaBalance, parseOllamaCreditBalance, parseOpenCodeGo } from "./providers.js";
+import { fetchCodex, fetchOllama, parseCodexQuota, parseCodexRenewalDate, parseCodexResetCredits, parseOllamaBalance, parseOllamaCreditBalance, parseOpenCodeGo } from "./providers.js";
 
 test("parses OpenCode Go rolling usage and reset time", () => {
   const now = Date.parse("2026-08-12T00:00:00Z");
@@ -35,6 +35,30 @@ test("parses Codex ChatGPT five-hour and weekly quota windows", () => {
     { name: "5-hour", usedPercent: 12, windowSeconds: 18_000 },
     { name: "weekly", usedPercent: 34, windowSeconds: 604_800 },
   ]);
+});
+
+test("normalizes Codex renewal timestamps and treats missing timezones as UTC", () => {
+  for (const [value, expected] of [
+    ["2026-08-25T13:45:22Z", "2026-08-25T13:45:22.000Z"],
+    ["2026-08-25T13:45:22.867265Z", "2026-08-25T13:45:22.867Z"],
+    ["2026-08-25T13:45:22+05:30", "2026-08-25T08:15:22.000Z"],
+    ["2026-08-25T23:45:22-07:00", "2026-08-26T06:45:22.000Z"],
+    ["2026-08-25T13:45:22", "2026-08-25T13:45:22.000Z"],
+    ["2026-08-25T13:45:22.123456", "2026-08-25T13:45:22.123Z"],
+    ["2026-08-25T13:45", "2026-08-25T13:45:00.000Z"],
+    ["2024-02-29T00:00:00Z", "2024-02-29T00:00:00.000Z"],
+    ["2000-02-29T00:00:00Z", "2000-02-29T00:00:00.000Z"],
+  ]) assert.equal(parseCodexRenewalDate(value), expected, value);
+});
+
+test("omits missing, malformed, date-only, and impossible Codex renewal timestamps", () => {
+  for (const value of [undefined, null, 1787664000, false, {}, [], "", "invalid", "1", "2026-08-25",
+    "Aug 25, 2026", "2026-08-25 13:45:22", "2026-08-25T13:45:22Z trailing", "2026-08-25T13:45:22Z\n",
+    "2026-02-29T00:00:00Z", "1900-02-29T00:00:00Z", "2026-04-31T00:00:00+05:30",
+    "2026-00-25T13:45:22Z", "2026-13-25T13:45:22Z", "2026-08-00T13:45:22Z", "2026-08-32T13:45:22Z",
+    "2026-08-25T24:00:00Z", "2026-08-25T13:60:00Z", "2026-08-25T13:45:60Z",
+    "2026-08-25T13:45:22+24:00", "2026-08-25T13:45:22+05:60", "2026-08-25T13:45:22+0530",
+  ]) assert.equal(parseCodexRenewalDate(value), null, JSON.stringify(value));
 });
 
 test("parses available Codex rate-limit reset credits", () => {
@@ -74,7 +98,7 @@ test("refreshes Codex credentials after an unauthorized quota response", async (
       return new Response(JSON.stringify({ access_token: "fresh-access", refresh_token: "rotated-refresh", id_token: "fresh-id" }), { status: 200 });
     }
     if (String(input) === "https://chatgpt.com/backend-api/wham/usage") {
-      return new Response(JSON.stringify({ rate_limit: { primary_window: { used_percent: 12, limit_window_seconds: 18_000, reset_at: 1787012669 } } }), { status: 200 });
+      return new Response(JSON.stringify({ subscription_active_until: "2026-08-25T13:45:22", rate_limit: { primary_window: { used_percent: 12, limit_window_seconds: 18_000, reset_at: 1787012669 } } }), { status: 200 });
     }
     return new Response(JSON.stringify({ credits: [] }), { status: 200 });
   });
@@ -82,6 +106,7 @@ test("refreshes Codex credentials after an unauthorized quota response", async (
     const result = await fetchCodex();
     assert.equal(result.error, null);
     assert.equal(result.windows[0].usedPercent, 12);
+    assert.equal(result.subscriptionActiveUntil, "2026-08-25T13:45:22.000Z");
     assert.equal(requests[0].headers.authorization, "Bearer expired-access");
     assert.equal(requests[1].headers["content-type"], "application/x-www-form-urlencoded");
     assert.match(requests[1].body, /grant_type=refresh_token/);
@@ -92,6 +117,32 @@ test("refreshes Codex credentials after an unauthorized quota response", async (
     assert.equal(savedAuth.tokens.access_token, "fresh-access");
     assert.equal(savedAuth.tokens.refresh_token, "rotated-refresh");
     assert.equal(savedAuth.tokens.id_token, "fresh-id");
+  } finally {
+    mock.restoreAll();
+    if (originalAuthPath === undefined) delete process.env.CODEX_AUTH_PATH;
+    else process.env.CODEX_AUTH_PATH = originalAuthPath;
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("fetchCodex omits unavailable renewal dates without changing quota windows", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "quota-dashboard-codex-renewal-"));
+  const authPath = join(directory, "auth.json");
+  const originalAuthPath = process.env.CODEX_AUTH_PATH;
+  await writeFile(authPath, JSON.stringify({ tokens: { access_token: "access", account_id: "account" } }));
+  process.env.CODEX_AUTH_PATH = authPath;
+  let renewal: unknown;
+  const payload = { rate_limit: { primary_window: { used_percent: 12, limit_window_seconds: 18_000, reset_at: 1787012669 } } };
+  mock.method(globalThis, "fetch", async (input: string | URL | Request) => new Response(JSON.stringify(
+    String(input).endsWith("/usage") ? { ...payload, subscription_active_until: renewal } : { credits: [] },
+  )));
+  try {
+    for (renewal of [undefined, null, "invalid", "2026-02-29T00:00:00Z", "2026-08-25"]) {
+      const result = await fetchCodex();
+      assert.equal(result.error, null);
+      assert.equal(result.subscriptionActiveUntil, null);
+      assert.deepEqual(result.windows, parseCodexQuota(payload));
+    }
   } finally {
     mock.restoreAll();
     if (originalAuthPath === undefined) delete process.env.CODEX_AUTH_PATH;

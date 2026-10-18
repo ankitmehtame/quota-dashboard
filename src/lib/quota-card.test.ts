@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
-import { parseClaudeQuota, parseOllamaBalance, parseOllamaCreditBalance } from "./providers.js";
+import { parseClaudeQuota, parseCodexQuota, parseCodexRenewalDate, parseOllamaBalance, parseOllamaCreditBalance } from "./providers.js";
 
 const app = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const icons = app.slice(app.indexOf("const usageSourceNames ="), app.indexOf("const HOT_USAGE_POLL_INTERVAL_MS"));
@@ -53,6 +53,65 @@ test("elapsed position uses the reported billing period and never a calendar app
   });
   assert.equal(position, 50);
   assert.equal(runInNewContext(`${renderer}\nquotaNowPosition(window);`, { window: { name: "monthly" } }), null);
+});
+
+function renderCodex(quota: Record<string, unknown>, hour12 = false, timeZone = "America/Los_Angeles"): string {
+  return runInNewContext(`${icons}\n${renderer}\nquotaCard("codex", provider, quota);`, {
+    provider: { id: "codex", shortName: "Codex", description: "Subscription quota", accent: "mint", configured: true, status: "ok" },
+    quota, state: { hour12 }, escapeHtml: String,
+    Intl: { DateTimeFormat: class extends Intl.DateTimeFormat {
+      constructor(_locales: Intl.LocalesArgument, options: Intl.DateTimeFormatOptions) {
+        super("en-US", { ...options, timeZone });
+      }
+    } },
+  });
+}
+
+test("Codex renewal shows browser-local date and time in the preferred hour format", () => {
+  const renewal = "2026-08-25T01:45:22.000Z";
+  for (const timeZone of ["America/Los_Angeles", "Asia/Kolkata", "UTC"]) {
+    for (const hour12 of [true, false]) {
+      const expected = new Intl.DateTimeFormat("en-US", {
+        year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12, timeZone,
+      }).format(new Date(renewal));
+      const html = renderCodex({ planType: "plus", subscriptionActiveUntil: renewal }, hour12, timeZone);
+      assert.ok(html.includes(`Renews ${expected}`), html);
+      assert.match(html, /plus plan/);
+    }
+  }
+});
+
+test("Codex hides unavailable renewal data without empty plan rows", () => {
+  for (const value of [undefined, null, "invalid", "2026-08-25", "2026-02-29T00:00:00Z"]) {
+    const quota = { subscriptionActiveUntil: parseCodexRenewalDate(value) };
+    assert.doesNotMatch(renderCodex(quota), /Renews|quota-plan|quota-renewal|Invalid Date/);
+    const html = renderCodex({ ...quota, planType: "plus" });
+    assert.match(html, /plus plan/);
+    assert.doesNotMatch(html, /Renews|quota-renewal|Invalid Date/);
+  }
+  assert.doesNotMatch(renderCodex({ subscriptionActiveUntil: "invalid" }), /Renews|quota-plan|Invalid Date/);
+});
+
+test("Codex renewal preserves stale data, quota resets, and date-only credit expiration", () => {
+  const quota = {
+    windows: parseCodexQuota({ rate_limit: {
+      primary_window: { used_percent: 12, limit_window_seconds: 18_000, reset_at: 1787012669 },
+      secondary_window: { used_percent: 34, limit_window_seconds: 604_800, reset_at: 1787617469 },
+    } }),
+    resetCredits: [{ title: "Full reset", expiresAt: "2026-09-21T13:34:22Z" }],
+    stale: true, fetchedAt: "2026-08-15T13:04:00Z",
+  };
+  for (const hour12 of [true, false]) {
+    const withoutRenewal = renderCodex(quota, hour12);
+    const html = renderCodex({ ...quota, subscriptionActiveUntil: parseCodexRenewalDate("2024-02-29T01:45:00") }, hour12);
+    assert.match(html, /Renews Feb 28, 2024/);
+    assert.match(html, /Stale · last known quota measured/);
+    assert.match(html, /5-hour/);
+    assert.match(html, /weekly/);
+    assert.match(html, /resets in/);
+    assert.match(html, /quota-reset-expiry">Expires Sep 21, 2026<\/span>/);
+    assert.equal(html.slice(html.indexOf('<div class="quota-main">')), withoutRenewal.slice(withoutRenewal.indexOf('<div class="quota-main">')));
+  }
 });
 
 function renderClaude(quota: Record<string, unknown>, status = "ok"): string {
