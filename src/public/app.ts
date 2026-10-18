@@ -693,7 +693,7 @@ function renderTopModels(usage: Usage, hosts: UsageHost[], usableHosts: UsageHos
   if (noHostsSelected) emptyMessage = "No hosts selected.";
   else if (today) emptyMessage = !today.known ? "Today's usage is unavailable." : today.partial ? "No model breakdown available for today's incomplete usage." : "No model usage today.";
   // Missing model records establish zero only when the selected data is trustworthy.
-  const emptyDetailsKnown = noHostsSelected || hosts.some((host) => selectedHostIds.has(host.hostId) && hostHealthy(host));
+  const emptyDetailsKnown = noHostsSelected || (selectedHostIds.size > 0 && hosts.filter((host) => selectedHostIds.has(host.hostId)).every(hostHealthy));
   $("#models-list").innerHTML = models?.length ? models.map((model, index) => `<button class="model-row" type="button" aria-haspopup="dialog" aria-controls="model-details-dialog" data-model="${escapeHtml(model.model)}" data-provider="${escapeHtml(model.provider)}" data-model-index="${index}"><span class="model-rank">${String(index + 1).padStart(2, "0")}</span><span class="model-name"><span class="model-name-text" title="${escapeHtml(model.model)}">${escapeHtml(model.model)}</span>${model.provider ? `<small class="model-provider">${sourceIcon(model.provider)}<span class="model-provider-name" title="${escapeHtml(sourceNames(model.provider))}">${escapeHtml(sourceNames(model.provider))}</span></small>` : ""}</span><span class="model-value">${modelSpend(model)}</span></button>`).join("") : `<div class="quota-empty">${escapeHtml(emptyMessage)}</div>`;
   document.querySelectorAll<HTMLButtonElement>("#models-list .model-row").forEach((button) => button.addEventListener("click", () => {
     const model = models?.[Number(button.dataset.modelIndex)];
