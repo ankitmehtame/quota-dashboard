@@ -255,3 +255,51 @@ dialog { color: var(--text); background: var(--surface-raised); border: 1px soli
 .quota-credit-balance { margin-bottom: 22px; }
 .quota-credit-balance-inline { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 14px; }
 .quota-credit-balance-inline .quota-balance-secondary { margin-top: 0; }
+
+/* Model details use the same dialog and daily breakdown vocabulary as day details. */
+#model-details-dialog {
+  flex-direction: column;
+  width: min(680px, calc(100% - 32px));
+  max-height: min(90vh, 760px);
+  max-height: min(90dvh, 760px);
+  min-width: 0;
+}
+#model-details-dialog[open] { display: flex; overflow: hidden; }
+.model-details-head { flex: 0 0 auto; gap: 16px; min-width: 0; }
+.model-details-heading { flex: 1; min-width: 0; }
+#model-details-title { overflow-wrap: anywhere; }
+#close-model-details { flex: 0 0 auto; align-self: flex-start; }
+.model-details-provider { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; margin-top: 8px; color: var(--muted); font: 10px var(--mono); }
+.model-details-provider .source-icon { flex: 0 0 14px; }
+.model-details-scope { margin: 6px 0 0; color: var(--muted); font: 10px var(--mono); overflow-wrap: anywhere; }
+.model-details-stats { flex: 0 0 auto; flex-wrap: wrap; margin-top: 15px; }
+.model-details-content { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; scrollbar-color: var(--line) transparent; overflow-wrap: anywhere; }
+.model-details-content .detail-model span:first-child { flex-shrink: 0; }
+.model-details-content .detail-model span:last-child { flex-shrink: 1; min-width: 0; text-align: right; }
+.model-row {
+  appearance: none;
+  width: 100%;
+  border: 0;
+  border-bottom: 1px solid #25302b;
+  border-radius: 0;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  cursor: pointer;
+  transition: background-color .15s, border-color .15s;
+}
+.model-row:hover { background: #a8f2cf0a; border-bottom-color: var(--mint-dark); }
+.model-row:focus-visible { position: relative; z-index: 1; outline: 2px solid var(--mint); outline-offset: -2px; }
+.model-row:active { background: #a8f2cf18; }
+.model-row .model-name { white-space: normal; overflow-wrap: anywhere; }
+.model-row .model-name-text, .model-row .model-provider-name { min-width: 0; overflow-wrap: anywhere; }
+
+@media (max-width: 560px) {
+  #model-details-dialog { width: calc(100% - 24px); max-height: 92vh; max-height: 92dvh; padding: 19px; }
+  #model-details-dialog .dialog-head h2 { font-size: 25px; }
+  .model-details-stats { gap: 8px 12px; }
+  .model-details-content .detail-model { flex-direction: column; gap: 4px; }
+  .model-details-content .detail-model span:last-child { text-align: left; }
+  .model-row { gap: 8px; }
+  .model-row .model-value { flex: 0 0 auto; }
+}

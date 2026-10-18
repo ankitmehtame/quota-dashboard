@@ -18,7 +18,8 @@ function dashboard(records = [record("2026-10-08", "Yesterday", 20), record("202
   const buttons = ["today", "selected"].map((value) => ({ dataset: { modelsRange: value }, active: false, pressed: "", onclick: () => {}, classList: { toggle(_name: string, active: boolean) { buttons.find((button) => button.dataset.modelsRange === value)!.active = active; } }, setAttribute(_name: string, value: string) { this.pressed = value; } }));
   const context = {
     state, usage: { records, hosts, providers, to: "2026-10-09" },
-    document: { querySelectorAll: () => buttons },
+    activeModelDetails: null,
+    document: { querySelectorAll: (selector: string) => selector === "[data-models-range]" ? buttons : [] },
     $: (selector: string) => {
       if (!elements.has(selector)) elements.set(selector, { hidden: false, textContent: "", innerHTML: "" });
       return elements.get(selector);
