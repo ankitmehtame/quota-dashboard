@@ -53,19 +53,22 @@ test("usage breakdown header badges have spacing before the agent name", () => {
 });
 
 test("chart legend groups each dynamic badge with its escaped label", () => {
-  const legend = app.slice(app.indexOf('$(".chart-legend").innerHTML ='), app.indexOf('$("#usage-hosts").innerHTML ='));
+  const start = app.indexOf('$(".chart-legend").innerHTML =');
+  const legend = app.slice(start, app.indexOf('document.querySelectorAll("[data-usage-source]")', start));
   const element = { innerHTML: "" };
   const render = (providers: string[]) => runInNewContext(`${escape}\n${presentation}\n${legend}`, {
     $: () => element,
     enabledSources: new Set(providers),
+    state: { sourceSelections: new Map() },
     sourceColors: () => "mint",
     sourceNames: (provider: string) => provider,
   });
   render(["Codex", "A long agent name", "<agent>"]);
-  assert.match(element.innerHTML, />Codex<\/span>/);
-  assert.match(element.innerHTML, />A long agent name<\/span>/);
-  assert.match(element.innerHTML, />&lt;agent&gt;<\/span>/);
-  assert.equal((element.innerHTML.match(/class="legend-key /g) || []).length, 3);
+  assert.match(element.innerHTML, />Codex<\/button>/);
+  assert.match(element.innerHTML, />A long agent name<\/button>/);
+  assert.match(element.innerHTML, />&lt;agent&gt;<\/button>/);
+  assert.equal((element.innerHTML.match(/aria-pressed="true"/g) || []).length, 3);
+  assert.doesNotMatch(element.innerHTML, /class="legend-key /);
   render(["codex"]);
   assert.match(element.innerHTML, /data-icon="openai"[^>]*width="14" height="14"/);
   render([]);

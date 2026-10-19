@@ -8,6 +8,7 @@ const app = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const renderer = app.slice(app.indexOf("function renderUsage("), app.indexOf("function openUsageDetails("));
 const presentation = app.slice(app.indexOf("const usageSourceNames ="), app.indexOf("const HOT_USAGE_POLL_INTERVAL_MS"));
 const pricing = app.slice(app.indexOf("function spend("), app.indexOf("function modelSpend("));
+const sourceFilter = app.slice(app.indexOf("function filterUsageBySources("), app.indexOf("function summarizeSelectedRecords("));
 
 function renderChart(days: Array<{ date: string; costs: number[]; tokens?: number[]; missingPricing?: boolean[] }>, representation = "day", providers = ["codex", "opencode", "hermes", "antigravity"]): string {
   const buckets = days.map(({ date, costs, tokens, missingPricing }) => ({
@@ -20,15 +21,15 @@ function renderChart(days: Array<{ date: string; costs: number[]; tokens?: numbe
   const chart = { innerHTML: "", querySelectorAll: () => [] };
   const elements = new Map<string, { innerHTML?: string; textContent?: string }>();
   const usage = { from: days[0].date, to: days.at(-1)!.date, daily: buckets, providers };
-  runInNewContext(`${presentation}\n${pricing}\n${renderer}\nrenderUsage(usage);`, {
-    usage, state: { chartScrollLeft: 0, hostSelections: new Map() },
+  runInNewContext(`${presentation}\n${pricing}\n${sourceFilter}\n${renderer}\nrenderUsage(usage);`, {
+    usage, state: { chartScrollLeft: 0, hostSelections: new Map(), sourceSelections: new Map() },
     document: { querySelector: () => null, querySelectorAll: () => [] },
     $: (selector: string) => {
       if (selector === "#usage-chart") return chart;
       if (!elements.has(selector)) elements.set(selector, {});
       return elements.get(selector);
     },
-    closeHostStatusPopover() {}, renderSpendMetrics() {}, renderTopModels() {}, updateRepresentationControls() {}, bindChartTooltips() {},
+    closeHostStatusPopover() {}, renderSpendMetrics() {}, renderTopModels() {}, updateRepresentationControls() {}, bindChartTooltips() {}, bindSourceTooltips() {},
     reconcileHostSelections: () => ({ hosts: [], usableHosts: [], selectedHostIds: new Set() }),
     filterUsageByHosts: () => usage,
     activeRepresentation: () => representation,

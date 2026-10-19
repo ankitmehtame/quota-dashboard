@@ -108,10 +108,10 @@ for (const representation of ["day", "week", "month"]) {
       return elements.get(selector)!;
     };
     const context = {
-      usage, state: { range: "relative-7", modelsRange: "selected", representation, days: 1, chartScrollLeft: 0, hostSelections: new Map() },
+      usage, state: { range: "relative-7", modelsRange: "selected", representation, days: 1, chartScrollLeft: 0, hostSelections: new Map(), sourceSelections: new Map() },
       document: { querySelector: () => null, querySelectorAll: () => [] },
       $: (selector: string) => Object.assign(get(selector), { querySelectorAll: () => [], setAttribute() {}, classList: { add() {} }, showModal() {} }),
-      escapeHtml: String, closeHostStatusPopover() {}, bindChartTooltips() {}, activeChartTooltip: null, activeModelDetails: null,
+      escapeHtml: String, closeHostStatusPopover() {}, bindChartTooltips() {}, activeChartTooltip: null, activeQuotaTooltip: null, activeModelDetails: null,
     };
     runInNewContext(`${presentation}\n${formatting}\n${dates}\n${rendering}\nrenderUsage(usage);`, context);
     assert.equal(get("#usage-total").textContent, "$1.75");
@@ -132,11 +132,11 @@ for (const representation of ["day", "week", "month"]) {
       if (!elements.has(selector)) elements.set(selector, { textContent: "", innerHTML: "", hidden: false });
       return elements.get(selector)!;
     };
-    const state = { range: "relative-7", modelsRange: "selected", representation, days: 2, chartScrollLeft: 0, hostSelections: new Map() };
+    const state = { range: "relative-7", modelsRange: "selected", representation, days: 2, chartScrollLeft: 0, hostSelections: new Map(), sourceSelections: new Map() };
     const context = {
       usage, state, document: { querySelector: () => null, querySelectorAll: () => [] },
       $: (selector: string) => Object.assign(get(selector), { querySelectorAll: () => [], setAttribute() {}, classList: { add() {} }, showModal() {} }),
-      escapeHtml: String, closeHostStatusPopover() {}, bindChartTooltips() {}, activeChartTooltip: null, activeModelDetails: null,
+      escapeHtml: String, closeHostStatusPopover() {}, bindChartTooltips() {}, activeChartTooltip: null, activeQuotaTooltip: null, activeModelDetails: null,
     };
     runInNewContext(`${presentation}\n${formatting}\n${dates}\n${rendering}\nrenderUsage(usage);`, context);
     assert.equal(get("#usage-total").textContent, "$1.75+");
