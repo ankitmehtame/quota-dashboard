@@ -7,6 +7,7 @@
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.server.json && tsc -p tsconfig.browser.json && tsc -p tsconfig.worker.json && mkdir -p dist/public dist/remote && cp public/index.html public/styles.css public/manifest.webmanifest public/icon.svg dist/public/ && cp -R public/icons dist/public/icons && cp remote/setup.sh dist/remote/setup.sh && cp package.json package-lock.json dist/ && node build-version.mjs",
     "start": "npm run build && node dist/server.js",
+    "demo": "npm run build && node ../scripts/demo.mjs",
     "start:remote": "npm run build && node dist/remote/index.js",
     "test": "npm run build && node --test dist/lib/*.test.js dist/remote/*.test.js"
   },

@@ -234,7 +234,7 @@ function modelSpend(model: ModelUsageItem): string {
 }
 
 function usagePresetLabel(range: string): string {
-  return ({ today: "Today", "calendar-week": "Week", "calendar-month": "Month", "calendar-year": "Year", "relative-7": "7D", "relative-15": "15D", "relative-30": "30D", "relative-90": "90D", "relative-180": "180D", "relative-365": "1Y" } as Record<string, string>)[range] || range;
+  return ({ today: "Today", "calendar-week": "This week", "calendar-month": "This month", "calendar-year": "This year", "relative-7": "Last 7 days", "relative-15": "Last 15 days", "relative-30": "Last 30 days", "relative-90": "Last 90 days", "relative-180": "Last 180 days", "relative-365": "Last 365 days" } as Record<string, string>)[range] || range;
 }
 
 function representationLabel(representation: ChartRepresentation): string {
@@ -269,6 +269,7 @@ function updateRepresentationControls(): void {
   document.querySelectorAll<HTMLButtonElement>("[data-representation]").forEach((item) => {
     const value = item.dataset.representation as ChartRepresentation | undefined;
     item.classList.toggle("active", value === selectedValue);
+    item.setAttribute("aria-checked", String(value === selectedValue));
     item.disabled = state.range === "today" && (value === "week" || value === "month");
   });
 }
@@ -419,11 +420,12 @@ function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][st
   const windows = quota?.windows?.length ? quota.windows : [undefined];
   const status = provider.status === "disabled" ? "off" : provider.status === "error" ? "error" : provider.configured ? "connected" : "setup needed";
   const renewalDate = formatRenewalDate(quota?.subscriptionActiveUntil, true);
-  const plan = quota?.planType || renewalDate
-    ? `<div class="quota-plan">${quota?.planType ? `${escapeHtml(quota.planType)} plan` : ""}${quota?.planType && renewalDate ? '<span class="quota-renewal"> · </span>' : ""}${renewalDate ? `<span class="quota-renewal">Renews ${escapeHtml(renewalDate)}</span>` : ""}</div>`
+  const subtitle = quota?.planType ? `${quota.planType} subscription` : provider.description;
+  const plan = renewalDate
+    ? `<div class="quota-plan"><span class="quota-renewal">Renews ${escapeHtml(renewalDate)}</span></div>`
     : "";
   const resetCredits = quota?.resetCredits?.length ? `<div class="quota-resets"><div class="quota-resets-title">Usage limit resets</div>${quota.resetCredits.map((credit) => {
-    const expiry = formatRenewalDate(credit.expiresAt);
+    const expiry = formatRenewalDate(credit.expiresAt, true);
     return `<div class="quota-reset"><span class="quota-reset-title">${escapeHtml(credit.title)}</span><span class="quota-reset-expiry">${expiry ? `Expires ${escapeHtml(expiry)}` : "Expiration not reported"}</span></div>`;
   }).join("")}</div>` : "";
   const refreshedAt = quota?.fetchedAt || state.dashboard?.cache?.fetchedAt;
@@ -438,7 +440,7 @@ function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][st
     const nowExpected = nowPosition === null ? null : Math.floor(nowPosition * 10) / 10;
     const percentageValue = percent == null
       ? value
-      : `<span class="quota-used-percent">${formatPercent(percent)}% <small>used</small></span>${nowExpected === null ? "" : `<span class="quota-expected-percent">/ ${formatPercent(nowExpected)}% elapsed</span>`}`;
+      : `<span class="quota-used-percent">${formatPercent(percent)}% <small>used</small></span>`;
     const label = windows.length > 1
       ? window?.valueLabel || ""
       : percent == null && window?.valueLabel
@@ -449,15 +451,23 @@ function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][st
     const limitLabel = formattedLimit === null ? "" : `limit ${formattedLimit}`;
     const requestLabel = window?.requestCount == null ? "" : `${window.requestCount.toLocaleString("en-US")} ${window.requestCount === 1 ? "request" : "requests"}`;
     const footLabel = [label, limitLabel, requestLabel].filter(Boolean).join(" · ");
-    const resetLabel = window?.resetAt ? timeUntil(window.resetAt, now) : provider.id === "ollama" && window?.name === "monthly" ? "reset not reported" : "";
+    const resetLabel = window?.resetAt ? timeUntil(window.resetAt, now).split(" · ")[0].replace(/^resets/, "Resets") : provider.id === "ollama" && window?.name === "monthly" ? "Reset not reported" : "";
     const nowDescription = `${nowExpected}% of window elapsed`;
     const showWindowName = windows.length > 1 || ["codex", "ollama", "claude"].includes(provider.id);
-    return `<div class="quota-window${index ? " quota-window-separated" : ""}">${showWindowName ? `<div class="quota-window-name">${escapeHtml(window?.name || "Usage")}</div>` : ""}<div class="quota-percent ${percent == null && !window?.valueLabel ? "unavailable" : percent == null ? "quota-balance" : "quota-percentage"}">${percentageValue}</div>${percent != null ? `<div class="bar"><span style="width:${Math.min(percent, 100)}%"></span>${nowPosition !== null ? `<button class="quota-now-marker" style="left:${nowPosition}%" type="button" aria-label="Current quota window position"><span class="quota-now-tooltip"><strong>Now</strong><span>${nowDescription}</span><span>Snapshot: ${escapeHtml(formatRefreshTime(refreshedAt))}</span></span></button>` : ""}</div>` : ""}<div class="quota-foot">${resetLabel ? `<span>${escapeHtml(resetLabel)}</span>` : ""}${footLabel ? `<span>${escapeHtml(footLabel)}</span>` : ""}</div></div>`;
+    const reset = resetLabel ? `<span class="quota-reset-label" title="${escapeHtml(timeUntil(window?.resetAt, now))}">${escapeHtml(resetLabel)}</span>` : "";
+    const marker = nowPosition === null ? "" : `<button class="quota-now-marker" style="left:${nowPosition}%" type="button" aria-label="Current quota window position"><span class="quota-now-tooltip"><strong>Time elapsed</strong><span>${nowDescription}</span><span>Resets: ${escapeHtml(formatRefreshTime(window?.resetAt))}</span><span>Snapshot: ${escapeHtml(formatRefreshTime(refreshedAt))}</span></span></button>`;
+    const pacing = nowExpected === null || percent == null ? "" : `<div class="quota-pacing"><span>${formatPercent(percent)}% used</span><span>${formatPercent(nowExpected)}% of window elapsed</span></div>`;
+    return `<div class="quota-window${index ? " quota-window-separated" : ""}">
+      ${showWindowName ? `<div class="quota-window-name">${escapeHtml(window?.name || "Usage")}</div>` : ""}
+      <div class="quota-reading"><div class="quota-percent ${percent == null && !window?.valueLabel ? "unavailable" : percent == null ? "quota-balance" : "quota-percentage"}">${percentageValue}</div>${reset}</div>
+      ${percent != null ? `<div class="bar"><span style="width:${Math.min(percent, 100)}%"></span>${marker}</div>${pacing}` : ""}
+      ${footLabel ? `<div class="quota-foot"><span>${escapeHtml(footLabel)}</span></div>` : ""}
+    </div>`;
   }).join("");
   const accent = /^[a-z-]+$/.test(provider.accent) ? provider.accent : "mint";
   const stale = quota?.stale ? `<div class="quota-error">Stale · last known quota measured ${escapeHtml(formatRefreshTime(quota.fetchedAt))}</div>` : "";
   const cooldown = quota?.cooldownUntil && quota.cooldownUntil > now ? `<div class="quota-foot">Retry after ${escapeHtml(formatRefreshTime(new Date(quota.cooldownUntil).toISOString()))}</div>` : "";
-  return `<article class="quota-card" style="--accent: var(--${accent})"><div class="provider-head"><div><div class="provider-name">${sourceIcon(id, 20)}${escapeHtml(provider.shortName)}</div><div class="provider-sub">${escapeHtml(provider.description)}</div></div><span class="provider-badge">${escapeHtml(status)}</span></div>${plan}<div class="quota-main">${stale}${creditBalance}${content}${resetCredits}${quota?.error ? `<div class="quota-error">${escapeHtml(quota.error)}</div>` : ""}${cooldown}</div></article>`;
+  return `<article class="quota-card" style="--accent: var(--${accent})"><div class="provider-head"><div><div class="provider-name">${sourceIcon(id, 20)}${escapeHtml(provider.shortName)}</div><div class="provider-sub">${escapeHtml(subtitle)}</div></div><span class="provider-badge">${escapeHtml(status)}</span></div><div class="quota-meta">${plan}${stale}</div><div class="quota-main">${content}${creditBalance}${resetCredits}${quota?.error ? `<div class="quota-error">${escapeHtml(quota.error)}</div>` : ""}${cooldown}</div></article>`;
 }
 
 function renderQuotas(data: Dashboard): void {
@@ -767,12 +777,11 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
   const noHostsSelected = usableHosts.length > 0 && selectedHostIds.size === 0;
   renderSpendMetrics(usage, hosts, usableHosts, selectedUsage, selectedHostIds);
   updateRepresentationControls();
-  $("#axis-start").textContent = selectedUsage.from || "—";
   const sourceNames = usageSourceName;
   const sourceColors = usageSourceColor;
   const enabledSources = new Set(usage.providers || []);
-  $(".chart-legend").innerHTML = [...enabledSources].map((provider) => `<span class="chart-legend-item">${sourceIcon(provider)}${escapeHtml(sourceNames(provider))}</span>`).join("") || "No local usage sources enabled";
-  $("#usage-hosts").innerHTML = hosts.map((host, index) => {
+  $(".chart-legend").innerHTML = [...enabledSources].map((provider) => `<span class="chart-legend-item"><span class="legend-key ${sourceColors(provider)}" aria-hidden="true"></span>${Object.hasOwn(sourceIcons, provider) ? sourceIcon(provider) : ""}${escapeHtml(sourceNames(provider))}</span>`).join("") || "No local usage sources enabled";
+  $("#usage-hosts").innerHTML = (hosts.length ? `<span class="usage-hosts-label" aria-hidden="true">Machines</span>` : "") + hosts.map((host, index) => {
     const usable = hostUsable(usage, host);
     const hasRecords = hostHasRecords(usage, host);
     const selected = usable && selectedHostIds.has(host.hostId);
@@ -781,13 +790,18 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
     const detail = warning ? `Publisher offline${host.complete === false ? "; usage missing through today" : ""}${!hasRecords ? "; no usable usage data in this period" : ""}` : host.disabledReason || host.error || (host.included === false ? "Timezone mismatch" : host.complete === false ? "Range incomplete" : host.stale ? "Stale usage data" : host.status) || "Status unavailable";
     const stateLabel = !usable ? "unavailable" : selected ? healthy ? "selected, healthy" : "selected, unhealthy" : "unselected";
     const hostClass = `usage-host ${!usable ? "disabled" : selected ? healthy ? "selected healthy" : "selected unhealthy" : "unselected"}`;
+    const hostLabel = `<span class="host-check" aria-hidden="true">✓</span><span class="host-name">${escapeHtml(host.hostId)}</span>`;
     const needsStatusAlert = !healthy || !usable || !hasRecords;
-    if (!needsStatusAlert) return `<button class="${hostClass}" type="button" data-host-id="${escapeHtml(host.hostId)}" aria-label="${escapeHtml(host.hostId)}: ${stateLabel}" aria-pressed="${selected}">${escapeHtml(host.hostId)}</button>`;
+    if (!needsStatusAlert) return `<button class="${hostClass}" type="button" data-host-id="${escapeHtml(host.hostId)}" aria-label="${escapeHtml(host.hostId)}: ${stateLabel}" aria-pressed="${selected}">${hostLabel}</button>`;
     const statusId = `usage-host-status-${index}`;
-    const icon = healthy && usable && !hasRecords ? "i" : "!";
+    const informational = healthy && usable && !hasRecords;
+    const mark = informational
+      ? `<path d="M12 11v5"/><circle cx="12" cy="8" r=".75" fill="currentColor" stroke="none"/>`
+      : `<path d="M12 8v5"/><circle cx="12" cy="16" r=".75" fill="currentColor" stroke="none"/>`;
+    const icon = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/>${mark}</svg>`;
     const pillClass = `${!usable ? "disabled" : selected ? `selected ${healthy ? "healthy" : "unhealthy"}` : "unselected"}${warning ? " warning" : ""}`;
-    return `<span class="usage-host-pill ${pillClass} ${healthy && usable && !hasRecords ? "informational" : ""}"><button class="${hostClass}" type="button" data-host-id="${escapeHtml(host.hostId)}" aria-label="${escapeHtml(host.hostId)}: ${stateLabel}, ${escapeHtml(detail)}" aria-pressed="${selected}" ${!usable ? "disabled" : ""}>${escapeHtml(host.hostId)}</button><button class="usage-host-alert" type="button" data-status-target="${statusId}" aria-label="Show status for ${escapeHtml(host.hostId)}: ${escapeHtml(detail)}" aria-controls="${statusId}" aria-expanded="false"><span aria-hidden="true">${icon}</span></button><span class="usage-host-status-popover" id="${statusId}" role="status" aria-live="polite" hidden><strong>${escapeHtml(host.hostId)}</strong><span>${escapeHtml(detail)}</span>${missingUsageDetails(host)}</span></span>`;
-  }).join("") || `<span class="usage-host warning"><i></i>No usage hosts</span>`;
+    return `<span class="usage-host-pill ${pillClass} ${informational ? "informational" : ""}"><button class="${hostClass}" type="button" data-host-id="${escapeHtml(host.hostId)}" aria-label="${escapeHtml(host.hostId)}: ${stateLabel}, ${escapeHtml(detail)}" aria-pressed="${selected}" ${!usable ? "disabled" : ""}>${hostLabel}</button><button class="usage-host-alert" type="button" data-status-target="${statusId}" aria-label="Show status for ${escapeHtml(host.hostId)}: ${escapeHtml(detail)}" aria-controls="${statusId}" aria-expanded="false">${icon}</button><span class="usage-host-status-popover" id="${statusId}" role="status" aria-live="polite" hidden><strong>${escapeHtml(host.hostId)}</strong><span>${escapeHtml(detail)}</span>${missingUsageDetails(host)}</span></span>`;
+  }).join("") || `<span class="usage-hosts-empty">No usage hosts</span>`;
   document.querySelectorAll<HTMLButtonElement>("#usage-hosts .usage-host-alert").forEach((button) => button.addEventListener("click", () => toggleHostStatusPopover(button)));
   document.querySelectorAll<HTMLButtonElement>("#usage-hosts .usage-host:not(:disabled)").forEach((button) => button.addEventListener("click", () => {
     const hostId = button.dataset.hostId;
@@ -797,13 +811,14 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
   }));
   const chart = $("#usage-chart");
   const representation = activeRepresentation();
-  const axisCurrentLabel = representation === "day" ? "today" : representation === "week" ? "this week" : "this month";
-  $("#axis-current-label").innerHTML = `<i></i> ${axisCurrentLabel}`;
   const hasUsage = Boolean(selectedUsage.records?.length || selectedUsage.daily?.length);
   const buckets = hasUsage ? usageBuckets(selectedUsage, representation) : [];
   const providers = [...new Set([...enabledSources, ...(enabledSources.size > 0 ? ["shared"] : [])])];
   const colors = sourceColors;
   const max = Math.max(...buckets.map((bucket) => bucket.costUsd), 0);
+  $("#chart-scale").innerHTML = max > 0 ? [max, max * .75, max * .5, max * .25, 0].map((value) => `<span>${money(value)}</span>`).join("") : "";
+  const dateTicks = [...new Set([0, Math.floor((buckets.length - 1) / 2), buckets.length - 1])].filter((index) => index >= 0 && index < buckets.length);
+  $("#chart-dates").innerHTML = dateTicks.map((index) => `<span>${escapeHtml(new Intl.DateTimeFormat([], { month: "short", day: "numeric", timeZone: "UTC" }).format(new Date(`${buckets[index].from}T00:00:00Z`)))}</span>`).join("");
   const usageTooltip = (bucket: UsageBucket, hoveredProvider: string, segments: Array<PricingStatus & { provider: string; costUsd: number; totalTokens: number }>): string => {
     const sortedSegments = [...segments].sort((a, b) => b.costUsd - a.costUsd);
     const harnesses = sortedSegments.map((segment) => `<span class="harness-row ${segment.provider === hoveredProvider ? "hovered" : ""}">${sourceIcon(segment.provider, 14, true)}<span class="harness-name">${escapeHtml(sourceNames(segment.provider))}</span><span class="harness-detail"> · ${spend(segment.costUsd, segment.missingPricing)} · ${formatTokens(segment.totalTokens)} tokens${segment.missingPricing ? " · Pricing unavailable" : ""}</span></span>`).join("");
@@ -873,17 +888,15 @@ function renderStatus(data: Dashboard): void {
     ? `${problems} source${problems === 1 ? "" : "s"} need attention · ${hosts.length} usage host${hosts.length === 1 ? "" : "s"}`
     : `${enabled.length} quota source${enabled.length === 1 ? "" : "s"} active · ${hosts.length} usage host${hosts.length === 1 ? "" : "s"} combined`;
   if (warnings) $("#status-copy").textContent += ` · ${warnings} usage warning${warnings === 1 ? "" : "s"}`;
-  $("#updated-at").textContent = `updated ${relativeTime(data.serverNow)}`;
-  $("#last-refresh").textContent = `Last refresh: ${formatRefreshTime(data.cache?.fetchedAt || data.serverNow)}`;
+  const measured = enabled.filter((provider) => data.quotas[provider.id]?.windows?.some((window) => window.usedPercent != null || window.balanceLabel));
+  const stale = enabled.filter((provider) => data.quotas[provider.id]?.stale).length;
+  $("#account-summary").textContent = `${measured.length} of ${enabled.length} accounts reporting quota${stale ? `, ${stale} with older measurements` : ""}. Usage across ${hosts.length} machine${hosts.length === 1 ? "" : "s"}.`;
   renderHeaderRefresh();
   $("#app-version").textContent = `Build ${data.version}`;
   $("#app-version").setAttribute("title", `Build ${data.version}`);
 }
 
 function renderClock(): void {
-  const now = new Date();
-  $("#now-time").textContent = new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit", hour12: state.hour12 }).format(now);
-  $("#now-date").textContent = new Intl.DateTimeFormat([], { weekday: "short", month: "short", day: "numeric", year: "numeric" }).format(now);
   renderHeaderRefresh();
 }
 
@@ -893,7 +906,8 @@ function usageQuery(): string {
 
 function setUsageLoading(loading: boolean): void {
   document.querySelector(".range-picker")?.classList.toggle("loading", loading);
-  document.querySelectorAll<HTMLButtonElement>(".range-picker button").forEach((button) => { button.disabled = loading; });
+  $("#usage-range").setAttribute("aria-busy", String(loading));
+  document.querySelectorAll<HTMLButtonElement>(".range-picker [data-range]").forEach((button) => { button.disabled = loading; });
 }
 
 async function startUsageRefresh(): Promise<void> {
@@ -1088,8 +1102,21 @@ function renderColdUsageSettings(usage: Usage | undefined): void {
   const end = usage?.to && validDateInput(usage.to) ? usage.to : new Date().toISOString().slice(0, 10);
   const start = shiftDate(end, -6);
   const hosts = usage?.hosts || [];
-  const hostOptions = [`<option value="">All usage hosts</option>`, ...hosts.map((host) => `<option value="${escapeHtml(host.hostId)}">${escapeHtml(host.hostId)}${host.local ? " (local)" : ""}</option>`)].join("");
-  $("#usage-cold-settings").innerHTML = `<p class="settings-group">COLD USAGE BACKFILL</p><p class="dialog-copy cold-copy">Backfill persisted usage for one host or all hosts. Large cold jobs can take up to 30 minutes.</p><form id="cold-usage-form" class="cold-usage-form"><label class="cold-field"><span>Host</span><select id="cold-host">${hostOptions}</select></label><div class="cold-date-row"><label class="cold-field"><span>From</span><input id="cold-from" type="date" value="${escapeHtml(start)}" required /></label><label class="cold-field"><span>To</span><input id="cold-to" type="date" value="${escapeHtml(end)}" required /></label></div><fieldset class="cold-mode"><legend>Mode</legend><label><input type="radio" name="cold-mode" value="offline" checked /> Offline</label><label><input type="radio" name="cold-mode" value="online" /> Online</label></fieldset><button class="text-button cold-submit" type="submit">Start cold backfill <span>↗</span></button></form>`;
+  const hostOptions = [{ id: "", label: "All machines" }, ...hosts.map((host) => ({ id: host.hostId, label: `${host.hostId}${host.local ? " (local)" : ""}` }))].map((host) => `<button type="button" role="menuitemradio" tabindex="-1" aria-checked="${host.id === ""}" class="${host.id === "" ? "active" : ""}" data-cold-host="${escapeHtml(host.id)}">${escapeHtml(host.label)}</button>`).join("");
+  $("#usage-cold-settings").innerHTML = `<p class="dialog-copy cold-copy">Collect historical usage from one machine or all machines. This can take up to 30 minutes. Offline mode uses cached pricing; online mode can fetch pricing updates.</p><form id="cold-usage-form" class="cold-usage-form"><div class="cold-field"><span id="cold-host-label">Machine</span><input type="hidden" id="cold-host" name="hostId" value="" /><div class="range-menu cold-host-menu"><button class="range-menu-button" id="cold-host-button" type="button" aria-labelledby="cold-host-label cold-host-button" aria-haspopup="menu" aria-expanded="false" aria-controls="cold-host-options">All machines</button><div class="range-menu-items" id="cold-host-options" role="menu" aria-labelledby="cold-host-label">${hostOptions}</div></div></div><div class="cold-date-row"><label class="cold-field"><span>From</span><input id="cold-from" type="date" value="${escapeHtml(start)}" required /></label><label class="cold-field"><span>To</span><input id="cold-to" type="date" value="${escapeHtml(end)}" required /></label></div><fieldset class="cold-mode"><legend>Pricing</legend><label><input type="radio" name="cold-mode" value="offline" checked /> Offline</label><label><input type="radio" name="cold-mode" value="online" /> Online</label></fieldset><button class="text-button cold-submit" type="submit">Load older usage</button></form>`;
+  const settings = $("#usage-cold-settings") as HTMLElement;
+  bindRangeMenus(settings);
+  settings.querySelectorAll<HTMLButtonElement>("[data-cold-host]").forEach((item) => item.addEventListener("click", () => {
+    const hostId = item.dataset.coldHost || "";
+    ($("#cold-host") as HTMLInputElement).value = hostId;
+    $("#cold-host-button").textContent = item.textContent;
+    settings.querySelectorAll<HTMLButtonElement>("[data-cold-host]").forEach((option) => {
+      const selected = option === item;
+      option.classList.toggle("active", selected);
+      option.setAttribute("aria-checked", String(selected));
+    });
+    closeRangeMenus(true);
+  }));
   const form = $("#cold-usage-form") as HTMLFormElement;
   form.addEventListener("submit", async (event) => {
     event.preventDefault();
@@ -1099,7 +1126,7 @@ function renderColdUsageSettings(usage: Usage | undefined): void {
       showToast("Choose an ordered date range");
       return;
     }
-    const hostId = ($("#cold-host") as HTMLSelectElement).value;
+    const hostId = ($("#cold-host") as HTMLInputElement).value;
     const mode = (form.querySelector<HTMLInputElement>("input[name='cold-mode']:checked")?.value || "offline");
     const submit = form.querySelector<HTMLButtonElement>(".cold-submit");
     if (submit) submit.disabled = true;
@@ -1107,7 +1134,7 @@ function renderColdUsageSettings(usage: Usage | undefined): void {
       const response = await fetch("/api/v1/usage/cold", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...(hostId ? { hostId } : {}), from, to, mode }) });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.error || "Cold backfill could not be started");
-      showToast("Cold backfill accepted · up to 30 minutes");
+      showToast("Loading older usage. This can take up to 30 minutes.");
     } catch (error) {
       showToast(error instanceof Error ? error.message : "Cold backfill could not be started");
     } finally {
@@ -1130,7 +1157,7 @@ async function loadSettings(): Promise<void> {
     return left.localeCompare(right);
   });
   const usageSettings = usageIds.map((id) => `<label class="setting-row"><div class="setting-copy"><div class="provider-name">${sourceIcon(id)}${escapeHtml(usageNames(id))} usage</div><div class="provider-sub">Provider group from shared ccusage output</div></div><input class="switch" type="checkbox" data-kind="usage" data-provider="${escapeHtml(id)}" ${data.usageSources?.[id]?.enabled ? "checked" : ""} aria-label="Enable ${escapeHtml(usageNames(id))} usage" /></label>`).join("");
-   $("#provider-settings").innerHTML = `<p class="settings-group">DISPLAY</p><label class="setting-row"><div class="setting-copy"><div class="provider-name">12-hour clock</div><div class="provider-sub">Show times with AM and PM</div></div><input class="switch" type="checkbox" data-kind="time-format" ${state.hour12 ? "checked" : ""} aria-label="Use 12-hour clock" /></label><p class="settings-group">QUOTA PROVIDERS</p>${quotaSettings}<p class="settings-group">LOCAL USAGE SOURCES</p>${usageSettings}`;
+   $("#provider-settings").innerHTML = `<p class="settings-group">Display</p><label class="setting-row"><div class="setting-copy"><div class="provider-name">12-hour times</div><div class="provider-sub">Show times with AM and PM</div></div><input class="switch" type="checkbox" data-kind="time-format" ${state.hour12 ? "checked" : ""} aria-label="Use 12-hour clock" /></label><p class="settings-group">Quota providers</p>${quotaSettings}<p class="settings-group">Usage sources</p>${usageSettings}`;
    renderColdUsageSettings(state.dashboard?.usage);
   document.querySelectorAll<HTMLButtonElement>(".order-button").forEach((button) => button.addEventListener("click", async () => { const id = button.dataset.provider || ""; const index = providerOrder.indexOf(id); const nextIndex = index + (button.dataset.orderDirection === "up" ? -1 : 1); if (index < 0 || nextIndex < 0 || nextIndex >= providerOrder.length) return; const nextOrder = [...providerOrder]; [nextOrder[index], nextOrder[nextIndex]] = [nextOrder[nextIndex], nextOrder[index]]; document.querySelectorAll<HTMLButtonElement>(".order-button").forEach((item) => { item.disabled = true; }); try { const save = await fetch("/api/v1/providers/order", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ order: nextOrder }) }); if (!save.ok) throw new Error("Provider order could not be saved"); providerOrder = nextOrder; if (state.dashboard) renderQuotas(state.dashboard); await loadSettings(); showToast("Provider order saved"); } catch (error) { showToast(error instanceof Error ? error.message : "Provider order could not be saved"); await loadSettings(); } }));
   document.querySelectorAll<HTMLInputElement>(".switch").forEach((input) => input.addEventListener("change", async (event) => { const target = event.target as HTMLInputElement; const id = target.dataset.provider || ""; const kind = target.dataset.kind || ""; if (kind === "time-format") { state.hour12 = target.checked; localStorage.setItem(timeFormatStorageKey, state.hour12 ? "12" : "24"); renderClock(); if (state.dashboard) { renderQuotas(state.dashboard); renderStatus(state.dashboard); } showToast(`${state.hour12 ? "12-hour" : "24-hour"} clock enabled`); return; } const path = kind === "usage" ? `/api/v1/usage-sources/${encodeURIComponent(id)}/enabled` : `/api/v1/providers/${encodeURIComponent(id)}/enabled`; await fetch(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: target.checked }) }); showToast(`${kind === "usage" ? usageNames(id) + " usage" : data.providers[id].name} ${target.checked ? "enabled" : "disabled"}`); await loadDashboard(true); }));
@@ -1187,17 +1214,88 @@ $("#close-settings").addEventListener("click", () => $("#settings-dialog").close
 $("#close-day-details").addEventListener("click", () => $("#day-details-dialog").close());
 $("#day-details-dialog").addEventListener("close", () => { $("#usage-chart").classList.remove("suppress-tooltips"); const trigger = activeDetailsTrigger; activeDetailsTrigger = null; if (trigger?.isConnected) trigger.focus(); else (document.activeElement as HTMLElement | null)?.blur?.(); });
 bindModelDetailsDialog();
-function resetRangeMenuLabels(): void { document.querySelectorAll<HTMLElement>(".range-picker .range-menu").forEach((menu) => { const button = menu.querySelector<HTMLElement>(".range-menu-button"); const label = menu.querySelector("[data-range^='calendar-']") ? "Calendar" : "Relative"; if (button?.firstChild) button.firstChild.textContent = `${label} `; }); }
-document.querySelectorAll<HTMLElement>("[data-range]").forEach((button) => button.addEventListener("click", async (event) => { const current = element(event.currentTarget); const value = current.dataset.range || "today"; state.range = value; state.days = value === "today" ? 1 : value.startsWith("relative-") ? Number(value.slice(9)) : value === "calendar-year" ? 365 : value === "calendar-month" ? 31 : 7; document.querySelectorAll<HTMLElement>(".range-tab").forEach((tab) => tab.classList.toggle("active", value === "today")); document.querySelectorAll<HTMLElement>(".range-menu-items button").forEach((item) => item.classList.toggle("active", item.dataset.range === value)); document.querySelectorAll<HTMLElement>(".range-picker .range-menu-button").forEach((menuButton) => { const menu = menuButton.parentElement; if (!menu) return; const selected = menu.querySelector(`[data-range="${value}"]`); menuButton.classList.toggle("active", Boolean(selected)); menuButton.setAttribute("aria-expanded", "false"); menu.querySelector(".range-menu-items")?.classList.remove("open"); }); if (value !== "today") { const menuButton = current.closest(".range-menu")?.querySelector<HTMLElement>(".range-menu-button"); if (menuButton?.firstChild) menuButton.childNodes[0].textContent = `${current.textContent} `; } else resetRangeMenuLabels(); updateRepresentationControls(); await loadUsage(); }));
-document.querySelectorAll<HTMLElement>("[data-representation]").forEach((button) => button.addEventListener("click", (event) => { const value = element(event.currentTarget).dataset.representation as ChartRepresentation | undefined; if (!value) return; state.representation = value; closeRangeMenus(); updateRepresentationControls(); if (state.dashboard) renderUsage(state.dashboard.usage, "preserve"); }));
-document.querySelectorAll<HTMLElement>(".range-menu-button").forEach((button) => button.addEventListener("click", (event) => { const currentButton = element(event.currentTarget); const parent = currentButton.parentElement; const menu = parent?.querySelector<HTMLElement>(".range-menu-items"); if (!menu) return; const willOpen = !menu.classList.contains("open"); closeRangeMenus(); if (willOpen) { menu.classList.add("open"); currentButton.setAttribute("aria-expanded", "true"); } }));
-function closeRangeMenus() { document.querySelectorAll(".range-menu-items").forEach((menu) => menu.classList.remove("open")); document.querySelectorAll(".range-menu-button").forEach((button) => button.setAttribute("aria-expanded", "false")); }
-document.addEventListener("keydown", (event) => { if (event.key === "Escape") { closeRangeMenus(); closeHostStatusPopover(); } });
+function updateRangeControls(): void {
+  const label = usagePresetLabel(state.range);
+  $("#usage-range").textContent = label;
+  $("#usage-range").setAttribute("aria-label", `Usage period: ${label}`);
+  document.querySelectorAll<HTMLButtonElement>("[data-range]").forEach((item) => {
+    const selected = item.dataset.range === state.range;
+    item.classList.toggle("active", selected);
+    item.setAttribute("aria-checked", String(selected));
+  });
+}
+document.querySelectorAll<HTMLButtonElement>("[data-range]").forEach((button) => button.addEventListener("click", async () => {
+  const value = button.dataset.range || "today";
+  state.range = value;
+  state.days = value === "today" ? 1 : value.startsWith("relative-") ? Number(value.slice(9)) : value === "calendar-year" ? 365 : value === "calendar-month" ? 31 : 7;
+  closeRangeMenus(true);
+  updateRangeControls();
+  updateRepresentationControls();
+  await loadUsage();
+}));
+document.querySelectorAll<HTMLElement>("[data-representation]").forEach((button) => button.addEventListener("click", (event) => { const value = element(event.currentTarget).dataset.representation as ChartRepresentation | undefined; if (!value) return; state.representation = value; closeRangeMenus(true); updateRepresentationControls(); if (state.dashboard) renderUsage(state.dashboard.usage, "preserve"); }));
+function bindRangeMenus(root: ParentNode = document): void {
+  root.querySelectorAll<HTMLElement>(".range-menu").forEach((container) => {
+    const trigger = container.querySelector<HTMLButtonElement>(".range-menu-button");
+    const menu = container.querySelector<HTMLElement>(".range-menu-items");
+    if (!trigger || !menu) return;
+    const enabledItems = () => Array.from(menu.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
+    const open = (last = false) => {
+      closeRangeMenus();
+      menu.classList.add("open");
+      trigger.setAttribute("aria-expanded", "true");
+      const triggerRect = trigger.getBoundingClientRect();
+      const bounds = container.closest("dialog")?.getBoundingClientRect() || { top: 0, bottom: window.innerHeight };
+      const below = bounds.bottom - triggerRect.bottom - 17;
+      const above = triggerRect.top - bounds.top - 17;
+      const height = menu.getBoundingClientRect().height;
+      const opensUp = height > below && above > below;
+      menu.classList.toggle("opens-up", opensUp);
+      menu.style.maxHeight = `${Math.max(44, Math.min(height, opensUp ? above : below))}px`;
+      const items = enabledItems();
+      (last ? items.at(-1) : items.find((item) => item.getAttribute("aria-checked") === "true") || items[0])?.focus();
+    };
+    trigger.addEventListener("click", () => { if (menu.classList.contains("open")) closeRangeMenus(); else open(); });
+    container.addEventListener("keydown", (event) => {
+      if (event.target === trigger) {
+        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+          event.preventDefault();
+          open(event.key === "ArrowUp");
+        }
+        return;
+      }
+      if (event.key === "Tab") { closeRangeMenus(true); return; }
+      const items = enabledItems();
+      const index = items.indexOf(document.activeElement as HTMLButtonElement);
+      let next: HTMLButtonElement | undefined;
+      if (event.key === "ArrowDown") next = items[(index + 1) % items.length];
+      else if (event.key === "ArrowUp") next = items[(index - 1 + items.length) % items.length];
+      else if (event.key === "Home") next = items[0];
+      else if (event.key === "End") next = items.at(-1);
+      else if (event.key.length === 1 && !event.altKey && !event.ctrlKey && !event.metaKey && event.key !== " ") {
+        next = [...items.slice(index + 1), ...items.slice(0, index + 1)].find((item) => item.textContent?.trim().toLowerCase().startsWith(event.key.toLowerCase()));
+      }
+      if (next) { event.preventDefault(); next.focus(); }
+    });
+  });
+}
+bindRangeMenus();
+function closeRangeMenus(restoreFocus = false): void {
+  const trigger = document.querySelector<HTMLButtonElement>('.range-menu-button[aria-expanded="true"]');
+  document.querySelectorAll<HTMLElement>(".range-menu-items").forEach((menu) => {
+    menu.classList.remove("open", "opens-up");
+    menu.style.removeProperty("max-height");
+  });
+  document.querySelectorAll(".range-menu-button").forEach((button) => button.setAttribute("aria-expanded", "false"));
+  if (restoreFocus) trigger?.focus();
+}
+document.addEventListener("keydown", (event) => { if (event.key === "Escape") { if (document.querySelector(".range-menu-items.open")) event.preventDefault(); closeRangeMenus(true); closeHostStatusPopover(); } });
 document.addEventListener("pointerdown", (event) => {
-  if (!element(event.target).closest(".range-picker, .view-picker")) closeRangeMenus();
+  if (!element(event.target).closest(".range-menu")) closeRangeMenus();
   if (activeHostStatusPopover && !element(event.target).closest(".usage-host-status-popover, .usage-host-alert")) closeHostStatusPopover();
 });
 document.addEventListener("focusin", (event) => {
+  if (!element(event.target).closest(".range-menu")) closeRangeMenus();
   if (activeHostStatusPopover && !activeHostStatusPopover.anchor.closest(".usage-host-pill")?.contains(element(event.target))) closeHostStatusPopover();
 });
 function markFailedIcon(image: HTMLImageElement): void {
@@ -1235,6 +1333,7 @@ document.addEventListener("visibilitychange", () => { if (document.visibilitySta
 void checkProviderIcons();
 bindHeaderRefreshTooltip();
 bindQuotaTooltipDismissal();
+updateRangeControls();
 updateRepresentationControls(); renderClock(); setInterval(renderClock, 30_000); setInterval(() => { if (state.dashboard) renderQuotas(state.dashboard); }, 60_000);
 loadDashboard().catch((error) => { const message = error instanceof Error ? error.message : "Dashboard request failed"; $("#status-copy").textContent = message; showToast(message); });
 if ("serviceWorker" in navigator) navigator.serviceWorker.register("/sw.js").catch(() => {});

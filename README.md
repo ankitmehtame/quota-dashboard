@@ -24,6 +24,17 @@ Open `http://127.0.0.1:4173`. To expose it on your local network, run:
 HOST=0.0.0.0 npm start
 ```
 
+### UI demo
+
+Run `npm ci` followed by `npm run demo` from `src/`, then open
+`http://127.0.0.1:4174`. The demo uses sample quota and usage data, including an
+offline machine with stored usage. Try the period selector, machine filters,
+quota markers, model details, and settings. Changes stay in memory until the
+demo restarts. It never reads credentials or usage files, contacts providers,
+or starts collectors. Set `DEMO_PORT` to choose another local port.
+For LAN access, run `DEMO_HOST=0.0.0.0 npm run demo` and open port 4174 on
+the server's LAN address. The demo has no authentication; use a trusted network.
+
 Application TypeScript source lives in `src/`; generated runtime JavaScript is written
 to `src/dist/` and is ignored by git. GitHub Actions uploads the contents of `src/dist/`
 as the `quota-dashboard-node` artifact. Each build also writes a deterministic Git-derived
@@ -131,7 +142,7 @@ Ollama Cloud reads `OLLAMA_API_KEY` from the environment or from
 `(allowance_usd - balance_usd) / allowance_usd * 100`. The card shows included
 credits remaining, credits used, the monthly allowance, and the reported reset
 date. Elapsed time uses the API's actual billing-period dates. A balance summary
-above the quota bar shows total available credits with an included/purchased
+below the quota windows shows total available credits with an included/purchased
 breakdown, including zero purchased credits. Purchased credits do not affect the monthly percentage.
 There is no fallback to `/api/usage` or its old limit response format.
 
