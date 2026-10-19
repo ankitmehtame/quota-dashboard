@@ -10,7 +10,7 @@ test("dashboard summary counts offline warnings separately from errors", () => {
   const elements = new Map<string, { textContent: string; setAttribute(): void }>();
   const render = (hosts: unknown[]) => {
     runInNewContext(`${statusRenderer}\nrenderStatus(data);`, {
-      data: { providers: { codex: { enabled: true, status: "ok" } }, usage: { hosts }, serverNow: "2026-01-02", version: "test" },
+      data: { providers: { codex: { id: "codex", enabled: true, status: "ok" } }, quotas: {}, usage: { hosts }, serverNow: "2026-01-02", version: "test" },
       hostHealthy: (host: { status: string }) => host.status === "ok",
       relativeTime: String, formatRefreshTime: String,
       renderHeaderRefresh() {},

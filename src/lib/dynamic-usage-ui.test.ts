@@ -95,13 +95,13 @@ test("settings show icons in both provider sections without changing controls or
     $: (selector: string) => { if (!elements.has(selector)) elements.set(selector, { innerHTML: "" }); return elements.get(selector); },
   });
   const html = elements.get("#provider-settings")!.innerHTML;
-  const quota = html.split("QUOTA PROVIDERS</p>")[1].split("<p class=\"settings-group\">LOCAL USAGE SOURCES")[0];
-  const usage = html.split("LOCAL USAGE SOURCES</p>")[1];
+  const quota = html.split("Quota providers</p>")[1].split("<p class=\"settings-group\">Usage sources")[0];
+  const usage = html.split("Usage sources</p>")[1];
   assert.equal((quota.match(/<img /g) || []).length, 5);
   assert.equal((usage.match(/<img /g) || []).length, 4);
   for (const icon of ["openai", "openrouter", "opencode", "ollama", "claude"]) assert.match(quota, new RegExp(`data-icon="${icon}"[^>]*width="14" height="14"`));
   assert.match(usage, /class="legend-key \w+"><\/span>Custom Agent usage/);
   assert.match(quota, /data-provider="codex" checked/);
   assert.match(usage, /data-kind="usage" data-provider="custom-agent" checked/);
-  assert.match(html, /class="provider-name">12-hour clock<\/div>/);
+  assert.match(html, /class="provider-name">12-hour times<\/div>/);
 });
