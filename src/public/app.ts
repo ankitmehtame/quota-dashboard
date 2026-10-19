@@ -670,7 +670,8 @@ function renderSpendMetrics(usage: Usage, hosts: UsageHost[], usableHosts: Usage
   const periodKnown = noHostsSelected || Boolean(selectedUsage.records?.length) || selectedHosts.some(hostHealthy);
   const periodAmount = selectedUsage.totalCostUsd;
   $("#usage-total").textContent = spend(periodKnown ? periodAmount : Number.NaN, selectedUsage.missingPricing);
-  $("#usage-total-caption").textContent = `Estimated spend · ${usagePresetLabel(state.range)} · ${dateRange}`;
+  $("#usage-total-caption").textContent = `Estimated spend · ${usagePresetLabel(state.range)}`;
+  $("#usage-total-date").textContent = dateRange;
 
   const todayMetric = $("#today-metric") as HTMLElement;
   todayMetric.hidden = state.range === "today";
@@ -1070,7 +1071,8 @@ async function loadDashboard(refresh = false): Promise<void> {
   }
   setUsageLoading(true);
   $("#usage-total").textContent = "—";
-  $("#usage-total-caption").textContent = `Estimated spend · ${usagePresetLabel(state.range)} · —`;
+  $("#usage-total-caption").textContent = `Estimated spend · ${usagePresetLabel(state.range)}`;
+  $("#usage-total-date").textContent = "—";
   $("#today-total").textContent = "—";
   $("#today-caption").textContent = "Today so far";
   $("#today-metric").hidden = state.range === "today";
