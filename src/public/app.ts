@@ -14,11 +14,11 @@ type Usage = PricingStatus & { totalCostUsd: number; totalTokens?: number; from?
 type Dashboard = { version: string; providerOrder: string[]; providers: Record<string, Provider>; quotas: Record<string, { windows?: QuotaWindow[]; creditBalance?: { includedUsd: number; purchasedUsd: number | null }; planType?: string; subscriptionActiveUntil?: string | null; resetCredits?: Array<{ id: string; title: string; description?: string | null; expiresAt?: string | null }>; fetchedAt?: string; error?: string | null; errorKind?: string; cooldownUntil?: number; stale?: boolean; cached?: boolean }>; usage: Usage; serverNow: string; cache?: { fetchedAt?: string } };
 type UsageResponse = { version: string; apiVersion: number; serverNow: string; timezone: string; from: string; to: string; usage: Usage };
 type ProvidersResponse = { providerOrder: string[]; providers: Record<string, Provider>; usageSources: Record<string, UsageSourceConfig> };
-type AppState = { days: number; range: string; modelsRange: "today" | "selected"; representation: ChartRepresentation; dashboard: Dashboard | null; hostSelections: Map<string, boolean>; chartScrollLeft: number; serverClock?: { time: number; monotonic: number } };
+type AppState = { days: number; range: string; modelsRange: "today" | "selected"; representation: ChartRepresentation; dashboard: Dashboard | null; hostSelections: Map<string, boolean>; sourceSelections: Map<string, boolean>; chartScrollLeft: number; serverClock?: { time: number; monotonic: number } };
 const timeFormatStorageKey = "quota-dashboard.time-format";
 const storedTimeFormat = localStorage.getItem(timeFormatStorageKey);
 const defaultHour12 = new Intl.DateTimeFormat([], { hour: "numeric" }).resolvedOptions().hour12 ?? true;
-const state: AppState & { hour12: boolean } = { days: 1, range: "today", modelsRange: "today", representation: "auto", dashboard: null, hostSelections: new Map(), chartScrollLeft: 0, hour12: storedTimeFormat === "12" || (storedTimeFormat !== "24" && defaultHour12) };
+const state: AppState & { hour12: boolean } = { days: 1, range: "today", modelsRange: "today", representation: "auto", dashboard: null, hostSelections: new Map(), sourceSelections: new Map(), chartScrollLeft: 0, hour12: storedTimeFormat === "12" || (storedTimeFormat !== "24" && defaultHour12) };
 const $ = (selector: string): any => document.querySelector(selector);
 const element = (target: EventTarget | null): HTMLElement => target as HTMLElement;
 const escapeHtml = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] || character);
@@ -143,7 +143,7 @@ function closeActiveQuotaTooltip(): void {
   activeQuotaTooltip = null;
 }
 
-function bindQuotaTooltipTrigger(anchor: HTMLElement, tooltip: HTMLElement): void {
+function bindQuotaTooltipTrigger(anchor: HTMLElement, tooltip: HTMLElement, showOnClick = true): void {
   const show = () => {
     if (activeQuotaTooltip?.tooltip !== tooltip) closeActiveQuotaTooltip();
     if (tooltip.parentElement !== document.body) document.body.appendChild(tooltip);
@@ -154,7 +154,7 @@ function bindQuotaTooltipTrigger(anchor: HTMLElement, tooltip: HTMLElement): voi
   const hide = () => { if (activeQuotaTooltip?.tooltip === tooltip) closeActiveQuotaTooltip(); };
   anchor.addEventListener("pointerenter", (event) => { if (event.pointerType !== "touch") show(); });
   anchor.addEventListener("pointerleave", (event) => { if (event.pointerType !== "touch") hide(); });
-  anchor.addEventListener("click", show);
+  if (showOnClick) anchor.addEventListener("click", show);
   anchor.addEventListener("focus", show);
   anchor.addEventListener("blur", hide);
 }
@@ -496,6 +496,12 @@ function recordsForHosts(usage: Usage, selectedHostIds: Set<string>): UsageRecor
   return (usage.records || []).filter((record) => record.hostId !== undefined && selectedHostIds.has(record.hostId) && (!providers || providers.has(record.provider)));
 }
 
+function filterUsageBySources(usage: Usage, sources: Set<string>): Usage {
+  const providers = [...sources].filter((provider) => state.sourceSelections.get(provider) !== false);
+  const selected = new Set(providers);
+  return { ...usage, providers, records: usage.records?.filter((record) => selected.has(record.provider)) };
+}
+
 function summarizeSelectedRecords(records: UsageRecord[]): Pick<Usage, "daily" | "byModel" | "byProvider" | "totalCostUsd" | "totalTokens" | "missingPricing"> {
   const daily = new Map<string, UsageDay>();
   const byModel = new Map<string, UsageModel>();
@@ -565,7 +571,7 @@ function reconcileHostSelections(usage: Usage): { hosts: UsageHost[]; usableHost
 }
 
 function filterUsageByHosts(usage: Usage, selectedHostIds: Set<string>): Usage {
-  if (!usage.records) return { ...usage, daily: [], byModel: [], byProvider: [], totalCostUsd: selectedHostIds.size ? Number.NaN : 0, totalTokens: 0, missingPricing: false };
+  if (!usage.records) return { ...usage, daily: [], byModel: [], byProvider: [], totalCostUsd: selectedHostIds.size && usage.providers?.length !== 0 ? Number.NaN : 0, totalTokens: 0, missingPricing: false };
   const records = recordsForHosts(usage, selectedHostIds);
   return { ...usage, records, ...summarizeSelectedRecords(records) };
 }
@@ -646,6 +652,7 @@ function usageBucketLabel(bucket: UsageBucket, representation: ConcreteRepresent
 }
 
 function todaySpend(usage: Usage, hosts: UsageHost[], usableHosts: UsageHost[], selectedHostIds: Set<string>): PricingStatus & { amount: number; known: boolean; partial: boolean } {
+  if (usage.providers?.length === 0) return { amount: 0, known: true, partial: false };
   // An explicit empty selection is a valid zero. No usable hosts means there
   // is no trustworthy source from which to infer a zero.
   if (!usableHosts.length) return { amount: 0, known: false, partial: false };
@@ -667,7 +674,7 @@ function renderSpendMetrics(usage: Usage, hosts: UsageHost[], usableHosts: Usage
   const dateRange = compactUsageDateRange(usage.from, usage.to);
   const noHostsSelected = usableHosts.length > 0 && selectedHostIds.size === 0;
   const selectedHosts = hosts.filter((host) => selectedHostIds.has(host.hostId));
-  const periodKnown = noHostsSelected || Boolean(selectedUsage.records?.length) || selectedHosts.some(hostHealthy);
+  const periodKnown = usage.providers?.length === 0 || noHostsSelected || Boolean(selectedUsage.records?.length) || selectedHosts.some(hostHealthy);
   const periodAmount = selectedUsage.totalCostUsd;
   $("#usage-total").textContent = spend(periodKnown ? periodAmount : Number.NaN, selectedUsage.missingPricing);
   $("#usage-total-caption").textContent = `Estimated spend · ${usagePresetLabel(state.range)} · ${dateRange}`;
@@ -700,10 +707,11 @@ function renderTopModels(usage: Usage, hosts: UsageHost[], usableHosts: UsageHos
   const sourceNames = usageSourceName;
   const noHostsSelected = usableHosts.length > 0 && selectedHostIds.size === 0;
   let emptyMessage = "No model breakdown available.";
-  if (noHostsSelected) emptyMessage = "No hosts selected.";
+  if (usage.providers?.length === 0) emptyMessage = "No agents selected.";
+  else if (noHostsSelected) emptyMessage = "No hosts selected.";
   else if (today) emptyMessage = !today.known ? "Today's usage is unavailable." : today.partial ? "No model breakdown available for today's incomplete usage." : "No model usage today.";
   // Missing model records establish zero only when the selected data is trustworthy.
-  const emptyDetailsKnown = noHostsSelected || (selectedHostIds.size > 0 && hosts.filter((host) => selectedHostIds.has(host.hostId)).every(hostHealthy));
+  const emptyDetailsKnown = usage.providers?.length === 0 || noHostsSelected || (selectedHostIds.size > 0 && hosts.filter((host) => selectedHostIds.has(host.hostId)).every(hostHealthy));
   $("#models-list").innerHTML = models?.length ? models.map((model, index) => `<button class="model-row" type="button" aria-haspopup="dialog" aria-controls="model-details-dialog" data-model="${escapeHtml(model.model)}" data-provider="${escapeHtml(model.provider)}" data-model-index="${index}"><span class="model-rank">${String(index + 1).padStart(2, "0")}</span><span class="model-name"><span class="model-name-text" title="${escapeHtml(model.model)}">${escapeHtml(model.model)}</span>${model.provider ? `<small class="model-provider">${sourceIcon(model.provider)}<span class="model-provider-name" title="${escapeHtml(sourceNames(model.provider))}">${escapeHtml(sourceNames(model.provider))}</span></small>` : ""}</span><span class="model-value">${modelSpend(model)}</span></button>`).join("") : `<div class="quota-empty">${escapeHtml(emptyMessage)}</div>`;
   document.querySelectorAll<HTMLButtonElement>("#models-list .model-row").forEach((button) => button.addEventListener("click", () => {
     const model = models?.[Number(button.dataset.modelIndex)];
@@ -764,6 +772,50 @@ function bindModelDetailsDialog(): void {
   });
 }
 
+function sourceUsageTooltip(usage: Usage, provider: string, selectedHostIds: Set<string>): string {
+  const hosts = (usage.hosts || []).filter((host) => selectedHostIds.has(host.hostId));
+  const records = recordsForHosts(usage, selectedHostIds).filter((record) => record.provider === provider);
+  const currentRecords = records.filter((record) => record.date === usage.to);
+  const emptySelection = selectedHostIds.size === 0;
+  const healthy = hosts.some(hostHealthy);
+  const row = (label: string, items: UsageRecord[], known: boolean): string => {
+    const total = summarizeSelectedRecords(items);
+    const value = known ? `${spend(total.totalCostUsd, total.missingPricing)} · ${total.totalTokens?.toLocaleString("en-US")} tokens` : "Usage unavailable";
+    return `<span class="agent-tooltip-row"><span class="agent-tooltip-label">${escapeHtml(label)}</span><span class="agent-tooltip-value">${value}</span></span>`;
+  };
+  const periodKnown = emptySelection || Boolean(usage.records && (records.length || healthy));
+  const todayKnown = emptySelection || Boolean(usage.records && usage.to && (currentRecords.length || healthy));
+  const partial = hosts.some((host) => !hostHealthy(host));
+  return `<span class="agent-tooltip-heading">${Object.hasOwn(sourceIcons, provider) ? sourceIcon(provider) : ""}<strong>${escapeHtml(usageSourceName(provider))}</strong></span>${state.range === "today" ? "" : row(usagePresetLabel(state.range), records, periodKnown)}${row("Today so far", currentRecords, todayKnown)}${partial ? '<span class="agent-tooltip-note">Selected machines have incomplete usage.</span>' : ""}${records.some((record) => record.missingPricing) ? '<span class="agent-tooltip-note">+ Pricing unavailable for some usage.</span>' : ""}`;
+}
+
+function sourceUsageIsZero(usage: Usage, provider: string, selectedHostIds: Set<string>): boolean {
+  if (!selectedHostIds.size) return true;
+  if (!usage.records) return false;
+  const records = recordsForHosts(usage, selectedHostIds).filter((record) => record.provider === provider);
+  if (records.some((record) => record.costUsd !== 0 || recordTokens(record) !== 0 || record.missingPricing)) return false;
+  // Incomplete data cannot establish that an agent has no usage.
+  return (usage.hosts || []).filter((host) => selectedHostIds.has(host.hostId)).every(hostHealthy);
+}
+
+function bindSourceTooltips(usage: Usage, selectedHostIds: Set<string>): void {
+  if (activeQuotaTooltip?.anchor.matches("[data-usage-source]")) closeActiveQuotaTooltip();
+  document.querySelectorAll<HTMLButtonElement>("[data-usage-source]").forEach((button, index) => {
+    button.setAttribute("data-zero-usage", String(sourceUsageIsZero(usage, button.dataset.usageSource!, selectedHostIds)));
+    const tooltip = document.createElement("span");
+    tooltip.className = "quota-now-tooltip agent-usage-tooltip";
+    tooltip.id = `agent-usage-tooltip-${index}`;
+    tooltip.hidden = true;
+    tooltip.setAttribute("role", "tooltip");
+    tooltip.innerHTML = sourceUsageTooltip(usage, button.dataset.usageSource!, selectedHostIds);
+    button.setAttribute("aria-describedby", tooltip.id);
+    button.appendChild(tooltip);
+    // Clicking already rerenders and focuses the replacement button. Do not
+    // reopen a tooltip on the detached button from the preceding render.
+    bindQuotaTooltipTrigger(button, tooltip, false);
+  });
+}
+
 function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve"): void {
   closeHostStatusPopover();
   if (scrollMode === "preserve") {
@@ -771,16 +823,25 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
     if (scroll) state.chartScrollLeft = scroll.scrollLeft;
   }
   const { hosts, usableHosts, selectedHostIds } = reconcileHostSelections(usage);
-  const selectedUsage = filterUsageByHosts(usage, selectedHostIds);
+  const enabledSources = new Set(usage.providers || []);
+  if (enabledSources.size && usage.records?.some((record) => record.provider === "shared")) enabledSources.add("shared");
+  const sourceUsage = filterUsageBySources(usage, enabledSources);
+  const selectedUsage = filterUsageByHosts(sourceUsage, selectedHostIds);
   $("#pricing-status").hidden = !selectedUsage.missingPricing;
   $("#pricing-status").textContent = selectedUsage.missingPricing ? "Pricing unavailable for some models. Totals reflect reported costs only; + marks incomplete spend." : "";
   const noHostsSelected = usableHosts.length > 0 && selectedHostIds.size === 0;
-  renderSpendMetrics(usage, hosts, usableHosts, selectedUsage, selectedHostIds);
+  renderSpendMetrics(sourceUsage, hosts, usableHosts, selectedUsage, selectedHostIds);
   updateRepresentationControls();
   const sourceNames = usageSourceName;
   const sourceColors = usageSourceColor;
-  const enabledSources = new Set(usage.providers || []);
-  $(".chart-legend").innerHTML = [...enabledSources].map((provider) => `<span class="chart-legend-item"><span class="legend-key ${sourceColors(provider)}" aria-hidden="true"></span>${Object.hasOwn(sourceIcons, provider) ? sourceIcon(provider) : ""}${escapeHtml(sourceNames(provider))}</span>`).join("") || "No local usage sources enabled";
+  $(".chart-legend").innerHTML = [...enabledSources].map((provider) => `<button class="chart-legend-item" type="button" data-usage-source="${escapeHtml(provider)}" style="--source-color:var(--${sourceColors(provider)})" aria-pressed="${state.sourceSelections.get(provider) !== false}">${Object.hasOwn(sourceIcons, provider) ? sourceIcon(provider) : ""}${escapeHtml(sourceNames(provider))}</button>`).join("") || "No local usage sources enabled";
+  document.querySelectorAll<HTMLButtonElement>("[data-usage-source]").forEach((button) => button.addEventListener("click", () => {
+    const provider = button.dataset.usageSource!;
+    state.sourceSelections.set(provider, state.sourceSelections.get(provider) === false);
+    renderUsage(usage, "preserve");
+    Array.from(document.querySelectorAll<HTMLButtonElement>("[data-usage-source]")).find((item) => item.dataset.usageSource === provider)?.focus({ preventScroll: true });
+  }));
+  bindSourceTooltips(usage, selectedHostIds);
   $("#usage-hosts").innerHTML = (hosts.length ? `<span class="usage-hosts-label" aria-hidden="true">Machines</span>` : "") + hosts.map((host, index) => {
     const usable = hostUsable(usage, host);
     const hasRecords = hostHasRecords(usage, host);
@@ -854,7 +915,7 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
   activeChartTooltip = null;
   bindChartTooltips(chart);
   (chart.querySelectorAll("[data-bucket-index]") as NodeListOf<HTMLButtonElement>).forEach((bar) => bar.addEventListener("click", () => { activeDetailsTrigger = bar; openUsageDetails(buckets[Number(bar.dataset.bucketIndex)], representation); }));
-  renderTopModels(usage, hosts, usableHosts, selectedUsage, selectedHostIds);
+  renderTopModels(sourceUsage, hosts, usableHosts, selectedUsage, selectedHostIds);
   const scroll = chartScroll;
   if (scroll) {
     const restoreScroll = () => { scroll.scrollLeft = scrollMode === "newest" ? scroll.scrollWidth : Math.min(state.chartScrollLeft, Math.max(0, scroll.scrollWidth - scroll.clientWidth)); state.chartScrollLeft = scroll.scrollLeft; };

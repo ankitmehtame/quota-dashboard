@@ -196,6 +196,14 @@ dialog::backdrop { background: color-mix(in srgb, var(--bg) 72%, transparent); b
 .current-day .chart-stack { border-radius: 2px; }
 .current-day .chart-stack::after { content: ""; position: absolute; inset: 0; border: 1px solid var(--action); border-radius: inherit; pointer-events: none; z-index: 1; }
 .chart-legend .chart-legend-item { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; margin-top: 0; }
+.chart-legend button.chart-legend-item { appearance: none; position: relative; min-height: 44px; padding: 10px 2px; border: 0; border-radius: 0; background: transparent; color: var(--muted); font: inherit; cursor: pointer; }
+.chart-legend button.chart-legend-item::after { content: ''; position: absolute; left: 0; right: 0; bottom: 3px; height: 2px; background: transparent; }
+.chart-legend button.chart-legend-item[aria-pressed="true"] { color: var(--text); }
+.chart-legend button.chart-legend-item[aria-pressed="true"]::after { background: var(--source-color); }
+.chart-legend button.chart-legend-item[aria-pressed="true"][data-zero-usage="true"]::after { opacity: .3; }
+.chart-legend button.chart-legend-item:hover { color: var(--text); }
+.chart-legend button.chart-legend-item[aria-pressed="false"] .source-icon { opacity: .55; }
+.chart-legend button.chart-legend-item .icon-fallback { visibility: hidden; }
 .chart-legend .legend-key { flex-shrink: 0; margin: 0; }
 .detail-group h3 .legend-key { margin: 0 6px 0 0; }
 .quota-card .provider-name { display: flex; align-items: center; gap: 7px; }
@@ -240,6 +248,13 @@ dialog::backdrop { background: color-mix(in srgb, var(--bg) 72%, transparent); b
   white-space: normal;
   overflow-wrap: anywhere;
 }
+.agent-usage-tooltip.is-positioned { width: min(340px, calc(100vw - 16px)); padding: 12px; pointer-events: none; font: 13px var(--sans); text-align: left; }
+.agent-usage-tooltip .agent-tooltip-heading { display: flex; align-items: center; gap: 6px; margin: 0 0 10px; }
+.agent-usage-tooltip .agent-tooltip-heading strong { font: 500 13px var(--sans); color: var(--text); }
+.agent-usage-tooltip .agent-tooltip-row { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 3px 12px; margin-top: 6px; }
+.agent-usage-tooltip .agent-tooltip-label { font: 12px var(--sans); margin: 0; }
+.agent-usage-tooltip .agent-tooltip-value { color: var(--text); font: 12px var(--sans); font-variant-numeric: tabular-nums; margin: 0; }
+.agent-usage-tooltip .agent-tooltip-note { font: 12px var(--sans); margin-top: 10px; }
 
 /* Usage controls and data panes stay inside the two-card row. */
 .usage-layout { align-items: stretch; min-width: 0; }
