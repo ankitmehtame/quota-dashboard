@@ -472,7 +472,7 @@ function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][st
 
 function renderQuotas(data: Dashboard): void {
   if (activeQuotaTooltip?.anchor.closest("#quota-grid")) closeActiveQuotaTooltip();
-  $("#quota-grid").innerHTML = providerOrder.filter((id) => data.providers[id]?.enabled).map((id) => quotaCard(id, data.providers[id], data.quotas[id])).join("") || `<div class="quota-card"><div class="quota-empty">No providers enabled. Open Manage providers to begin.</div></div>`;
+  $("#quota-grid").innerHTML = providerOrder.filter((id) => data.providers[id]?.enabled).map((id) => quotaCard(id, data.providers[id], data.quotas[id])).join("") || `<div class="quota-card"><div class="quota-empty">No providers enabled. Open Settings to begin.</div></div>`;
   bindQuotaTooltips();
 }
 
@@ -1209,7 +1209,6 @@ $("#usage-refresh-button").addEventListener("click", async () => {
   }
 });
 $("#settings-button").addEventListener("click", async () => { await loadSettings(); $("#settings-dialog").showModal(); });
-$("#manage-button").addEventListener("click", async () => { await loadSettings(); $("#settings-dialog").showModal(); });
 $("#close-settings").addEventListener("click", () => $("#settings-dialog").close());
 $("#close-day-details").addEventListener("click", () => $("#day-details-dialog").close());
 $("#day-details-dialog").addEventListener("close", () => { $("#usage-chart").classList.remove("suppress-tooltips"); const trigger = activeDetailsTrigger; activeDetailsTrigger = null; if (trigger?.isConnected) trigger.focus(); else (document.activeElement as HTMLElement | null)?.blur?.(); });
