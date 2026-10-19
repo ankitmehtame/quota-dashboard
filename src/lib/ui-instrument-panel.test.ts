@@ -43,6 +43,7 @@ test("dashboard has one period control, no promotional hero, and collapsed maint
   assert.match(html, /<h1>Your AI accounts<\/h1>/);
   assert.equal((html.match(/id="usage-range"/g) || []).length, 1);
   assert.doesNotMatch(html, /class="hero"|class="live-dot"|id="now-time"|id="last-refresh"/);
+  assert.doesNotMatch(html, /manage-button|Manage providers/i);
   assert.doesNotMatch(html, /pacing-key|The fill shows quota used/);
   assert.match(html, /<details class="maintenance-settings"><summary>Load older usage<\/summary>/);
 });
