@@ -7,6 +7,27 @@ const app = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const presentation = app.slice(app.indexOf("const usageSourceNames ="), app.indexOf("const HOT_USAGE_POLL_INTERVAL_MS"));
 const escape = app.slice(app.indexOf("const escapeHtml ="), app.indexOf("const usageSourceNames ="));
 
+test("usage date stays inline without an arbitrary width cap and cannot wrap internally", () => {
+  const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
+  const styles = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
+  assert.match(html, /class="usage-caption"><span id="usage-total-caption">Estimated spend · Today<\/span> · <span id="usage-total-date" class="usage-date">—<\/span><\/span>/);
+  assert.match(styles, /\.usage-caption span\s*\{[^}]*display:\s*inline;/);
+  assert.match(styles, /\.usage-caption \.usage-date\s*\{[^}]*display:\s*inline-block;[^}]*white-space:\s*nowrap;/);
+  assert.doesNotMatch(styles, /\.usage-metric span\s*\{[^}]*max-width:/);
+  const updates = app.split("\n").filter((line) => /\$\("#usage-total-(caption|date)"\)\.textContent =/.test(line)).join("\n");
+  const elements = new Map<string, { textContent: string }>();
+  runInNewContext(updates, {
+    $: (selector: string) => {
+      if (!elements.has(selector)) elements.set(selector, { textContent: "" });
+      return elements.get(selector);
+    },
+    state: { range: "calendar-month" }, usagePresetLabel: () => "This month", dateRange: "Oct 1–19",
+  });
+  assert.equal(elements.get("#usage-total-caption")?.textContent, "Estimated spend · This month");
+  assert.equal(elements.get("#usage-total-date")?.textContent, "—");
+  assert.match(updates, /\$\("#usage-total-date"\)\.textContent = dateRange;/);
+});
+
 test("known source names and colors remain curated and fallback colors are stable", () => {
   const result = runInNewContext(`${presentation}; [usageSourceName("opencode"), usageSourceColor("codex"), usageSourceColor("opencode"), usageSourceColor("hermes"), usageSourceColor("antigravity"), usageSourceName("new_tool.v2"), usageSourceColor("new-tool"), usageSourceColor("new-tool")]`);
   assert.deepEqual(Array.from(result).slice(0, 6), ["OpenCode", "mint", "violet", "orange", "blue", "New Tool V2"]);

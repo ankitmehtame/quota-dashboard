@@ -274,7 +274,8 @@ dialog::backdrop { background: color-mix(in srgb, var(--bg) 72%, transparent); b
 .usage-metrics { display: flex; gap: 22px; }
 .usage-metric + .usage-metric { border-left: 1px solid var(--line); padding-left: 22px; }
 .usage-metric strong { display: block; }
-.usage-metric span { max-width: 220px; }
+.usage-caption span { display: inline; margin-top: 0; }
+.usage-caption .usage-date { display: inline-block; white-space: nowrap; }
 
 @media (max-width: 560px) {
   .usage-metrics { flex-direction: column; gap: 14px; }
