@@ -62,6 +62,9 @@ let activeModelDetails: { model: string; provider: string } | null = null;
 type HotUsageBaseline = Map<string, { generatedAt: number; error: string | null }>;
 let hotUsagePoller: { timer: number; startedAt: number; baseline: HotUsageBaseline; targetHostIds: Set<string>; retryGraceHostIds: Set<string>; requestInFlight: boolean } | null = null;
 let activeRefreshes = 0;
+let activeRefreshButton: string | null = null;
+let completedRefreshButton: string | null = null;
+let refreshCompletionTimer: number | null = null;
 
 function positionChartTooltip(anchor: HTMLElement, tooltip: HTMLElement): void {
   const margin = 8;
@@ -988,10 +991,36 @@ function usageHotTargetIds(usage: Usage | undefined): Set<string> {
   return new Set((usage?.hosts || []).filter((host) => host.active !== false).map((host) => host.hostId));
 }
 
+function setRefreshStatus(message: string): void {
+  const status = $("#usage-refresh-status") as HTMLElement;
+  status.textContent = message;
+  status.hidden = false;
+  if (message === "Usage refresh complete") {
+    clearRefreshCompletion();
+    completedRefreshButton = activeRefreshButton;
+    refreshCompletionTimer = window.setTimeout(clearRefreshCompletion, 3_000);
+  }
+  document.querySelectorAll<HTMLButtonElement>("#refresh-button, #usage-refresh-button").forEach((button) => {
+    if (button.id === activeRefreshButton) button.title = message;
+  });
+  updateRefreshButtons();
+}
+
+function clearRefreshCompletion(): void {
+  if (refreshCompletionTimer !== null) window.clearTimeout(refreshCompletionTimer);
+  refreshCompletionTimer = null;
+  document.querySelectorAll<HTMLButtonElement>("#refresh-button, #usage-refresh-button").forEach((button) => {
+    if (button.id === completedRefreshButton) button.title = button.id === "refresh-button" ? "Force-refresh quotas and start usage refresh" : "Refresh usage";
+  });
+  completedRefreshButton = null;
+  updateRefreshButtons();
+}
+
 function stopHotUsagePolling(): void {
   if (!hotUsagePoller) return;
   window.clearTimeout(hotUsagePoller.timer);
   hotUsagePoller = null;
+  updateRefreshButtons();
 }
 
 function evaluateHotUsagePoll(poller: NonNullable<typeof hotUsagePoller>, usage: Usage | null): boolean {
@@ -1009,6 +1038,7 @@ function evaluateHotUsagePoll(poller: NonNullable<typeof hotUsagePoller>, usage:
     if (errorHost?.error) {
       stopHotUsagePolling();
       const message = `Hot usage refresh failed: ${errorHost.error}`;
+      setRefreshStatus(message);
       showToast(message);
       $("#status-copy").textContent = message;
       return true;
@@ -1023,7 +1053,8 @@ function evaluateHotUsagePoll(poller: NonNullable<typeof hotUsagePoller>, usage:
       stopHotUsagePolling();
       const message = unresolvedRetryHosts.length > 0
         ? `Hot usage refresh partially complete: ${unresolvedRetryHosts.join(", ")} did not recover`
-        : "Hot usage refresh complete";
+        : "Usage refresh complete";
+      setRefreshStatus(message);
       showToast(message);
       if (unresolvedRetryHosts.length > 0) $("#status-copy").textContent = message;
       return true;
@@ -1035,6 +1066,7 @@ function evaluateHotUsagePoll(poller: NonNullable<typeof hotUsagePoller>, usage:
     if (availableHosts.length > 0 && errorHosts.length === availableHosts.length) {
       stopHotUsagePolling();
       const message = `Hot usage refresh failed: ${errorHosts.map((host) => `${host.hostId}: ${host.error}`).join("; ")}`;
+      setRefreshStatus(message);
       showToast(message);
       $("#status-copy").textContent = message;
       return true;
@@ -1042,6 +1074,7 @@ function evaluateHotUsagePoll(poller: NonNullable<typeof hotUsagePoller>, usage:
     if (availableHosts.length === 0) {
       stopHotUsagePolling();
       const message = "Hot usage refresh failed: no eligible hosts are available";
+      setRefreshStatus(message);
       showToast(message);
       $("#status-copy").textContent = message;
       return true;
@@ -1049,6 +1082,7 @@ function evaluateHotUsagePoll(poller: NonNullable<typeof hotUsagePoller>, usage:
   }
   if (Date.now() - poller.startedAt >= HOT_USAGE_POLL_TIMEOUT_MS) {
     stopHotUsagePolling();
+    setRefreshStatus("Usage refresh is still running. Refresh again to check for new usage.");
     showToast("Hot usage refresh is still running");
     return true;
   }
@@ -1074,25 +1108,49 @@ async function pollHotUsage(): Promise<void> {
 
 function startHotUsagePolling(baseline: HotUsageBaseline, initialUsage: Usage | null | undefined, startedAt: number, targetHostIds: Set<string>): void {
   stopHotUsagePolling();
-  if (targetHostIds.size === 0) return;
+  if (targetHostIds.size === 0) {
+    setRefreshStatus("Saved usage loaded. No active hosts to refresh.");
+    return;
+  }
+  setRefreshStatus("Waiting for fresh usage from hosts…");
   const retryGraceHostIds = new Set([...targetHostIds].filter((hostId) => Boolean(baseline.get(hostId)?.error)));
   const poller = { timer: 0, startedAt, baseline, targetHostIds, retryGraceHostIds, requestInFlight: false };
   hotUsagePoller = poller;
+  updateRefreshButtons();
   if (evaluateHotUsagePoll(poller, initialUsage || null)) return;
   poller.timer = window.setTimeout(() => void pollHotUsage(), HOT_USAGE_POLL_INTERVAL_MS);
 }
 
-function beginRefresh(): boolean {
-  if (activeRefreshes > 0) return false;
+function updateRefreshButtons(): void {
+  const busy = activeRefreshes > 0 || hotUsagePoller !== null;
+  document.querySelectorAll<HTMLButtonElement>("#refresh-button, #usage-refresh-button").forEach((button) => {
+    const refreshing = busy && button.id === activeRefreshButton;
+    const completed = !refreshing && button.id === completedRefreshButton;
+    button.disabled = busy;
+    button.classList.toggle("is-refreshing", refreshing);
+    button.classList.toggle("is-refreshed", completed);
+    button.setAttribute("aria-busy", String(refreshing));
+    button.setAttribute("aria-label", `${button.id === "refresh-button" ? "Refresh quotas and usage" : "Refresh usage"}${completed ? ". Refresh complete" : refreshing ? ". Refreshing" : ""}`);
+    const label = button.querySelector(".refresh-idle");
+    if (label) label.textContent = completed ? "Refreshed" : button.id === "refresh-button" ? "Refresh all" : "Refresh usage";
+    button.querySelector(".refresh-idle")?.setAttribute("aria-hidden", String(refreshing));
+    button.querySelector(".refresh-pending")?.setAttribute("aria-hidden", String(!refreshing));
+  });
+}
+
+function beginRefresh(buttonId: string): boolean {
+  if (activeRefreshes > 0 || hotUsagePoller) return false;
   activeRefreshes += 1;
-  document.querySelectorAll<HTMLButtonElement>("#refresh-button, #usage-refresh-button").forEach((button) => { button.disabled = true; });
+  clearRefreshCompletion();
+  activeRefreshButton = buttonId;
+  setRefreshStatus("Loading saved usage…");
+  updateRefreshButtons();
   return true;
 }
 
 function endRefresh(): void {
   activeRefreshes = Math.max(0, activeRefreshes - 1);
-  if (activeRefreshes > 0) return;
-  document.querySelectorAll<HTMLButtonElement>("#refresh-button, #usage-refresh-button").forEach((button) => { button.disabled = false; });
+  updateRefreshButtons();
 }
 
 async function loadUsage(silent = false): Promise<Usage | null> {
@@ -1229,7 +1287,7 @@ async function loadSettings(): Promise<void> {
 function showToast(message: string): void { const toast = $("#toast"); toast.textContent = message; toast.classList.add("show"); setTimeout(() => toast.classList.remove("show"), 2200); }
 
 $("#refresh-button").addEventListener("click", async () => {
-  if (!beginRefresh()) return;
+  if (!beginRefresh("refresh-button")) return;
   let baseline: HotUsageBaseline | null = null;
   let startedAt = 0;
   let refreshStarted = false;
@@ -1244,14 +1302,16 @@ $("#refresh-button").addEventListener("click", async () => {
     refreshedUsage = state.dashboard?.usage || null;
     showToast("Quotas and usage refresh started");
   } catch (error) {
-    showToast(error instanceof Error ? error.message : "Refresh failed");
+    const message = error instanceof Error ? error.message : "Refresh failed";
+    setRefreshStatus(message);
+    showToast(message);
   } finally {
-    endRefresh();
     if (refreshStarted && refreshedUsage && baseline) startHotUsagePolling(baseline, refreshedUsage, startedAt, usageHotTargetIds(refreshedUsage));
+    endRefresh();
   }
 });
 $("#usage-refresh-button").addEventListener("click", async () => {
-  if (!beginRefresh()) return;
+  if (!beginRefresh("usage-refresh-button")) return;
   let baseline: HotUsageBaseline | null = null;
   let startedAt = 0;
   let refreshStarted = false;
@@ -1263,12 +1323,15 @@ $("#usage-refresh-button").addEventListener("click", async () => {
     await startUsageRefresh();
     refreshStarted = true;
     initialUsage = await loadUsage();
+    if (!initialUsage) throw new Error("Usage could not be loaded. Refresh usage to try again.");
     showToast("Usage refresh started");
   } catch (error) {
-    showToast(error instanceof Error ? error.message : "Usage refresh failed");
+    const message = error instanceof Error ? error.message : "Usage refresh failed";
+    setRefreshStatus(message);
+    showToast(message);
   } finally {
-    endRefresh();
     if (refreshStarted && initialUsage && baseline) startHotUsagePolling(baseline, initialUsage, startedAt, usageHotTargetIds(initialUsage));
+    endRefresh();
   }
 });
 $("#settings-button").addEventListener("click", async () => { await loadSettings(); $("#settings-dialog").showModal(); });
