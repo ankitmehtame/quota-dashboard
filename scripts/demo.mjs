@@ -9,6 +9,8 @@ const port = Number(process.env.DEMO_PORT || 4174);
 const host = process.env.DEMO_HOST || '127.0.0.1';
 const dayMs = 86_400_000;
 const now = () => new Date().toISOString();
+let usageGeneratedAt = now();
+let refreshReadyAt = 0;
 const date = (offset = 0) => new Date(Date.now() + offset * dayMs).toISOString().slice(0, 10);
 const at = (hours) => new Date(Date.now() + hours * 3_600_000).toISOString();
 const providers = Object.fromEntries([
@@ -29,6 +31,10 @@ const quotas = {
 const models = [['codex', 'gpt-5.4'], ['opencode', 'claude-sonnet-4-6'], ['hermes', 'gemini-3.1-pro']];
 
 function usage(url) {
+  if (refreshReadyAt && Date.now() >= refreshReadyAt) {
+    usageGeneratedAt = now();
+    refreshReadyAt = 0;
+  }
   const preset = url.searchParams.get('range');
   const today = new Date(`${date()}T00:00:00Z`);
   let days = Math.min(365, Math.max(1, Number(url.searchParams.get('days')) || 1));
@@ -52,7 +58,7 @@ function usage(url) {
     totalCostUsd: records.reduce((sum, record) => sum + record.costUsd, 0),
     totalTokens: records.reduce((sum, record) => sum + totalTokens(record), 0),
     hosts: [
-      { hostId: 'workstation', status: 'ok', local: true, active: true, usable: true, included: true, complete: true, generatedAt: now() },
+      { hostId: 'workstation', status: 'ok', category: 'hot', local: true, active: true, usable: true, included: true, complete: true, generatedAt: usageGeneratedAt },
       { hostId: 'macbook-pro', status: 'offline', severity: 'warning', error: 'Publisher offline. Stored usage is complete for this period.', active: false, usable: true, included: true, complete: true, generatedAt: at(-2) },
     ],
     mqtt: { configured: true, connection: 'connected' },
@@ -93,7 +99,10 @@ const server = createServer(async (request, response) => {
       if (path === '/api/v1/providers') return json({ providerOrder, providers, usageSources });
       if (path === '/api/v1/icons/refresh') return json({ icons: {} });
       if (path === '/api/v1/usage/cold') return json({ error: 'Demo only. No historical collection is started.' }, 409);
-      if (path === '/api/v1/usage/refresh') return json({ accepted: true });
+      if (path === '/api/v1/usage/refresh') {
+        refreshReadyAt = Date.now() + 4_000;
+        return json({ accepted: true });
+      }
       if (path === '/api/v1/usage') return json({ version: 'demo', apiVersion: 1, serverNow: now(), timezone: 'UTC', usage: usage(url) });
       if (path === '/api/v1/dashboard') return json({ version: 'demo', providerOrder, providers, quotas: Object.fromEntries(Object.entries(quotas).map(([id, quota]) => [id, { ...quota, fetchedAt: now() }])), serverNow: now(), cache: { fetchedAt: now() }, usage: usage(url) });
       return json({ error: 'Unknown demo endpoint' }, 404);
