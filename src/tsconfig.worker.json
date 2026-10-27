@@ -6,7 +6,7 @@
     "lib": ["ES2022", "WebWorker"],
     "rootDir": "public",
     "outDir": "dist/public",
-    "sourceMap": true
+    "sourceMap": false
   },
   "include": ["public/sw.ts"]
 }

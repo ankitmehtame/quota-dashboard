@@ -54,6 +54,9 @@ test("production build includes generated icons in the manifest and offline shel
   const manifest = JSON.parse(await readFile(new URL("manifest.webmanifest", base), "utf8"));
   const worker = await readFile(new URL("sw.js", base), "utf8");
   assert.doesNotMatch(worker, /__PWA_ICON_/);
+  // Post-compilation substitutions invalidate TypeScript's column mappings.
+  assert.doesNotMatch(worker, /sourceMappingURL/);
+  await assert.rejects(readFile(new URL("sw.js.map", base)), { code: "ENOENT" });
   assert.equal(manifest.icons.length, 2);
   for (const icon of manifest.icons) {
     assert.equal(icon.type, "image/png");

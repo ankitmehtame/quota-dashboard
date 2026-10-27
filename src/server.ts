@@ -710,7 +710,7 @@ async function serveStatic(response: import("node:http").ServerResponse, pathnam
   if (!file.startsWith(`${publicRoot}/`)) return json(response, 403, { error: "Forbidden" });
   try {
     const content = await readFile(file);
-    response.writeHead(200, { "Content-Type": MIME[extname(file)] || "application/octet-stream", "Cache-Control": [".html", ".webmanifest"].includes(extname(file)) ? "no-cache" : "public, max-age=3600" });
+    response.writeHead(200, { "Content-Type": MIME[extname(file)] || "application/octet-stream", "Cache-Control": requested === "/sw.js" || [".html", ".webmanifest"].includes(extname(file)) ? "no-cache" : "public, max-age=3600" });
     response.end(content);
   } catch {
     if (pathname !== "/") return serveStatic(response, "/index.html");
