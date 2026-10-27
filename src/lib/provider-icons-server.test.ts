@@ -47,6 +47,12 @@ globalThis.fetch = async (url, init) => {
       child.once("exit", () => { clearTimeout(timer); reject(new Error(output)); });
       check();
     });
+    const workerResponse = await request("/sw.js");
+    assert.equal(workerResponse.status, 200);
+    assert.equal(workerResponse.headers.get("cache-control"), "no-cache");
+    assert.equal(workerResponse.headers.get("content-type"), "text/javascript; charset=utf-8");
+    const appResponse = await request("/app.js");
+    assert.equal(appResponse.headers.get("cache-control"), "public, max-age=3600");
     const manifestResponse = await request("/manifest.webmanifest");
     assert.equal(manifestResponse.headers.get("cache-control"), "no-cache");
     assert.equal(manifestResponse.headers.get("content-type"), "application/manifest+json");
