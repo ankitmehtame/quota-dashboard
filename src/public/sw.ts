@@ -1,7 +1,7 @@
-const CACHE = "quota-dashboard-shell-v2";
+const CACHE = "quota-dashboard-shell-v3-__PWA_ICON_REVISION__";
 const ICON_CACHE = "quota-dashboard-icons-v1";
 const ICON_NAMES = ["claude", "openai", "openrouter", "ollama", "hermes", "antigravity", "gemini", "opencode"];
-const SHELL = ["/", "/index.html", "/styles.css", "/app.js", "/manifest.webmanifest", "/icon.svg", ...ICON_NAMES.map((id) => `/icons/${id}.svg`)];
+const SHELL = ["/", "/index.html", "/styles.css", "/app.js", "/manifest.webmanifest", "/icon.svg", "__PWA_ICON_PATHS__", ...ICON_NAMES.map((id) => `/icons/${id}.svg`)];
 const worker = self as unknown as ServiceWorkerGlobalScope;
 worker.addEventListener("install", (event: ExtendableEvent) => event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL))));
 worker.addEventListener("activate", (event: ExtendableEvent) => event.waitUntil((async () => {

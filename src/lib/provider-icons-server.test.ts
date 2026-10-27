@@ -47,6 +47,16 @@ globalThis.fetch = async (url, init) => {
       child.once("exit", () => { clearTimeout(timer); reject(new Error(output)); });
       check();
     });
+    const manifestResponse = await request("/manifest.webmanifest");
+    assert.equal(manifestResponse.headers.get("cache-control"), "no-cache");
+    assert.equal(manifestResponse.headers.get("content-type"), "application/manifest+json");
+    const manifest = await manifestResponse.json() as { icons: { src: string }[] };
+    for (const icon of manifest.icons) {
+      const response = await request(icon.src);
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get("content-type"), "image/png");
+      assert.equal(Buffer.from(await response.arrayBuffer()).subarray(0, 8).toString("hex"), "89504e470d0a1a0a");
+    }
     const first = await request("/icons/openai.svg");
     assert.equal(first.status, 200);
     assert.equal(first.headers.get("content-type"), "image/svg+xml");
