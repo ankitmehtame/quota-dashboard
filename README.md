@@ -18,6 +18,13 @@ is unavailable.
 
 For development and verification, run `npm run build` or `npm test` from `src/`.
 
+The build renders `src/public/icon.svg` into 192px and 512px PNG app icons with
+content-hashed filenames and writes their URLs into the generated PWA manifest.
+It also includes them in the service worker's offline cache. Edit the SVG and
+rebuild to change the installed app icon. Chrome checks the manifest periodically
+and can update installed icons without reinstalling, but the update is not immediate.
+The manifest URL stays fixed and the server serves it with `Cache-Control: no-cache`.
+
 Open `http://127.0.0.1:4173`. To expose it on your local network, run:
 
 ```sh

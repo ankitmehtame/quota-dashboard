@@ -702,7 +702,7 @@ async function handleApi(request: import("node:http").IncomingMessage, response:
   return json(response, 404, { error: "Not found" });
 }
 
-const MIME: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml", ".webmanifest": "application/manifest+json" };
+const MIME: Record<string, string> = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".json": "application/json; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png", ".webmanifest": "application/manifest+json" };
 
 async function serveStatic(response: import("node:http").ServerResponse, pathname: string): Promise<void> {
   const requested = pathname === "/" ? "/index.html" : pathname;
@@ -710,7 +710,7 @@ async function serveStatic(response: import("node:http").ServerResponse, pathnam
   if (!file.startsWith(`${publicRoot}/`)) return json(response, 403, { error: "Forbidden" });
   try {
     const content = await readFile(file);
-    response.writeHead(200, { "Content-Type": MIME[extname(file)] || "application/octet-stream", "Cache-Control": extname(file) === ".html" ? "no-cache" : "public, max-age=3600" });
+    response.writeHead(200, { "Content-Type": MIME[extname(file)] || "application/octet-stream", "Cache-Control": [".html", ".webmanifest"].includes(extname(file)) ? "no-cache" : "public, max-age=3600" });
     response.end(content);
   } catch {
     if (pathname !== "/") return serveStatic(response, "/index.html");
