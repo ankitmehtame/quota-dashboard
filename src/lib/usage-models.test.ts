@@ -89,7 +89,7 @@ test("top models show 14px icons beside each known tool and palette squares for 
   const view = dashboard(providers.map((provider) => record("2026-10-09", provider + " model", 1, "one", provider)), undefined, undefined, providers);
   for (const icon of Object.values(mapping)) assert.match(view.list(), new RegExp(`data-icon="${icon}"[^>]*width="14" height="14" alt=""`));
   assert.equal((view.list().match(/<img /g) || []).length, 8);
-  assert.match(view.list(), /<small class="model-provider"><span class="legend-key \w+"><\/span><span class="model-provider-name" title="Custom Agent">Custom Agent<\/span>/);
+  assert.match(view.list(), /<small class="model-provider"><span class="legend-key" data-tool="custom-agent" style="--tool-color:var\(--\w+\)"><\/span><span class="model-provider-name" title="Custom Agent">Custom Agent<\/span>/);
   assert.match(view.list(), /source-icon" aria-hidden="true"/);
 });
 

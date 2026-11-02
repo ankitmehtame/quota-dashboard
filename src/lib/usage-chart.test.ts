@@ -46,22 +46,22 @@ test("dynamic sources receive fallback labels and consistent colored bars and to
     const html = renderChart(dates.map((date) => ({ date, costs: [2, 3] })), "day", ["new-tool", "other-agent"]);
     assert.match(html, /New Tool/);
     assert.match(html, /Other Agent/);
-    const colors = [...html.matchAll(/class="chart-segment ([a-z]+)"/g)].map((match) => match[1]);
+    const colors = [...html.matchAll(/class="chart-segment" data-tool="[^"]+" style="--tool-color:var\(--([a-z]+)\)/g)].map((match) => match[1]);
     assert.ok(new Set(colors).size > 1);
-    for (const color of colors) assert.ok(html.includes(`tooltip-harness-dot ${color}`));
+    for (const color of colors) assert.ok(new RegExp(`tooltip-harness-dot" data-tool="[^"]+" style="--tool-color:var\\(--${color}\\)`).test(html));
   }
 });
 
 test("known sources have 14px tooltip icons while stacked segments retain palette colors", () => {
   const html = renderChart([{ date: "2026-10-04", costs: [1, 2, 3, 4] }]);
   for (const icon of ["openai", "opencode", "hermes", "antigravity"]) assert.match(html, new RegExp(`data-icon="${icon}"[^>]*width="14" height="14"`));
-  for (const color of ["mint", "violet", "yellow", "antigravity"]) assert.match(html, new RegExp(`class="chart-segment ${color}"`));
+  for (const color of ["mint", "violet", "yellow", "antigravity"]) assert.match(html, new RegExp(`class="chart-segment" data-tool="[^"]+" style="--tool-color:var\\(--${color}\\);`));
 });
 
 function stackGeometry(html: string): Array<{ height: number; segments: Array<{ height: number }> }> {
   return [...html.matchAll(/<div class="chart-stack" style="([^"]*)">(.*?)<\/button>/g)].map((match) => ({
     height: Number(match[1].match(/height:([\d.]+)%/)?.[1] ?? 100),
-    segments: [...match[2].matchAll(/style="flex:([\d.]+) 1 0%"/g)].map((segment) => ({ height: Number(segment[1]) })),
+    segments: [...match[2].matchAll(/style="--tool-color:[^;"]+;flex:([\d.]+) 1 0%"/g)].map((segment) => ({ height: Number(segment[1]) })),
   }));
 }
 
@@ -115,8 +115,8 @@ test("Hermes and Antigravity share a continuous flex stack with OpenCode", () =>
   const stack = stackGeometry(html)[0];
   assert.equal(stack.segments.length, 3);
   assert.ok(Math.abs(stack.segments.reduce((total, segment) => total + segment.height, 0) - 100) < 1e-10);
-  assert.match(html, /chart-segment yellow/);
-  assert.match(html, /chart-segment antigravity/);
+  assert.match(html, /chart-segment" data-tool="hermes" style="--tool-color:var\(--yellow\)/);
+  assert.match(html, /chart-segment" data-tool="antigravity" style="--tool-color:var\(--antigravity\)/);
   assert.doesNotMatch(html, /bottom:/);
 
   const styles = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
