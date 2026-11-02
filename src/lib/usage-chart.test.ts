@@ -43,9 +43,9 @@ function renderChart(days: Array<{ date: string; costs: number[]; tokens?: numbe
 
 test("dynamic sources receive fallback labels and consistent colored bars and tooltip dots", () => {
   for (const dates of [["2026-10-04"], ["2026-10-04", "2026-10-05"]]) {
-    const html = renderChart(dates.map((date) => ({ date, costs: [2, 3] })), "day", ["new-tool", "another-agent"]);
+    const html = renderChart(dates.map((date) => ({ date, costs: [2, 3] })), "day", ["new-tool", "other-agent"]);
     assert.match(html, /New Tool/);
-    assert.match(html, /Another Agent/);
+    assert.match(html, /Other Agent/);
     const colors = [...html.matchAll(/class="chart-segment ([a-z]+)"/g)].map((match) => match[1]);
     assert.ok(new Set(colors).size > 1);
     for (const color of colors) assert.ok(html.includes(`tooltip-harness-dot ${color}`));
@@ -55,7 +55,7 @@ test("dynamic sources receive fallback labels and consistent colored bars and to
 test("known sources have 14px tooltip icons while stacked segments retain palette colors", () => {
   const html = renderChart([{ date: "2026-10-04", costs: [1, 2, 3, 4] }]);
   for (const icon of ["openai", "opencode", "hermes", "antigravity"]) assert.match(html, new RegExp(`data-icon="${icon}"[^>]*width="14" height="14"`));
-  for (const color of ["mint", "violet", "orange", "blue"]) assert.match(html, new RegExp(`class="chart-segment ${color}"`));
+  for (const color of ["mint", "violet", "yellow", "antigravity"]) assert.match(html, new RegExp(`class="chart-segment ${color}"`));
 });
 
 function stackGeometry(html: string): Array<{ height: number; segments: Array<{ height: number }> }> {
@@ -115,8 +115,8 @@ test("Hermes and Antigravity share a continuous flex stack with OpenCode", () =>
   const stack = stackGeometry(html)[0];
   assert.equal(stack.segments.length, 3);
   assert.ok(Math.abs(stack.segments.reduce((total, segment) => total + segment.height, 0) - 100) < 1e-10);
-  assert.match(html, /chart-segment orange/);
-  assert.match(html, /chart-segment blue/);
+  assert.match(html, /chart-segment yellow/);
+  assert.match(html, /chart-segment antigravity/);
   assert.doesNotMatch(html, /bottom:/);
 
   const styles = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");

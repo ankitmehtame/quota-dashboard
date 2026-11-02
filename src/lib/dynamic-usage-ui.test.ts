@@ -30,16 +30,18 @@ test("usage date stays inline without an arbitrary width cap and cannot wrap int
 
 test("known source names and colors remain curated and fallback colors are stable", () => {
   const result = runInNewContext(`${presentation}; [usageSourceName("opencode"), usageSourceColor("codex"), usageSourceColor("opencode"), usageSourceColor("hermes"), usageSourceColor("antigravity"), usageSourceName("new_tool.v2"), usageSourceColor("new-tool"), usageSourceColor("new-tool")]`);
-  assert.deepEqual(Array.from(result).slice(0, 6), ["OpenCode", "mint", "violet", "orange", "blue", "New Tool V2"]);
+  assert.deepEqual(Array.from(result).slice(0, 6), ["OpenCode", "mint", "violet", "yellow", "antigravity", "New Tool V2"]);
   assert.equal(result[6], result[7]);
+  assert.deepEqual(Array.from(runInNewContext(`${presentation}; [usageSourceColor("claude"), usageSourceColor("gemini"), usageSourceColor("gemini-cli")]`)), ["claude", "gemini", "gemini"]);
 });
 
 test("expanded fallback palette has matching bar, legend, and tooltip styles", () => {
   const styles = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
   const colors: string[] = Array.from(runInNewContext(`${presentation}; Array.from({ length: 128 }, (_, index) => usageSourceColor('future-tool-' + index))`));
-  assert.equal(new Set(colors).size, 8);
-  for (const color of ["rose", "yellow", "teal"]) {
-    assert.ok(colors.includes(color));
+  assert.equal(new Set(colors).size, 6);
+  for (const reserved of ["claude", "antigravity", "gemini", "orange", "blue"]) assert.ok(!colors.includes(reserved));
+  for (const color of ["rose", "yellow", "teal", "claude", "antigravity", "gemini"]) {
+    if (!["claude", "antigravity", "gemini"].includes(color)) assert.ok(colors.includes(color));
     assert.ok(styles.includes(`--${color}:`));
     for (const selector of ["legend-key", "chart-segment", "tooltip-harness-dot"]) {
       assert.ok(styles.includes(`.${selector}.${color}`));

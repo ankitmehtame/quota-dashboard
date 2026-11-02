@@ -19,6 +19,9 @@
   --rose: #ed9dcc;
   --yellow: #e6d477;
   --teal: #66c9bf;
+  --claude: #e8a285;
+  --antigravity: #8ab4f8;
+  --gemini: #9fa8f5;
   --danger: #f19b91;
   --sans: 'IBM Plex Sans', system-ui, sans-serif;
   --display: var(--sans);
@@ -130,6 +133,9 @@ dialog::backdrop { background: color-mix(in srgb, var(--bg) 72%, transparent); b
 .legend-key.rose, .chart-segment.rose, .tooltip-harness-dot.rose { background: var(--rose); }
 .legend-key.yellow, .chart-segment.yellow, .tooltip-harness-dot.yellow { background: var(--yellow); }
 .legend-key.teal, .chart-segment.teal, .tooltip-harness-dot.teal { background: var(--teal); }
+.legend-key.claude, .chart-segment.claude, .tooltip-harness-dot.claude { background: var(--claude); }
+.legend-key.antigravity, .chart-segment.antigravity, .tooltip-harness-dot.antigravity { background: var(--antigravity); }
+.legend-key.gemini, .chart-segment.gemini, .tooltip-harness-dot.gemini { background: var(--gemini); }
 .chart-column { flex: 1; min-width: 5px; max-width: 22px; height: 100%; display: flex; align-items: end; outline: none; }
 .chart-stack { width: 100%; height: 100%; display: flex; flex-direction: column-reverse; justify-content: start; }
 .chart-segment { width: 100%; min-height: 2px; opacity: .86; position: relative; transition: opacity .15s; }

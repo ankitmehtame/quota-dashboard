@@ -69,7 +69,7 @@ export const PROVIDER_DEFINITIONS: Record<ProviderId, {
   capabilities: Record<string, boolean>;
 }> = {
   claude: {
-    name: "Claude", shortName: "Claude", accent: "orange",
+    name: "Claude", shortName: "Claude", accent: "claude",
     description: "Claude subscription quota windows",
     capabilities: { quota: true, usage: false, usedPercent: true, remainingValue: false, resetAt: true, historicalUsage: false, cost: false, tokenCounts: false },
   },
@@ -92,7 +92,7 @@ export const PROVIDER_DEFINITIONS: Record<ProviderId, {
   openrouter: {
     name: "OpenRouter",
     shortName: "OpenRouter",
-    accent: "violet",
+    accent: "teal",
     description: "API key balance and spending limit",
     capabilities: {
       quota: true,
@@ -108,7 +108,7 @@ export const PROVIDER_DEFINITIONS: Record<ProviderId, {
   "opencode-go": {
     name: "OpenCode Go",
     shortName: "Go",
-    accent: "blue",
+    accent: "violet",
     description: "Rolling, weekly, and monthly dashboard windows",
     capabilities: {
       quota: true,
@@ -124,7 +124,7 @@ export const PROVIDER_DEFINITIONS: Record<ProviderId, {
   ollama: {
     name: "Ollama Cloud",
     shortName: "Ollama",
-    accent: "orange",
+    accent: "neutral",
     description: "Monthly cloud credits and balance",
     capabilities: {
       quota: true,
