@@ -20,6 +20,7 @@ const providers = Object.fromEntries([
   ['ollama', 'Ollama Cloud', 'Ollama', 'blue', 'Cloud credits'],
 ].map(([id, name, shortName, accent, description]) => [id, { id, name, shortName, accent, description, enabled: true, configured: true, status: 'connected' }]));
 let providerOrder = Object.keys(providers);
+const toolColors = {};
 const usageSources = { codex: { enabled: true }, opencode: { enabled: true }, hermes: { enabled: true } };
 const window = (name, usedPercent, hours, elapsed) => ({ name, usedPercent, resetAt: at(hours), windowStart: at(-elapsed), windowEnd: at(hours), windowSeconds: (hours + elapsed) * 3600 });
 const quotas = {
@@ -85,6 +86,12 @@ const server = createServer(async (request, response) => {
     if (path.startsWith('/api/')) {
       if (request.method === 'PUT') {
         const data = await body(request);
+        if (path === '/api/v1/appearance/colors') {
+          const entries = Object.entries(data.colors && typeof data.colors === 'object' && !Array.isArray(data.colors) ? data.colors : { '': 0 });
+          if (entries.some(([key, value]) => !/^[a-z0-9][a-z0-9._~-]{0,63}$/i.test(key) || (value !== null && !/^#[0-9a-f]{6}$/i.test(String(value))))) return json({ error: 'Invalid colors' }, 400);
+          for (const [key, value] of entries) { if (value === null) delete toolColors[key]; else toolColors[key] = value.toLowerCase(); }
+          return json({ colors: toolColors });
+        }
         if (path === '/api/v1/providers/order') {
           if (!Array.isArray(data.order) || data.order.length !== providerOrder.length || new Set(data.order).size !== providerOrder.length || data.order.some((id) => !providers[id])) return json({ error: 'Invalid provider order' }, 400);
           providerOrder = data.order;
@@ -96,6 +103,7 @@ const server = createServer(async (request, response) => {
         }
         return json({ ok: true });
       }
+      if (path === '/api/v1/appearance/colors') return json({ colors: toolColors });
       if (path === '/api/v1/providers') return json({ providerOrder, providers, usageSources });
       if (path === '/api/v1/icons/refresh') return json({ icons: {} });
       if (path === '/api/v1/usage/cold') return json({ error: 'Demo only. No historical collection is started.' }, 409);

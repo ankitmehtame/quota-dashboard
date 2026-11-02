@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 
 const app = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
-const presentation = app.slice(app.indexOf("const usageSourceNames ="), app.indexOf("const HOT_USAGE_POLL_INTERVAL_MS"));
+const presentation = app.slice(app.indexOf("const escapeHtml ="), app.indexOf("const HOT_USAGE_POLL_INTERVAL_MS"));
 const behavior = app.slice(app.indexOf("function markFailedIcon("), app.indexOf("bindHeaderRefreshTooltip();", app.indexOf("function markFailedIcon(")));
 
 test("opening and visibility checks use only the server and update icons from the opening snapshot", async () => {
@@ -84,5 +84,5 @@ test("day detail breakdowns use icons for known sources and squares for unknown 
   const html = [...elements.values()].map((element) => element.innerHTML).join("");
   assert.match(html, /data-icon="hermes"[^>]*width="14" height="14"/);
   assert.match(html, /data-icon="gemini"[^>]*width="14" height="14"/);
-  assert.match(html, /class="legend-key \w+"><\/span>New Tool/);
+  assert.match(html, /class="legend-key" data-tool="new-tool" style="--tool-color:var\(--\w+\)"><\/span>New Tool/);
 });

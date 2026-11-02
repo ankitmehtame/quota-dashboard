@@ -23,8 +23,16 @@ const $ = (selector: string): any => document.querySelector(selector);
 const element = (target: EventTarget | null): HTMLElement => target as HTMLElement;
 const escapeHtml = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] || character);
 const usageSourceNames: Record<string, string> = { codex: "Codex", opencode: "OpenCode", hermes: "Hermes", antigravity: "Antigravity", claude: "Claude", shared: "Shared" };
-const usageSourceColors: Record<string, string> = { codex: "mint", opencode: "violet", hermes: "yellow", antigravity: "antigravity", claude: "claude", gemini: "gemini", "gemini-cli": "gemini", shared: "neutral" };
+const usageSourceColors: Record<string, string> = { codex: "mint", opencode: "violet", hermes: "yellow", antigravity: "antigravity", claude: "claude", gemini: "gemini", "gemini-cli": "gemini", openrouter: "teal", ollama: "neutral", shared: "neutral" };
 const usageColorPalette = ["mint", "violet", "neutral", "rose", "yellow", "teal"] as const;
+// Mirrors the --<token> custom properties in styles.css so defaults can seed <input type="color">.
+const colorTokenHex: Record<string, string> = { mint: "#a8f2cf", violet: "#c7b8ff", neutral: "#aeb8b2", rose: "#ed9dcc", yellow: "#e6d477", teal: "#66c9bf", claude: "#e8a285", antigravity: "#8ab4f8", gemini: "#9fa8f5" };
+// User color overrides by canonical tool id, previewed live and persisted separately.
+let toolColors: Record<string, string> = {};
+// Quota providers and usage sources of one tool share a canonical id and color.
+function toolId(id: string): string {
+  return id === "opencode-go" ? "opencode" : id === "gemini-cli" ? "gemini" : id;
+}
 function usageSourceName(id: string): string {
   return (Object.hasOwn(usageSourceNames, id) ? usageSourceNames[id] : "") || id.split(/[-_.~\s]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ") || id;
 }
@@ -35,6 +43,17 @@ function usageSourceColor(id: string): string {
   for (let index = 0; index < id.length; index++) hash = Math.imul(hash ^ id.charCodeAt(index), 16777619);
   return usageColorPalette[(hash >>> 0) % usageColorPalette.length];
 }
+function defaultToolHex(id: string): string {
+  return colorTokenHex[usageSourceColor(toolId(id))] || colorTokenHex.neutral;
+}
+function toolColorValue(id: string): string {
+  const tool = toolId(id);
+  return Object.hasOwn(toolColors, tool) ? toolColors[tool] : `var(--${usageSourceColor(tool)})`;
+}
+function applyToolColors(ids?: Iterable<string>): void {
+  const only = ids ? new Set(ids) : null;
+  document.querySelectorAll<HTMLElement>("[data-tool]").forEach((item) => { if (!only || only.has(item.dataset.tool!)) item.style.setProperty("--tool-color", toolColorValue(item.dataset.tool!)); });
+}
 // Brand assets from https://selfh.st/icons/ and https://thesvg.org/.
 // Sources, licenses, and modifications are recorded in icons/ATTRIBUTION.md.
 const sourceIcons: Record<string, string> = { claude: "claude", codex: "openai", openrouter: "openrouter", ollama: "ollama", hermes: "hermes", antigravity: "antigravity", gemini: "gemini", "gemini-cli": "gemini", opencode: "opencode", "opencode-go": "opencode" };
@@ -43,8 +62,8 @@ function sourceIconUrl(icon: string): string {
   return `/icons/${icon}.svg${iconRevisions[icon] ? `?v=${iconRevisions[icon]}` : ""}`;
 }
 function sourceIcon(id: string, size = 14, tooltip = false): string {
-  const color = usageSourceColor(id);
-  const swatch = tooltip ? `<i class="tooltip-harness-dot ${color}"></i>` : `<span class="legend-key ${color}"></span>`;
+  const tool = `data-tool="${escapeHtml(toolId(id))}" style="--tool-color:${toolColorValue(id)}"`;
+  const swatch = tooltip ? `<i class="tooltip-harness-dot" ${tool}></i>` : `<span class="legend-key" ${tool}></span>`;
   const icon = Object.hasOwn(sourceIcons, id) ? sourceIcons[id] : undefined;
   if (!icon) return swatch;
   return `<span class="source-icon${size === 20 ? " source-icon-large" : ""}" aria-hidden="true"><span class="icon-fallback">${swatch}</span><img data-icon="${icon}" src="${sourceIconUrl(icon)}" width="${size}" height="${size}" alt="" /></span>`;
@@ -467,10 +486,9 @@ function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][st
       ${footLabel ? `<div class="quota-foot"><span>${escapeHtml(footLabel)}</span></div>` : ""}
     </div>`;
   }).join("");
-  const accent = /^[a-z-]+$/.test(provider.accent) ? provider.accent : "mint";
   const stale = quota?.stale ? `<div class="quota-error">Stale · last known quota measured ${escapeHtml(formatRefreshTime(quota.fetchedAt))}</div>` : "";
   const cooldown = quota?.cooldownUntil && quota.cooldownUntil > now ? `<div class="quota-foot">Retry after ${escapeHtml(formatRefreshTime(new Date(quota.cooldownUntil).toISOString()))}</div>` : "";
-  return `<article class="quota-card" style="--accent: var(--${accent})"><div class="provider-head"><div><div class="provider-name">${sourceIcon(id, 20)}${escapeHtml(provider.shortName)}</div><div class="provider-sub">${escapeHtml(subtitle)}</div></div><span class="provider-badge">${escapeHtml(status)}</span></div><div class="quota-meta">${plan}${stale}</div><div class="quota-main">${content}${creditBalance}${resetCredits}${quota?.error ? `<div class="quota-error">${escapeHtml(quota.error)}</div>` : ""}${cooldown}</div></article>`;
+  return `<article class="quota-card" data-tool="${escapeHtml(toolId(id))}" style="--tool-color:${toolColorValue(id)}"><div class="provider-head"><div><div class="provider-name">${sourceIcon(id, 20)}${escapeHtml(provider.shortName)}</div><div class="provider-sub">${escapeHtml(subtitle)}</div></div><span class="provider-badge">${escapeHtml(status)}</span></div><div class="quota-meta">${plan}${stale}</div><div class="quota-main">${content}${creditBalance}${resetCredits}${quota?.error ? `<div class="quota-error">${escapeHtml(quota.error)}</div>` : ""}${cooldown}</div></article>`;
 }
 
 function renderQuotas(data: Dashboard): void {
@@ -837,8 +855,7 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
   renderSpendMetrics(sourceUsage, hosts, usableHosts, selectedUsage, selectedHostIds);
   updateRepresentationControls();
   const sourceNames = usageSourceName;
-  const sourceColors = usageSourceColor;
-  $(".chart-legend").innerHTML = [...enabledSources].map((provider) => `<button class="chart-legend-item" type="button" data-usage-source="${escapeHtml(provider)}" style="--source-color:var(--${sourceColors(provider)})" aria-pressed="${state.sourceSelections.get(provider) !== false}">${Object.hasOwn(sourceIcons, provider) ? sourceIcon(provider) : ""}${escapeHtml(sourceNames(provider))}</button>`).join("") || "No local usage sources enabled";
+  $(".chart-legend").innerHTML = [...enabledSources].map((provider) => `<button class="chart-legend-item" type="button" data-usage-source="${escapeHtml(provider)}" data-tool="${escapeHtml(toolId(provider))}" style="--tool-color:${toolColorValue(provider)}" aria-pressed="${state.sourceSelections.get(provider) !== false}">${Object.hasOwn(sourceIcons, provider) ? sourceIcon(provider) : ""}${escapeHtml(sourceNames(provider))}</button>`).join("") || "No local usage sources enabled";
   document.querySelectorAll<HTMLButtonElement>("[data-usage-source]").forEach((button) => button.addEventListener("click", () => {
     const provider = button.dataset.usageSource!;
     state.sourceSelections.set(provider, state.sourceSelections.get(provider) === false);
@@ -879,7 +896,6 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
   const hasUsage = Boolean(selectedUsage.records?.length || selectedUsage.daily?.length);
   const buckets = hasUsage ? usageBuckets(selectedUsage, representation) : [];
   const providers = [...new Set([...enabledSources, ...(enabledSources.size > 0 ? ["shared"] : [])])];
-  const colors = sourceColors;
   const max = Math.max(...buckets.map((bucket) => bucket.costUsd), 0);
   $("#chart-scale").innerHTML = max > 0 ? [max, max * .75, max * .5, max * .25, 0].map((value) => `<span>${money(value)}</span>`).join("") : "";
   const dateTicks = [...new Set([0, Math.floor((buckets.length - 1) / 2), buckets.length - 1])].filter((index) => index >= 0 && index < buckets.length);
@@ -889,7 +905,7 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
     const harnesses = sortedSegments.map((segment) => `<span class="harness-row ${segment.provider === hoveredProvider ? "hovered" : ""}">${sourceIcon(segment.provider, 14, true)}<span class="harness-name">${escapeHtml(sourceNames(segment.provider))}</span><span class="harness-detail"> · ${spend(segment.costUsd, segment.missingPricing)} · ${formatTokens(segment.totalTokens)} tokens${segment.missingPricing ? " · Pricing unavailable" : ""}</span></span>`).join("");
     return `<span class="chart-tooltip"><strong>${spend(bucket.costUsd, bucket.missingPricing)} total · ${formatTokens(bucket.totalTokens)} tokens</strong><span>${escapeHtml(usageBucketLabel(bucket, representation))}</span><div class="tooltip-separator"></div>${harnesses}</span>`;
   };
-  const renderSegment = (bucket: UsageBucket, segment: PricingStatus & { provider: string; costUsd: number; totalTokens: number }, segments: Array<PricingStatus & { provider: string; costUsd: number; totalTokens: number }>, height: number) => { const color = colors(segment.provider); return `<div class="chart-segment ${color}" style="flex:${height} 1 0%">${usageTooltip(bucket, segment.provider, segments)}</div>`; };
+  const renderSegment = (bucket: UsageBucket, segment: PricingStatus & { provider: string; costUsd: number; totalTokens: number }, segments: Array<PricingStatus & { provider: string; costUsd: number; totalTokens: number }>, height: number) => { return `<div class="chart-segment" data-tool="${escapeHtml(toolId(segment.provider))}" style="--tool-color:${toolColorValue(segment.provider)};flex:${height} 1 0%">${usageTooltip(bucket, segment.provider, segments)}</div>`; };
   const todayOnly = selectedUsage.from === selectedUsage.to;
   const chartScroll = document.querySelector<HTMLElement>(".chart-scroll");
   chart.innerHTML = buckets.length ? buckets.map((bucket, bucketIndex) => {
@@ -898,7 +914,7 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
     const displayedTotal = fallback.reduce((total, segment) => total + segment.costUsd, 0);
     const label = usageBucketLabel(bucket, representation);
     if (todayOnly) {
-      return (fallback.length ? fallback : [{ provider: "other", costUsd: 0, totalTokens: 0, missingPricing: false }]).map((segment) => `<button class="chart-column today-harness" type="button" data-bucket-index="${bucketIndex}" aria-label="${escapeHtml(label)} ${escapeHtml(sourceNames(segment.provider))}: ${spend(segment.costUsd, segment.missingPricing)}${segment.missingPricing ? ", Pricing unavailable" : ""}"><div class="chart-stack">${segment.costUsd > 0 || segment.totalTokens > 0 || segment.missingPricing ? `<div class="chart-segment ${colors(segment.provider)}" style="height:${max ? Math.max(2, (segment.costUsd / max) * 100) : 2}%;bottom:0">${usageTooltip(bucket, segment.provider, fallback)}</div>` : ""}</div></button>`).join("");
+      return (fallback.length ? fallback : [{ provider: "other", costUsd: 0, totalTokens: 0, missingPricing: false }]).map((segment) => `<button class="chart-column today-harness" type="button" data-bucket-index="${bucketIndex}" aria-label="${escapeHtml(label)} ${escapeHtml(sourceNames(segment.provider))}: ${spend(segment.costUsd, segment.missingPricing)}${segment.missingPricing ? ", Pricing unavailable" : ""}"><div class="chart-stack">${segment.costUsd > 0 || segment.totalTokens > 0 || segment.missingPricing ? `<div class="chart-segment" data-tool="${escapeHtml(toolId(segment.provider))}" style="--tool-color:${toolColorValue(segment.provider)};height:${max ? Math.max(2, (segment.costUsd / max) * 100) : 2}%;bottom:0">${usageTooltip(bucket, segment.provider, fallback)}</div>` : ""}</div></button>`).join("");
     }
     const isCurrentBucket = bucket.to === selectedUsage.to;
     // Size every stack by total spend. Keep small or token-only sources visible
@@ -1198,7 +1214,7 @@ async function loadDashboard(refresh = false): Promise<void> {
   $("#usage-chart").innerHTML = `<div class="chart-empty">Loading usage data…</div>`;
   $("#models-list").innerHTML = `<div class="chart-empty">Loading model data…</div>`;
   try {
-    const response = await fetch(`/api/v1/dashboard?${usageQuery()}${refresh ? "&refresh=1" : ""}`);
+    const [response] = await Promise.all([fetch(`/api/v1/dashboard?${usageQuery()}${refresh ? "&refresh=1" : ""}`), fetchToolColors()]);
     if (!response.ok) throw new Error("Dashboard request failed");
     state.dashboard = await response.json();
     sampleServerClock(state.dashboard?.serverNow);
@@ -1278,13 +1294,213 @@ async function loadSettings(): Promise<void> {
     return left.localeCompare(right);
   });
   const usageSettings = usageIds.map((id) => `<label class="setting-row"><div class="setting-copy"><div class="provider-name">${sourceIcon(id)}${escapeHtml(usageNames(id))} usage</div><div class="provider-sub">Provider group from shared ccusage output</div></div><input class="switch" type="checkbox" data-kind="usage" data-provider="${escapeHtml(id)}" ${data.usageSources?.[id]?.enabled ? "checked" : ""} aria-label="Enable ${escapeHtml(usageNames(id))} usage" /></label>`).join("");
-   $("#provider-settings").innerHTML = `<p class="settings-group">Display</p><label class="setting-row"><div class="setting-copy"><div class="provider-name">12-hour times</div><div class="provider-sub">Show times with AM and PM</div></div><input class="switch" type="checkbox" data-kind="time-format" ${state.hour12 ? "checked" : ""} aria-label="Use 12-hour clock" /></label><p class="settings-group">Quota providers</p>${quotaSettings}<p class="settings-group">Usage sources</p>${usageSettings}`;
-   renderColdUsageSettings(state.dashboard?.usage);
+  $("#provider-settings").innerHTML = `<p class="settings-group">Quota providers</p>${quotaSettings}<p class="settings-group">Usage sources</p>${usageSettings}`;
+  renderAppearanceSettings(data, usageIds);
+  renderColdUsageSettings(state.dashboard?.usage);
   document.querySelectorAll<HTMLButtonElement>(".order-button").forEach((button) => button.addEventListener("click", async () => { const id = button.dataset.provider || ""; const index = providerOrder.indexOf(id); const nextIndex = index + (button.dataset.orderDirection === "up" ? -1 : 1); if (index < 0 || nextIndex < 0 || nextIndex >= providerOrder.length) return; const nextOrder = [...providerOrder]; [nextOrder[index], nextOrder[nextIndex]] = [nextOrder[nextIndex], nextOrder[index]]; document.querySelectorAll<HTMLButtonElement>(".order-button").forEach((item) => { item.disabled = true; }); try { const save = await fetch("/api/v1/providers/order", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ order: nextOrder }) }); if (!save.ok) throw new Error("Provider order could not be saved"); providerOrder = nextOrder; if (state.dashboard) renderQuotas(state.dashboard); await loadSettings(); showToast("Provider order saved"); } catch (error) { showToast(error instanceof Error ? error.message : "Provider order could not be saved"); await loadSettings(); } }));
-  document.querySelectorAll<HTMLInputElement>(".switch").forEach((input) => input.addEventListener("change", async (event) => { const target = event.target as HTMLInputElement; const id = target.dataset.provider || ""; const kind = target.dataset.kind || ""; if (kind === "time-format") { state.hour12 = target.checked; localStorage.setItem(timeFormatStorageKey, state.hour12 ? "12" : "24"); renderClock(); if (state.dashboard) { renderQuotas(state.dashboard); renderStatus(state.dashboard); } showToast(`${state.hour12 ? "12-hour" : "24-hour"} clock enabled`); return; } const path = kind === "usage" ? `/api/v1/usage-sources/${encodeURIComponent(id)}/enabled` : `/api/v1/providers/${encodeURIComponent(id)}/enabled`; await fetch(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: target.checked }) }); showToast(`${kind === "usage" ? usageNames(id) + " usage" : data.providers[id].name} ${target.checked ? "enabled" : "disabled"}`); await loadDashboard(true); }));
+  document.querySelectorAll<HTMLInputElement>("#provider-settings .switch").forEach((input) => input.addEventListener("change", async (event) => { const target = event.target as HTMLInputElement; const id = target.dataset.provider || ""; const kind = target.dataset.kind || ""; const path = kind === "usage" ? `/api/v1/usage-sources/${encodeURIComponent(id)}/enabled` : `/api/v1/providers/${encodeURIComponent(id)}/enabled`; await fetch(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: target.checked }) }); showToast(`${kind === "usage" ? usageNames(id) + " usage" : data.providers[id].name} ${target.checked ? "enabled" : "disabled"}`); await loadDashboard(true); }));
 }
 
 function showToast(message: string): void { const toast = $("#toast"); toast.textContent = message; toast.classList.add("show"); setTimeout(() => toast.classList.remove("show"), 2200); }
+
+type SettingsSection = "appearance" | "sources" | "usage";
+const settingsSections: SettingsSection[] = ["appearance", "sources", "usage"];
+const settingsSectionStorageKey = "quota-dashboard.settings-section";
+const toolColorsPath = "/api/v1/appearance/colors";
+let savedToolColors: Record<string, string> = {};
+// One undo step per tool: the override (null = default) held before its latest change. Memory only.
+const colorUndo = new Map<string, string | null>();
+const colorEditStart = new Map<string, string | null>();
+let colorSaveQueue: Promise<void> = Promise.resolve();
+let activeSettingsSection: SettingsSection | null = null;
+let settingsHistoryPushed = false;
+
+function cleanToolColors(raw: unknown): Record<string, string> {
+  const colors: Record<string, string> = {};
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) for (const [key, value] of Object.entries(raw)) if (typeof value === "string" && /^#[0-9a-f]{6}$/i.test(value)) colors[key] = value.toLowerCase();
+  return colors;
+}
+
+// Unsaved local edits win over a refetch; everything else follows the server.
+function adoptServerColors(next: Record<string, string>): void {
+  const merged = { ...next };
+  for (const id of new Set([...Object.keys(savedToolColors), ...Object.keys(toolColors)])) {
+    if ((toolColors[id] ?? null) === (savedToolColors[id] ?? null)) continue;
+    if (Object.hasOwn(toolColors, id)) merged[id] = toolColors[id]; else delete merged[id];
+  }
+  toolColors = merged;
+  savedToolColors = next;
+}
+
+async function fetchToolColors(): Promise<void> {
+  try {
+    const response = await fetch(toolColorsPath);
+    if (response.ok) adoptServerColors(cleanToolColors((await response.json()).colors));
+  } catch { /* Colors fall back to the last known values. */ }
+}
+
+function pendingColorChanges(): Record<string, string | null> {
+  const changes: Record<string, string | null> = {};
+  for (const id of new Set([...Object.keys(savedToolColors), ...Object.keys(toolColors)])) {
+    const current = toolColors[id] ?? null;
+    if (current !== (savedToolColors[id] ?? null)) changes[id] = current;
+  }
+  return changes;
+}
+
+function saveToolColors(keepalive = false): Promise<void> {
+  const request = (changes: Record<string, string | null>) => fetch(toolColorsPath, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ colors: changes }), ...(keepalive ? { keepalive: true } : {}) });
+  if (keepalive) {
+    const changes = pendingColorChanges();
+    if (Object.keys(changes).length) request(changes).catch(() => {});
+    return Promise.resolve();
+  }
+  colorSaveQueue = colorSaveQueue.then(async () => {
+    const changes = pendingColorChanges();
+    const ids = Object.keys(changes);
+    if (!ids.length) return;
+    try {
+      const response = await request(changes);
+      if (!response.ok) throw new Error("Colors could not be saved");
+      for (const id of ids) { const color = changes[id]; if (color) savedToolColors[id] = color; else delete savedToolColors[id]; }
+    } catch (error) {
+      for (const id of ids) { if (Object.hasOwn(savedToolColors, id)) toolColors[id] = savedToolColors[id]; else delete toolColors[id]; }
+      applyToolColors(ids);
+      ids.forEach(updateColorRow);
+      showToast(error instanceof Error ? error.message : "Colors could not be saved");
+    }
+  });
+  return colorSaveQueue;
+}
+
+function toolColorHex(id: string): string {
+  return toolColors[id] ?? defaultToolHex(id);
+}
+
+function setToolColor(id: string, color: string | null): void {
+  if (color === null || color === defaultToolHex(id)) delete toolColors[id]; else toolColors[id] = color;
+  applyToolColors([id]);
+  updateColorRow(id);
+}
+
+function updateColorRow(id: string): void {
+  const row = Array.from(document.querySelectorAll<HTMLElement>("[data-tool-row]")).find((item) => item.dataset.toolRow === id);
+  if (!row) return;
+  const hex = toolColorHex(id);
+  const input = row.querySelector<HTMLInputElement>("[data-tool-color]")!;
+  if (input.value !== hex) input.value = hex;
+  row.querySelector<HTMLElement>("[data-color-reset]")!.hidden = hex === defaultToolHex(id);
+  row.querySelector<HTMLElement>("[data-color-undo]")!.hidden = !colorUndo.has(id);
+}
+
+function previewToolColor(id: string, color: string): void {
+  if (!colorEditStart.has(id)) colorEditStart.set(id, toolColors[id] ?? null);
+  setToolColor(id, color.toLowerCase());
+  const start = colorEditStart.get(id) ?? null;
+  if ((toolColors[id] ?? null) === start) colorUndo.delete(id); else colorUndo.set(id, start);
+  updateColorRow(id);
+}
+
+function renderAppearanceSettings(data: ProvidersResponse, usageIds: string[]): void {
+  const tools = new Map<string, string>();
+  for (const id of data.providerOrder) { const tool = toolId(id); if (!tools.has(tool)) tools.set(tool, tool === id ? data.providers[id]?.name || usageSourceName(tool) : usageSourceName(tool)); }
+  for (const id of usageIds) { const tool = toolId(id); if (!tools.has(tool)) tools.set(tool, usageSourceName(tool)); }
+  const rows = [...tools].map(([id, name]) => `<div class="setting-row color-row" data-tool-row="${escapeHtml(id)}"><div class="setting-copy"><div class="provider-name">${sourceIcon(id)}${escapeHtml(name)}</div></div><div class="color-actions"><button class="text-button color-action" type="button" data-color-undo="${escapeHtml(id)}" aria-label="Undo ${escapeHtml(name)} color change" hidden>Undo</button><button class="text-button color-action" type="button" data-color-reset="${escapeHtml(id)}" aria-label="Reset ${escapeHtml(name)} color to default" hidden>Reset</button><input class="color-input" type="color" data-tool-color="${escapeHtml(id)}" value="${toolColorHex(id)}" aria-label="${escapeHtml(name)} color" /></div></div>`).join("");
+  const container = $("#appearance-settings") as HTMLElement;
+  container.innerHTML = `<p class="settings-group">Display</p><label class="setting-row"><div class="setting-copy"><div class="provider-name">12-hour times</div><div class="provider-sub">Show times with AM and PM. Saved on this device.</div></div><input class="switch" type="checkbox" data-kind="time-format" ${state.hour12 ? "checked" : ""} aria-label="Use 12-hour clock" /></label><p class="settings-group">Colors</p><div class="color-list">${rows}</div>`;
+  tools.forEach((_, id) => updateColorRow(id));
+  container.oninput = (event) => { const target = element(event.target) as HTMLInputElement; if (target.dataset.toolColor) previewToolColor(target.dataset.toolColor, target.value); };
+  container.onchange = (event) => {
+    const target = element(event.target) as HTMLInputElement;
+    if (target.dataset.toolColor) { colorEditStart.delete(target.dataset.toolColor); return; }
+    if (event.type !== "change" || target.dataset.kind !== "time-format") return;
+    state.hour12 = target.checked;
+    localStorage.setItem(timeFormatStorageKey, state.hour12 ? "12" : "24");
+    renderClock();
+    if (state.dashboard) { renderQuotas(state.dashboard); renderStatus(state.dashboard); }
+    showToast(`${state.hour12 ? "12-hour" : "24-hour"} clock enabled`);
+  };
+  container.onclick = (event) => {
+    const button = element(event.target).closest<HTMLElement>("[data-color-reset], [data-color-undo]");
+    if (!button) return;
+    const id = button.dataset.colorReset || button.dataset.colorUndo || "";
+    colorEditStart.delete(id);
+    if (button.dataset.colorReset !== undefined) {
+      colorUndo.set(id, toolColors[id] ?? null);
+      setToolColor(id, null);
+    } else {
+      const previous = colorUndo.get(id) ?? null;
+      colorUndo.delete(id);
+      setToolColor(id, previous);
+    }
+  };
+}
+
+function settingsHashSection(): SettingsSection | null {
+  const match = location.hash.match(/^#settings\/(appearance|sources|usage)$/);
+  return match ? match[1] as SettingsSection : null;
+}
+
+function storedSettingsSection(): SettingsSection {
+  const stored = localStorage.getItem(settingsSectionStorageKey);
+  return settingsSections.find((section) => section === stored) ?? "sources";
+}
+
+function showSettingsSection(section: SettingsSection, updateUrl = true): void {
+  if (activeSettingsSection === "appearance" && section !== "appearance") void saveToolColors();
+  activeSettingsSection = section;
+  localStorage.setItem(settingsSectionStorageKey, section);
+  document.querySelectorAll<HTMLElement>("[data-settings-section]").forEach((tab) => {
+    const selected = tab.dataset.settingsSection === section;
+    tab.classList.toggle("active", selected);
+    tab.setAttribute("aria-selected", String(selected));
+    tab.tabIndex = selected ? 0 : -1;
+  });
+  document.querySelectorAll<HTMLElement>("[data-settings-panel]").forEach((panel) => { panel.hidden = panel.dataset.settingsPanel !== section; });
+  if (updateUrl && settingsHashSection() !== section) history.replaceState(null, "", `#settings/${section}`);
+}
+
+async function openSettings(section: SettingsSection | null, fromHistory = false): Promise<void> {
+  const dialog = $("#settings-dialog") as HTMLDialogElement;
+  await loadSettings();
+  if (dialog.open) { if (section) showSettingsSection(section, false); return; }
+  const target = section ?? storedSettingsSection();
+  showSettingsSection(target, false);
+  dialog.showModal();
+  if (section === null) { history.pushState(null, "", `#settings/${target}`); settingsHistoryPushed = true; } else settingsHistoryPushed = fromHistory;
+}
+
+function bindSettingsDialog(): void {
+  const dialog = $("#settings-dialog") as HTMLDialogElement;
+  $("#settings-button").addEventListener("click", () => void openSettings(null));
+  $("#close-settings").addEventListener("click", () => dialog.close());
+  $("#appearance-settings").addEventListener("focusout", (event: Event) => { const id = element(event.target).dataset.toolColor; if (id) colorEditStart.delete(id); });
+  const tabs = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-settings-section]"));
+  tabs.forEach((tab, index) => {
+    tab.addEventListener("click", () => showSettingsSection(tab.dataset.settingsSection as SettingsSection));
+    tab.addEventListener("keydown", (event) => {
+      const next = event.key === "ArrowDown" || event.key === "ArrowRight" ? (index + 1) % tabs.length : event.key === "ArrowUp" || event.key === "ArrowLeft" ? (index - 1 + tabs.length) % tabs.length : event.key === "Home" ? 0 : event.key === "End" ? tabs.length - 1 : -1;
+      if (next < 0) return;
+      event.preventDefault();
+      showSettingsSection(tabs[next].dataset.settingsSection as SettingsSection);
+      tabs[next].focus();
+    });
+  });
+  dialog.addEventListener("close", () => {
+    if (activeSettingsSection === "appearance") void saveToolColors();
+    activeSettingsSection = null;
+    if (settingsHashSection()) { if (settingsHistoryPushed) history.back(); else history.replaceState(null, "", location.pathname + location.search); }
+    settingsHistoryPushed = false;
+  });
+  const openFromUrl = (fromHistory: boolean) => {
+    const section = settingsHashSection();
+    if (dialog.open) { if (section) showSettingsSection(section, false); else dialog.close(); return; }
+    if (section) openSettings(section, fromHistory).catch((error) => showToast(error instanceof Error ? error.message : "Settings could not be loaded"));
+  };
+  window.addEventListener("popstate", () => openFromUrl(true));
+  window.addEventListener("pagehide", () => void saveToolColors(true));
+  openFromUrl(false);
+}
 
 $("#refresh-button").addEventListener("click", async () => {
   if (!beginRefresh("refresh-button")) return;
@@ -1334,8 +1550,7 @@ $("#usage-refresh-button").addEventListener("click", async () => {
     endRefresh();
   }
 });
-$("#settings-button").addEventListener("click", async () => { await loadSettings(); $("#settings-dialog").showModal(); });
-$("#close-settings").addEventListener("click", () => $("#settings-dialog").close());
+bindSettingsDialog();
 $("#close-day-details").addEventListener("click", () => $("#day-details-dialog").close());
 $("#day-details-dialog").addEventListener("close", () => { $("#usage-chart").classList.remove("suppress-tooltips"); const trigger = activeDetailsTrigger; activeDetailsTrigger = null; if (trigger?.isConnected) trigger.focus(); else (document.activeElement as HTMLElement | null)?.blur?.(); });
 bindModelDetailsDialog();

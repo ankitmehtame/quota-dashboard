@@ -79,7 +79,7 @@
                     <span id="today-caption">Today so far</span>
                   </div>
                 </div>
-                <div class="chart-legend"><span class="chart-legend-item"><span class="source-icon" aria-hidden="true"><span class="icon-fallback"><span class="legend-key mint"></span></span><img data-icon="openai" src="/icons/openai.svg" width="14" height="14" alt="" /></span>Codex</span><span class="chart-legend-item"><span class="source-icon" aria-hidden="true"><span class="icon-fallback"><span class="legend-key violet"></span></span><img data-icon="opencode" src="/icons/opencode.svg" width="14" height="14" alt="" /></span>OpenCode</span><span class="chart-legend-item"><span class="source-icon" aria-hidden="true"><span class="icon-fallback"><span class="legend-key yellow"></span></span><img data-icon="hermes" src="/icons/hermes.svg" width="14" height="14" alt="" /></span>Hermes</span><span class="chart-legend-item"><span class="source-icon" aria-hidden="true"><span class="icon-fallback"><span class="legend-key antigravity"></span></span><img data-icon="antigravity" src="/icons/antigravity.svg" width="14" height="14" alt="" /></span>Antigravity</span></div>
+                <div class="chart-legend"><span class="chart-legend-item"><span class="source-icon" aria-hidden="true"><span class="icon-fallback"><span class="legend-key" data-tool="codex" style="--tool-color:var(--mint)"></span></span><img data-icon="openai" src="/icons/openai.svg" width="14" height="14" alt="" /></span>Codex</span><span class="chart-legend-item"><span class="source-icon" aria-hidden="true"><span class="icon-fallback"><span class="legend-key" data-tool="opencode" style="--tool-color:var(--violet)"></span></span><img data-icon="opencode" src="/icons/opencode.svg" width="14" height="14" alt="" /></span>OpenCode</span><span class="chart-legend-item"><span class="source-icon" aria-hidden="true"><span class="icon-fallback"><span class="legend-key" data-tool="hermes" style="--tool-color:var(--yellow)"></span></span><img data-icon="hermes" src="/icons/hermes.svg" width="14" height="14" alt="" /></span>Hermes</span><span class="chart-legend-item"><span class="source-icon" aria-hidden="true"><span class="icon-fallback"><span class="legend-key" data-tool="antigravity" style="--tool-color:var(--antigravity)"></span></span><img data-icon="antigravity" src="/icons/antigravity.svg" width="14" height="14" alt="" /></span>Antigravity</span></div>
               </div>
               <div class="usage-hosts" id="usage-hosts" role="group" aria-label="Usage hosts"></div>
               <div class="models-status" id="pricing-status" role="status" hidden></div>
@@ -107,12 +107,30 @@
       <footer><span>Private by design</span><span>•</span><span>Provider credentials stay on your server</span><span class="footer-version" id="app-version">Build —</span></footer>
     </div>
 
-    <dialog id="settings-dialog">
-      <div class="dialog-head"><div><h2>Settings</h2></div><button class="close-button" id="close-settings" type="button" aria-label="Close settings">×</button></div>
-      <p class="dialog-copy">Choose which sources appear on your dashboard. Disabled providers are never queried.</p>
-      <div id="provider-settings" class="provider-settings"></div>
-      <details class="maintenance-settings"><summary>Load older usage</summary><div id="usage-cold-settings" class="usage-cold-settings"></div></details>
-      <div class="dialog-note">Credentials are configured on the server. This app never stores provider keys in the browser.</div>
+    <dialog id="settings-dialog" aria-labelledby="settings-title">
+      <div class="dialog-head"><div><h2 id="settings-title">Settings</h2></div><button class="close-button" id="close-settings" type="button" aria-label="Close settings">×</button></div>
+      <div class="settings-layout">
+        <div class="settings-nav" role="tablist" aria-label="Settings sections" aria-orientation="vertical">
+          <button class="settings-tab" id="settings-tab-appearance" type="button" role="tab" data-settings-section="appearance" aria-controls="settings-panel-appearance" aria-selected="false" tabindex="-1">Appearance</button>
+          <button class="settings-tab" id="settings-tab-sources" type="button" role="tab" data-settings-section="sources" aria-controls="settings-panel-sources" aria-selected="true">Sources</button>
+          <button class="settings-tab" id="settings-tab-usage" type="button" role="tab" data-settings-section="usage" aria-controls="settings-panel-usage" aria-selected="false" tabindex="-1">Usage</button>
+        </div>
+        <div class="settings-content">
+          <section id="settings-panel-appearance" role="tabpanel" aria-labelledby="settings-tab-appearance" data-settings-panel="appearance" hidden>
+            <p class="dialog-copy">Choose how times and tool colors look. Colors are saved for every device.</p>
+            <div id="appearance-settings" class="provider-settings"></div>
+          </section>
+          <section id="settings-panel-sources" role="tabpanel" aria-labelledby="settings-tab-sources" data-settings-panel="sources">
+            <p class="dialog-copy">Choose which sources appear on your dashboard. Disabled providers are never queried.</p>
+            <div id="provider-settings" class="provider-settings"></div>
+          </section>
+          <section id="settings-panel-usage" role="tabpanel" aria-labelledby="settings-tab-usage" data-settings-panel="usage" hidden>
+            <h3 class="settings-panel-title">Load older usage</h3>
+            <div id="usage-cold-settings" class="usage-cold-settings"></div>
+          </section>
+          <div class="dialog-note">Credentials are configured on the server. This app never stores provider keys in the browser.</div>
+        </div>
+      </div>
     </dialog>
     <div class="toast" id="toast" role="status"></div>
     <dialog id="day-details-dialog"><div class="dialog-head"><div><p class="eyebrow">USAGE BREAKDOWN</p><h2 id="day-details-title">Usage details</h2><div id="day-details-summary" class="day-details-summary"></div></div><button class="close-button" id="close-day-details" type="button" aria-label="Close details">×</button></div><div id="day-details-content" class="day-details-content"></div></dialog>

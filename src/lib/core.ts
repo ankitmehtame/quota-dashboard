@@ -51,6 +51,7 @@ export type AppConfig = {
   providers: Record<ProviderId, ProviderConfig>;
   providerOrder: ProviderId[];
   usageSources: Record<UsageSourceId, UsageSourceConfig>;
+  toolColors: Record<string, string>;
 };
 
 export type DateRange = { from: string; to: string; timeZone: string };
@@ -59,6 +60,7 @@ type ConfigInput = {
   providers?: Partial<Record<ProviderId, Partial<ProviderConfig>>>;
   providerOrder?: unknown;
   usageSources?: Partial<Record<UsageSourceId, Partial<UsageSourceConfig>>>;
+  toolColors?: unknown;
 };
 
 export const PROVIDER_DEFINITIONS: Record<ProviderId, {
@@ -154,7 +156,28 @@ export const DEFAULT_CONFIG: AppConfig = {
     hermes: { enabled: true },
     antigravity: { enabled: true },
   },
+  toolColors: {},
 };
+
+const TOOL_COLOR_KEY = /^[a-z0-9][a-z0-9._~-]{0,63}$/i;
+const TOOL_COLOR_VALUE = /^#[0-9a-f]{6}$/i;
+
+export function isToolColorKey(key: unknown): boolean {
+  return typeof key === "string" && TOOL_COLOR_KEY.test(key);
+}
+
+export function isToolColorValue(value: unknown): boolean {
+  return typeof value === "string" && TOOL_COLOR_VALUE.test(value);
+}
+
+export function normalizeToolColors(raw: unknown): Record<string, string> {
+  const colors: Record<string, string> = {};
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return colors;
+  for (const [key, value] of Object.entries(raw)) {
+    if (isToolColorKey(key) && typeof value === "string" && isToolColorValue(value)) colors[key] = value.toLowerCase();
+  }
+  return colors;
+}
 
 export function clampPercent(value: number): number | null {
   return Number.isFinite(value) ? Math.min(100, Math.max(0, value)) : null;
@@ -231,6 +254,7 @@ export function normalizeConfig(raw: unknown): AppConfig {
       config.usageSources[id] = { enabled: source.enabled };
     }
   }
+  config.toolColors = normalizeToolColors(input.toolColors);
   return config;
 }
 

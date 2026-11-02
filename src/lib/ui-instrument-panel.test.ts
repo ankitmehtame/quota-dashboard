@@ -38,14 +38,16 @@ test("chart dollar ticks share the bars' maximum and dates include an intermedia
   assert.equal(single.get("#chart-scale")!.innerHTML, "");
 });
 
-test("dashboard has one period control, no promotional hero, and collapsed maintenance", () => {
+test("dashboard has one period control, no promotional hero, and settings sections", () => {
   const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
   assert.match(html, /<h1>Your AI accounts<\/h1>/);
   assert.equal((html.match(/id="usage-range"/g) || []).length, 1);
   assert.doesNotMatch(html, /class="hero"|class="live-dot"|id="now-time"|id="last-refresh"/);
   assert.doesNotMatch(html, /manage-button|Manage providers/i);
   assert.doesNotMatch(html, /pacing-key|The fill shows quota used/);
-  assert.match(html, /<details class="maintenance-settings"><summary>Load older usage<\/summary>/);
+  assert.doesNotMatch(html, /<details/);
+  for (const section of ["appearance", "sources", "usage"]) assert.match(html, new RegExp(`data-settings-section="${section}"`));
+  assert.match(html, /<section id="settings-panel-usage"[^>]*>\s*<h3 class="settings-panel-title">Load older usage<\/h3>\s*<div id="usage-cold-settings"/);
 });
 
 test("tooltip and machine-status backgrounds use the shared raised surface", () => {
@@ -81,7 +83,7 @@ test("dropdown interaction colors use blue action tokens, not provider mint", ()
 
 test("mint colors are reserved for provider data, not control or focus states", () => {
   const styles = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
-  const providerSelectors = new Set([".legend-key.mint", ".chart-segment.mint", ".tooltip-harness-dot.mint", ".chart-bar"]);
+  const providerSelectors = new Set([".chart-bar"]);
   for (const rule of styles.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
     if (/var\(--mint(?:-dark)?\)/.test(rule[2])) {
       assert.ok(providerSelectors.has(rule[1].trim()), `Unexpected mint control color: ${rule[1].trim()}`);

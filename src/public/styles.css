@@ -84,9 +84,10 @@ h1, h2 { margin: 0; }
 .chart-topline strong { display: block; font: 500 28px var(--mono); letter-spacing: -.08em; }
 .chart-topline span { color: var(--muted); display: block; font-size: 11px; margin-top: 4px; }
 .chart-legend { color: var(--muted); display: flex; gap: 8px; align-items: center; font-size: 10px !important; margin-top: 5px; }
+.legend-key, .tooltip-harness-dot, .chart-segment { background: var(--tool-color, var(--neutral)); }
+.quota-card { --accent: var(--tool-color, var(--neutral)); }
+.chart-legend button.chart-legend-item { --source-color: var(--tool-color); }
 .legend-key, .today-key i { display: inline-block; width: 7px; height: 7px; border-radius: 1px; margin-left: 6px; }
-.legend-key.mint { background: var(--mint); }
-.legend-key.violet { background: var(--violet); }
 .chart { height: 175px; margin-top: 26px; position: relative; display: flex; align-items: end; gap: 5px; border-bottom: 1px solid var(--line); background: repeating-linear-gradient(to bottom, transparent 0, transparent 43px, var(--line) 44px); padding: 0 2px; }
 .chart-bar { flex: 1; min-width: 3px; max-width: 19px; background: linear-gradient(to top, var(--mint-dark), var(--mint)); border-radius: 2px 2px 0 0; opacity: .82; position: relative; }
 .chart-bar.today { box-shadow: 0 0 0 1px var(--action); }
@@ -129,22 +130,11 @@ dialog::backdrop { background: color-mix(in srgb, var(--bg) 72%, transparent); b
 .dialog-note { color: var(--faint); border-top: 1px solid var(--line); padding-top: 15px; margin-top: 9px; font-size: 11px; line-height: 1.5; }
 .toast { position: fixed; bottom: 25px; left: 50%; transform: translate(-50%, 20px); opacity: 0; pointer-events: none; }
 .toast.show { opacity: 1; transform: translate(-50%, 0); }
-.chart-legend { flex-wrap: wrap; }.legend-key.orange { background: var(--orange); }.legend-key.blue { background: var(--blue); }.legend-key.neutral { background: var(--neutral); }
-.legend-key.rose, .chart-segment.rose, .tooltip-harness-dot.rose { background: var(--rose); }
-.legend-key.yellow, .chart-segment.yellow, .tooltip-harness-dot.yellow { background: var(--yellow); }
-.legend-key.teal, .chart-segment.teal, .tooltip-harness-dot.teal { background: var(--teal); }
-.legend-key.claude, .chart-segment.claude, .tooltip-harness-dot.claude { background: var(--claude); }
-.legend-key.antigravity, .chart-segment.antigravity, .tooltip-harness-dot.antigravity { background: var(--antigravity); }
-.legend-key.gemini, .chart-segment.gemini, .tooltip-harness-dot.gemini { background: var(--gemini); }
+.chart-legend { flex-wrap: wrap; }
 .chart-column { flex: 1; min-width: 5px; max-width: 22px; height: 100%; display: flex; align-items: end; outline: none; }
 .chart-stack { width: 100%; height: 100%; display: flex; flex-direction: column-reverse; justify-content: start; }
 .chart-segment { width: 100%; min-height: 2px; opacity: .86; position: relative; transition: opacity .15s; }
 .chart-segment:first-child { border-radius: 2px 2px 0 0; }
-.chart-segment.mint { background: var(--mint); }
-.chart-segment.violet { background: var(--violet); }
-.chart-segment.orange { background: var(--orange); }
-.chart-segment.blue { background: var(--blue); }
-.chart-segment.neutral { background: var(--neutral); }
 .chart-column:hover .chart-segment, .chart-column:focus .chart-segment { opacity: 1; }
 .chart-column.today { box-shadow: 0 0 0 1px var(--action); }
 .chart-tooltip { display: none; position: absolute; z-index: 3; left: 50%; bottom: calc(100% + 10px); transform: translateX(-50%); min-width: 145px; padding: 9px 10px; border: 1px solid var(--line); border-radius: 4px; background: var(--surface-raised); color: var(--text); box-shadow: 0 8px 24px #0008; pointer-events: none; }
@@ -223,7 +213,7 @@ dialog::backdrop { background: color-mix(in srgb, var(--bg) 72%, transparent); b
 .source-icon.icon-failed .icon-fallback, .chart-topline .source-icon.icon-failed .icon-fallback, .chart-tooltip .source-icon.icon-failed .icon-fallback { display: inline-flex; align-items: center; justify-content: center; }
 .source-icon .legend-key, .source-icon .tooltip-harness-dot, .detail-group h3 .source-icon .legend-key { margin: 0; }
 .detail-group h3 > .source-icon, .chart-tooltip .harness-row > .source-icon { margin-right: 6px; }
-.tooltip-harness-dot { display: inline-block; width: 7px; height: 7px; border-radius: 1px; margin-right: 6px; }.tooltip-harness-dot.mint { background: var(--mint); }.tooltip-harness-dot.violet { background: var(--violet); }.tooltip-harness-dot.orange { background: var(--orange); }.tooltip-harness-dot.blue { background: var(--blue); }.tooltip-harness-dot.neutral { background: var(--neutral); }
+.tooltip-harness-dot { display: inline-block; width: 7px; height: 7px; border-radius: 1px; margin-right: 6px; }
 @media (max-width: 560px) { .quota-grid { grid-template-columns: 1fr; }.quota-card { min-height: 165px; }.usage-section { margin-top: 51px; }.section-heading { align-items: start; gap: 15px; }.usage-heading { display: block; }.segmented { margin-top: 17px; width: fit-content; }.chart-card, .models-card { padding: 17px; }.status-strip { align-items: start; }footer { flex-wrap: wrap; }.footer-version { width: 100%; margin: 4px 0 0; } }
 @media (max-width: 560px) {
   .cold-date-row { grid-template-columns: 1fr; gap: 0; }
@@ -508,8 +498,6 @@ dialog { padding: 26px; border-radius: 12px; max-height: 90dvh; overflow-y: auto
 .dialog-head h2 { font-size: 24px; }
 .dialog-copy, .dialog-note { font-size: 14px; }
 .settings-group { font-size: 14px; letter-spacing: 0; text-transform: none; color: var(--text); }
-.maintenance-settings { border-top: 1px solid var(--line); margin-top: 20px; padding-top: 18px; }
-.maintenance-settings summary { cursor: pointer; color: var(--action); font-size: 14px; min-height: 32px; }
 .cold-field, .cold-mode, .cold-mode legend { font-size: 13px; text-transform: none; letter-spacing: 0; }
 .order-button { width: 32px; height: 32px; }
 .close-button { width: 40px; height: 40px; }
@@ -578,4 +566,29 @@ button:focus-visible, select:focus-visible, input:focus-visible, summary:focus-v
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+/* Settings dialog: section nav on the left, tabs across the top on narrow screens. */
+#settings-dialog { width: min(760px, calc(100% - 32px)); }
+.settings-layout { display: flex; gap: 28px; margin-top: 18px; align-items: flex-start; }
+.settings-nav { display: flex; flex-direction: column; gap: 4px; flex: 0 0 150px; position: sticky; top: 0; }
+.settings-tab { appearance: none; text-align: left; min-height: 40px; padding: 8px 12px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); font-size: 14px; }
+.settings-tab:hover { color: var(--text); background: color-mix(in srgb, var(--action) 10%, transparent); }
+.settings-tab.active { color: var(--action); background: color-mix(in srgb, var(--action) 16%, transparent); }
+.settings-content { flex: 1; min-width: 0; }
+.settings-content [hidden] { display: none; }
+.settings-content .provider-settings { margin-top: 6px; }
+.settings-panel-title { margin: 0 0 12px; font-size: 14px; font-weight: 500; }
+.color-actions { display: flex; align-items: center; gap: 12px; }
+.color-action { min-height: 32px; padding: 5px 2px; }
+.color-input { appearance: none; width: 44px; height: 32px; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: transparent; cursor: pointer; }
+.color-input::-webkit-color-swatch-wrapper { padding: 3px; }
+.color-input::-webkit-color-swatch { border: 0; border-radius: 3px; }
+.color-input::-moz-color-swatch { border: 0; border-radius: 3px; }
+@media (max-width: 640px) {
+  #settings-dialog { padding: 20px; }
+  .settings-layout { flex-direction: column; gap: 12px; }
+  .settings-nav { flex-direction: row; flex: none; width: 100%; position: sticky; top: -20px; z-index: 1; margin-top: -4px; padding: 4px 0; background: var(--surface-raised); border-bottom: 1px solid var(--line); }
+  .settings-tab { flex: 1; text-align: center; padding-inline: 6px; }
+  .settings-content { width: 100%; }
 }

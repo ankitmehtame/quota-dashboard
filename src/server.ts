@@ -6,7 +6,7 @@ import { homedir, hostname } from "node:os";
 import { dirname, extname, join, normalize, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { type AppConfig, type ProviderId, DEFAULT_CONFIG, PROVIDER_IDS, localDateRange, normalizeConfig, normalizeProviderOrder, providerStatus } from "./lib/core.js";
+import { type AppConfig, type ProviderId, DEFAULT_CONFIG, PROVIDER_IDS, isToolColorKey, isToolColorValue, localDateRange, normalizeConfig, normalizeProviderOrder, providerStatus } from "./lib/core.js";
 import { isUsageSourceId } from "./lib/usage-source-id.js";
 import type { ProviderResult } from "./lib/core.js";
 import { processColdDays } from "./lib/cold-range.js";
@@ -160,7 +160,7 @@ type DashboardValue = {
   usage: Record<string, unknown>;
 };
 
-type RequestBody = { enabled?: unknown; order?: unknown; hostId?: unknown; from?: unknown; to?: unknown; mode?: unknown; requestId?: unknown };
+type RequestBody = { colors?: unknown; enabled?: unknown; order?: unknown; hostId?: unknown; from?: unknown; to?: unknown; mode?: unknown; requestId?: unknown };
 
 async function loadConfig(): Promise<AppConfig> {
   let config: AppConfig;
@@ -686,6 +686,28 @@ async function handleApi(request: import("node:http").IncomingMessage, response:
     await saveConfig(config);
     dashboardCache.clear();
     return json(response, 200, { providerOrder: config.providerOrder });
+  }
+  if (url.pathname === "/api/v1/appearance/colors") {
+    if (request.method === "GET") return json(response, 200, { colors: config.toolColors });
+    if (request.method === "PUT") {
+      const input = await body(request);
+      const colors = input.colors;
+      if (!colors || typeof colors !== "object" || Array.isArray(colors)) return json(response, 400, { error: "colors must be an object" });
+      const entries = Object.entries(colors as Record<string, unknown>);
+      for (const [key, value] of entries) {
+        if (!isToolColorKey(key)) return json(response, 400, { error: `Invalid tool ID: ${key.slice(0, 64)}` });
+        if (value !== null && !isToolColorValue(value)) return json(response, 400, { error: `Color for ${key} must be #rrggbb or null` });
+      }
+      const next = { ...config.toolColors };
+      for (const [key, value] of entries) {
+        if (value === null) delete next[key];
+        else next[key] = (value as string).toLowerCase();
+      }
+      config.toolColors = next;
+      await saveConfig(config);
+      dashboardCache.clear();
+      return json(response, 200, { colors: config.toolColors });
+    }
   }
   const usageMatch = url.pathname.match(/^\/api\/v1\/usage-sources\/([^/]+)\/enabled$/);
   if (usageMatch && request.method === "PUT") {
