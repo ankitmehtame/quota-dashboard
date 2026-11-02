@@ -13,8 +13,9 @@ test("normalizeConfig keeps only valid tool color overrides in lowercase", () =>
   assert.deepEqual(normalizeConfig({ toolColors: "red" }).toolColors, {});
   assert.deepEqual(normalizeConfig({ toolColors: ["#ffffff"] }).toolColors, {});
   const raw = JSON.parse('{"toolColors":{"claude":"#AABBCC","opencode":"#12345","codex":"red","_bad":"#000000","a b":"#000000","new.tool_1":"#000000","ok-tool":"#0A0B0C","num":5,"__proto__":"#000000"}}');
-  assert.deepEqual(normalizeConfig(raw).toolColors, { claude: "#aabbcc", "ok-tool": "#0a0b0c", "new.tool_1": "#000000" });
-  assert.deepEqual(normalizeConfig({ toolColors: { ["x".repeat(65)]: "#000000", ["x".repeat(64)]: "#000000" } }).toolColors, { ["x".repeat(64)]: "#000000" });
+  assert.deepEqual(normalizeConfig(raw).toolColors, { claude: "#aabbcc", "ok-tool": "#0a0b0c", "new.tool_1": "#000000", _bad: "#000000" });
+  // Any valid usage-source ID is a valid color key, including leading underscores and up to 128 characters.
+  assert.deepEqual(normalizeConfig({ toolColors: { ["x".repeat(129)]: "#000000", ["x".repeat(128)]: "#000000", _my_tool: "#000000" } }).toolColors, { ["x".repeat(128)]: "#000000", _my_tool: "#000000" });
 });
 
 test("server persists tool colors with merge, reset, and whole-request validation", { timeout: 25_000 }, async () => {
@@ -78,7 +79,7 @@ test("server persists tool colors with merge, reset, and whole-request validatio
     const merged = await put({ codex: "#010203", claude: null });
     assert.equal(merged.status, 200);
     assert.deepEqual((await merged.json() as { colors: unknown }).colors, { opencode: "#112233", codex: "#010203" });
-    for (const bad of [{ codex: "red" }, { codex: "#fff" }, { codex: 5 }, { "_bad": "#000000" }, { "a/b": "#000000" }, { hermes: "#000000", codex: "nope" }]) {
+    for (const bad of [{ codex: "red" }, { codex: "#fff" }, { codex: 5 }, { "__proto__x": "#000000", "-bad": "#000000" }, { "a/b": "#000000" }, { hermes: "#000000", codex: "nope" }]) {
       const response = await put(bad);
       assert.equal(response.status, 400, JSON.stringify(bad));
       assert.equal(typeof (await response.json() as { error: unknown }).error, "string");

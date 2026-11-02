@@ -163,7 +163,8 @@ const TOOL_COLOR_KEY = /^[a-z0-9][a-z0-9._~-]{0,63}$/i;
 const TOOL_COLOR_VALUE = /^#[0-9a-f]{6}$/i;
 
 export function isToolColorKey(key: unknown): boolean {
-  return typeof key === "string" && TOOL_COLOR_KEY.test(key);
+  // Accept every ID a usage source can have, plus provider IDs.
+  return typeof key === "string" && (TOOL_COLOR_KEY.test(key) || isUsageSourceId(key));
 }
 
 export function isToolColorValue(value: unknown): boolean {

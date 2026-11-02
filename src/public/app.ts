@@ -1352,7 +1352,10 @@ function saveToolColors(keepalive = false): Promise<void> {
   const request = (changes: Record<string, string | null>) => fetch(toolColorsPath, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ colors: changes }), ...(keepalive ? { keepalive: true } : {}) });
   if (keepalive) {
     const changes = pendingColorChanges();
-    if (Object.keys(changes).length) request(changes).catch(() => {});
+    if (!Object.keys(changes).length) return Promise.resolve();
+    // Treat the keepalive write as saved; a back/forward cache restore reconciles with the server on pageshow.
+    for (const [id, color] of Object.entries(changes)) { if (color) savedToolColors[id] = color; else delete savedToolColors[id]; }
+    request(changes).catch(() => {});
     return Promise.resolve();
   }
   colorSaveQueue = colorSaveQueue.then(async () => {
@@ -1364,9 +1367,11 @@ function saveToolColors(keepalive = false): Promise<void> {
       if (!response.ok) throw new Error("Colors could not be saved");
       for (const id of ids) { const color = changes[id]; if (color) savedToolColors[id] = color; else delete savedToolColors[id]; }
     } catch (error) {
-      for (const id of ids) { if (Object.hasOwn(savedToolColors, id)) toolColors[id] = savedToolColors[id]; else delete toolColors[id]; }
-      applyToolColors(ids);
-      ids.forEach(updateColorRow);
+      // Only roll back tools the user hasn't edited again since this request was sent.
+      const stale = ids.filter((id) => (toolColors[id] ?? null) === changes[id]);
+      for (const id of stale) { if (Object.hasOwn(savedToolColors, id)) toolColors[id] = savedToolColors[id]; else delete toolColors[id]; }
+      applyToolColors(stale);
+      stale.forEach(updateColorRow);
       showToast(error instanceof Error ? error.message : "Colors could not be saved");
     }
   });
@@ -1499,6 +1504,10 @@ function bindSettingsDialog(): void {
   };
   window.addEventListener("popstate", () => openFromUrl(true));
   window.addEventListener("pagehide", () => void saveToolColors(true));
+  window.addEventListener("pageshow", (event) => {
+    if (!event.persisted) return;
+    void fetchToolColors().then(() => { applyToolColors(); document.querySelectorAll<HTMLElement>("[data-tool-row]").forEach((row) => updateColorRow(row.dataset.toolRow || "")); });
+  });
   openFromUrl(false);
 }
 
