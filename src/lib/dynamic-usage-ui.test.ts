@@ -171,8 +171,8 @@ function colorHarness(fetchImpl: (url: string, init?: { method?: string; body?: 
       querySelectorAll: (selector: string) => selector === "[data-tool-row]" ? [...rows].map(([id, value]) => ({ dataset: { toolRow: id }, querySelector: (target: string) => target.includes("tool-color") ? value.input : target.includes("reset") ? value.reset : value.undo })) : [],
     },
   };
-  const api = runInNewContext(`${escape}\n${presentation}\n${colorState}\n({ preview: previewToolColor, set: setToolColor, save: saveToolColors, adopt: adoptServerColors, clean: cleanToolColors, get colors() { return toolColors; }, get saved() { return savedToolColors; }, undo: colorUndo, editStart: colorEditStart })`, context) as {
-    preview(id: string, color: string): void; set(id: string, color: string | null): void; save(keepalive?: boolean): Promise<void>; adopt(colors: Record<string, string>): void; clean(raw: unknown): Record<string, string>;
+  const api = runInNewContext(`${escape}\n${presentation}\n${colorState}\n({ preview: previewToolColor, set: setToolColor, save: saveToolColors, refetch: fetchToolColors, adopt: adoptServerColors, clean: cleanToolColors, get colors() { return toolColors; }, get saved() { return savedToolColors; }, undo: colorUndo, editStart: colorEditStart })`, context) as {
+    preview(id: string, color: string): void; set(id: string, color: string | null): void; save(keepalive?: boolean): Promise<void>; refetch(): Promise<void>; adopt(colors: Record<string, string>): void; clean(raw: unknown): Record<string, string>;
     colors: Record<string, string>; saved: Record<string, string>; undo: Map<string, string | null>; editStart: Map<string, string | null>;
   };
   return { api, row, toasts };
@@ -256,6 +256,26 @@ test("keepalive saves count as saved so a later reset is still sent", async () =
   api.set("codex", null);
   await api.save();
   assert.deepEqual(bodies.at(-1), { colors: { codex: null } });
+});
+
+test("a restore refetch waits for an outstanding keepalive PUT before reading colors", async () => {
+  let server: Record<string, string> = {};
+  let finishPut: (() => void) | undefined;
+  const { api } = colorHarness((_url, init) => {
+    if (init?.method === "PUT") return new Promise((resolve) => { finishPut = () => { server = { ...server, ...JSON.parse(init.body!).colors }; resolve({ ok: true }); }; });
+    return Promise.resolve({ ok: true, json: async () => ({ colors: { ...server } }) });
+  });
+  api.set("codex", "#123456");
+  await api.save(true);
+  let refetched = false;
+  const refetch = api.refetch().then(() => { refetched = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(refetched, false, "the GET waits for the pending PUT");
+  finishPut!();
+  await refetch;
+  assert.deepEqual({ ...server }, { codex: "#123456" });
+  assert.deepEqual({ ...api.colors }, { codex: "#123456" });
+  assert.deepEqual({ ...api.saved }, { codex: "#123456" });
 });
 
 test("refetched colors follow the server except for unsaved local edits", () => {

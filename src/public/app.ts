@@ -1312,6 +1312,8 @@ let savedToolColors: Record<string, string> = {};
 const colorUndo = new Map<string, string | null>();
 const colorEditStart = new Map<string, string | null>();
 let colorSaveQueue: Promise<void> = Promise.resolve();
+// A page-close save still in flight; refetches wait for it so they never read colors older than it.
+let keepaliveColorSave: Promise<void> | null = null;
 let activeSettingsSection: SettingsSection | null = null;
 let settingsHistoryPushed = false;
 
@@ -1334,6 +1336,7 @@ function adoptServerColors(next: Record<string, string>): void {
 
 async function fetchToolColors(): Promise<void> {
   try {
+    while (keepaliveColorSave) await keepaliveColorSave;
     const response = await fetch(toolColorsPath);
     if (response.ok) adoptServerColors(cleanToolColors((await response.json()).colors));
   } catch { /* Colors fall back to the last known values. */ }
@@ -1355,7 +1358,8 @@ function saveToolColors(keepalive = false): Promise<void> {
     if (!Object.keys(changes).length) return Promise.resolve();
     // Treat the keepalive write as saved; a back/forward cache restore reconciles with the server on pageshow.
     for (const [id, color] of Object.entries(changes)) { if (color) savedToolColors[id] = color; else delete savedToolColors[id]; }
-    request(changes).catch(() => {});
+    const pending: Promise<void> = request(changes).then(() => {}, () => {}).finally(() => { if (keepaliveColorSave === pending) keepaliveColorSave = null; });
+    keepaliveColorSave = pending;
     return Promise.resolve();
   }
   colorSaveQueue = colorSaveQueue.then(async () => {
