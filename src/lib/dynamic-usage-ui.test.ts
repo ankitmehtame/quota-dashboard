@@ -228,6 +228,36 @@ test("color changes save as one batched PUT with nulls for removed overrides and
   assert.equal(requests.at(-1)!.keepalive, true);
 });
 
+test("a failed save does not roll back a tool edited again while the request was pending", async () => {
+  const pending: Array<(value: { ok: boolean }) => void> = [];
+  const { api, row } = colorHarness(() => new Promise((resolve) => pending.push(resolve)));
+  row("codex");
+  api.adopt({ codex: "#111111" });
+  api.set("codex", "#222222");
+  const first = api.save();
+  await new Promise((resolve) => setImmediate(resolve));
+  api.set("codex", "#333333");
+  const second = api.save();
+  pending.shift()!({ ok: false });
+  await first;
+  assert.equal(api.colors.codex, "#333333", "the newer edit survives the older failure");
+  await new Promise((resolve) => setImmediate(resolve));
+  pending.shift()!({ ok: true });
+  await second;
+  assert.deepEqual({ ...api.saved }, { codex: "#333333" });
+});
+
+test("keepalive saves count as saved so a later reset is still sent", async () => {
+  const bodies: unknown[] = [];
+  const { api } = colorHarness(async (_url, init) => { bodies.push(init?.body && JSON.parse(init.body)); return { ok: true }; });
+  api.set("codex", "#123456");
+  await api.save(true);
+  assert.deepEqual({ ...api.saved }, { codex: "#123456" });
+  api.set("codex", null);
+  await api.save();
+  assert.deepEqual(bodies.at(-1), { colors: { codex: null } });
+});
+
 test("refetched colors follow the server except for unsaved local edits", () => {
   const { api } = colorHarness(async () => ({ ok: true }));
   api.adopt({ codex: "#111111", claude: "#222222" });
@@ -261,5 +291,6 @@ test("settings sections use hash URLs, replaceState for switching, and keep the 
   assert.deepEqual(history, ["#settings/appearance", "save", "#settings/sources"]);
   assert.match(bind, /dialog\.addEventListener\("close"/);
   assert.match(bind, /window\.addEventListener\("pagehide", \(\) => void saveToolColors\(true\)\)/);
+  assert.match(bind, /window\.addEventListener\("pageshow", \(event\) => \{\s*if \(!event\.persisted\)\s*return;\s*void fetchToolColors\(\)/);
   assert.match(bind, /history\.back\(\)/);
 });

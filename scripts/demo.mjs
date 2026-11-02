@@ -88,7 +88,7 @@ const server = createServer(async (request, response) => {
         const data = await body(request);
         if (path === '/api/v1/appearance/colors') {
           const entries = Object.entries(data.colors && typeof data.colors === 'object' && !Array.isArray(data.colors) ? data.colors : { '': 0 });
-          if (entries.some(([key, value]) => !/^[a-z0-9][a-z0-9._~-]{0,63}$/i.test(key) || (value !== null && !/^#[0-9a-f]{6}$/i.test(String(value))))) return json({ error: 'Invalid colors' }, 400);
+          if (entries.some(([key, value]) => !/^[a-z0-9_~][a-z0-9._~-]{0,127}$/i.test(key) || (value !== null && !/^#[0-9a-f]{6}$/i.test(String(value))))) return json({ error: 'Invalid colors' }, 400);
           for (const [key, value] of entries) { if (value === null) delete toolColors[key]; else toolColors[key] = value.toLowerCase(); }
           return json({ colors: toolColors });
         }
