@@ -838,6 +838,19 @@ function bindSourceTooltips(usage: Usage, selectedHostIds: Set<string>): void {
   });
 }
 
+let chartScrollbarObserver: ResizeObserver | null = null;
+// A classic horizontal scrollbar shortens the chart; tell the y-axis scale so its ticks stay on the bars.
+function syncChartScrollbar(scroll: HTMLElement): void {
+  const sync = () => scroll.parentElement?.style.setProperty("--chart-scrollbar", `${Math.max(0, scroll.offsetHeight - scroll.clientHeight)}px`);
+  sync();
+  if (typeof ResizeObserver === "undefined") return;
+  chartScrollbarObserver?.disconnect();
+  chartScrollbarObserver = new ResizeObserver(sync);
+  chartScrollbarObserver.observe(scroll);
+  const chart = scroll.querySelector<HTMLElement>(".chart");
+  if (chart) chartScrollbarObserver.observe(chart);
+}
+
 function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve"): void {
   closeHostStatusPopover();
   if (scrollMode === "preserve") {
@@ -941,6 +954,7 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
     const restoreScroll = () => { scroll.scrollLeft = scrollMode === "newest" ? scroll.scrollWidth : Math.min(state.chartScrollLeft, Math.max(0, scroll.scrollWidth - scroll.clientWidth)); state.chartScrollLeft = scroll.scrollLeft; };
     restoreScroll();
     requestAnimationFrame(restoreScroll);
+    syncChartScrollbar(scroll);
   }
 }
 
