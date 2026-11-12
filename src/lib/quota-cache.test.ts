@@ -264,3 +264,19 @@ test("invalidating a successful response with Retry-After cannot report cached s
   assert.equal(paused.cooldownUntil, start + 600_000);
   assert.equal(h.calls(), 1);
 });
+
+test("cached and stale results drop reset grants that expired while being served", async () => {
+  const h = harness();
+  const grant = (id: string, expiresAt: string | null) => ({ id, title: id, description: null, expiresAt });
+  h.setValue({ ...success(), resetCredits: [grant("soon", new Date(start + 60_000).toISOString()), grant("later", new Date(start + 3_600_000).toISOString()), grant("unknown", null)] });
+  assert.equal((await h.cache.get("claude")).resetCredits?.length, 3);
+  h.setTime(start + 120_000);
+  assert.deepEqual((await h.cache.get("claude")).resetCredits?.map((credit) => credit.id), ["later", "unknown"]);
+  h.setTime(start + 301_000);
+  h.setValue(failure("server"));
+  const stale = await h.cache.get("claude");
+  assert.equal(stale.stale, true);
+  assert.deepEqual(stale.resetCredits?.map((credit) => credit.id), ["later", "unknown"]);
+  h.setTime(start + 3_700_000);
+  assert.deepEqual((await h.cache.get("claude", true)).resetCredits?.map((credit) => credit.id), ["unknown"]);
+});

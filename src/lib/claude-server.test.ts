@@ -135,7 +135,9 @@ globalThis.fetch = async (url, init) => {
     const changed = await request("/api/v1/providers/claude/test", "POST");
     assert.equal(changed.quota.windows[0].usedPercent, 75);
     assert.equal(changed.verified, true);
-    assert.equal(await calls("grants"), 2);
+    // The same credential file shares one grants throttle, and account A's grants are never shown for account B.
+    assert.equal(await calls("grants"), 1);
+    assert.equal(changed.quota.resetCredits, undefined);
     assert.equal((await request("/api/v1/dashboard")).quotas.claude.windows[0].usedPercent, 75);
     await control(503);
     const staleB = await request("/api/v1/providers/claude/test", "POST");
@@ -147,7 +149,7 @@ globalThis.fetch = async (url, init) => {
     const failedC = await request("/api/v1/providers/claude/test", "POST");
     assert.deepEqual(failedC.quota.windows, []);
     assert.equal(failedC.quota.resetCredits, undefined);
-    assert.equal(await calls("grants"), 2);
+    assert.equal(await calls("grants"), 1);
     assert.deepEqual((await request("/api/v1/dashboard")).quotas.claude.windows, []);
     // Keep HTTP completion hooks reading the controls while the parent updates them.
     // These requests do not fetch quotas or depend on which complete snapshot they see.

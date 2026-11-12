@@ -14,8 +14,12 @@ export function createQuotaCache(options: {
   const states = new Map<ProviderId, State>();
   const inFlight = new Map<ProviderId, Promise<ProviderResult>>();
   const cachedCopies = new WeakMap<ProviderResult, ProviderResult>();
+  // Grants can expire while a cached or stale result is being served.
+  function liveCredits(credits: ProviderResult["resetCredits"]): ProviderResult["resetCredits"] {
+    return credits?.filter((credit) => !credit.expiresAt || !(Date.parse(credit.expiresAt) <= now()));
+  }
   function cachedCopy(value: ProviderResult): ProviderResult {
-    const copy = { ...value, cached: true };
+    const copy = { ...value, cached: true, ...(value.resetCredits ? { resetCredits: liveCredits(value.resetCredits) } : {}) };
     cachedCopies.set(copy, value);
     return copy;
   }
@@ -106,7 +110,7 @@ export function createQuotaCache(options: {
         // Copy only measurement fields. Never copy old status, errors, or credentials.
         const success = state.success;
         value = { ...value, windows: success.windows, fetchedAt: success.fetchedAt, creditBalance: success.creditBalance,
-          planType: success.planType, subscriptionActiveUntil: success.subscriptionActiveUntil, resetCredits: success.resetCredits, stale: true };
+          planType: success.planType, subscriptionActiveUntil: success.subscriptionActiveUntil, resetCredits: liveCredits(success.resetCredits), stale: true };
       } else state.success = undefined;
       state.cached = { cachedAt: now(), value };
       options.onChange?.();
