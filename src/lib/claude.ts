@@ -100,7 +100,7 @@ export function parseClaudeResetCredits(payload: unknown, now = Date.now()): Rat
 
 // retryUntil is the server's Retry-After from the grants request; the penalty covers the whole account.
 // Grants are only served to the token identity that fetched them, so a rotated or switched token never shows another account's grants.
-type ResetCreditState = { nextCheck: number; retryUntil?: number; credits?: RateLimitResetCredit[]; creditsIdentity?: string; checkedIdentity?: string;
+type ResetCreditState = { nextCheck: number; retryUntil?: number; credits?: RateLimitResetCredit[]; creditsIdentity?: string; checkedIdentity?: string; earlyRechecked?: boolean;
   lastOk?: { identity: string; result: ProviderResult }; pending?: Promise<void> };
 const resetCreditStates = new Map<string, ResetCreditState>();
 const resetCheckInterval = 3_600_000;
@@ -120,9 +120,12 @@ function resetCreditState(auth: ClaudeCredentials): ResetCreditState {
 async function claudeResetCredits(auth: ClaudeCredentials, skip: boolean): Promise<{ credits?: RateLimitResetCredit[]; cooldownUntil?: number }> {
   const state = resetCreditState(auth);
   // A refreshed token for the same account gets one early recheck so its grants reappear, but never during a 429 pause.
+  // The early recheck is capped at one per throttle window whatever the outcome, so alternating tokens cannot add requests.
   const paused = state.retryUntil !== undefined && state.retryUntil > Date.now();
-  if (!skip && !state.pending && (Date.now() >= state.nextCheck || (state.checkedIdentity !== auth.identity && !paused))) {
+  const scheduled = Date.now() >= state.nextCheck;
+  if (!skip && !state.pending && (scheduled || (state.checkedIdentity !== auth.identity && !paused && !state.earlyRechecked))) {
     const current = state;
+    current.earlyRechecked = scheduled ? false : true;
     current.nextCheck = Date.now() + resetCheckInterval;
     current.checkedIdentity = auth.identity;
     current.pending = (async () => {
@@ -175,7 +178,13 @@ export function parseRetryAfter(value: string | null, now = Date.now()): number 
 
 export async function fetchClaude(credentials?: ClaudeCredentials): Promise<ProviderResult> {
   const auth = credentials ?? await resolveClaudeCredentials();
-  const fail = (errorKind: ProviderResult["errorKind"], error: string, cooldownUntil?: number): ProviderResult => ({
+  const fail = (errorKind: ProviderResult["errorKind"], error: string, cooldownUntil?: number): ProviderResult => {
+    // A newer usage failure supersedes the stored good card, so a late grants 429 can never replay it.
+    const stored = resetCreditStates.get(auth.account ?? auth.identity);
+    if (stored) stored.lastOk = undefined;
+    return failure(errorKind, error, cooldownUntil);
+  };
+  const failure = (errorKind: ProviderResult["errorKind"], error: string, cooldownUntil?: number): ProviderResult => ({
     configured: auth.configured, status: "error", errorKind, error, fetchedAt: new Date().toISOString(), windows: [],
     ...(cooldownUntil !== undefined && cooldownUntil > Date.now() ? { cooldownUntil } : {}),
   });

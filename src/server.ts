@@ -541,11 +541,14 @@ async function buildUsage(url: URL, config: AppConfig) {
   return { range, usage: { ...usage, from: range.from, to: range.to, providers: usageSources } };
 }
 
-// A saved aggregate can outlive a grant; filter with the server clock each time it is served.
-function liveQuotaCredits<T extends Record<string, ProviderResult>>(quotas: T): T {
+// Every place that serves a quota result filters with the server clock, since a cached or saved result can outlive a grant.
+function liveQuotaCredit(quota: ProviderResult): ProviderResult {
   const now = Date.now();
-  return Object.fromEntries(Object.entries(quotas).map(([id, quota]) => [id, quota.resetCredits
-    ? { ...quota, resetCredits: quota.resetCredits.filter((credit) => !credit.expiresAt || !(Date.parse(credit.expiresAt) <= now)) } : quota])) as T;
+  return quota.resetCredits ? { ...quota, resetCredits: quota.resetCredits.filter((credit) => !credit.expiresAt || !(Date.parse(credit.expiresAt) <= now)) } : quota;
+}
+
+function liveQuotaCredits<T extends Record<string, ProviderResult>>(quotas: T): T {
+  return Object.fromEntries(Object.entries(quotas).map(([id, quota]) => [id, liveQuotaCredit(quota)])) as T;
 }
 
 async function dashboard(url: URL, config: AppConfig) {
@@ -566,7 +569,7 @@ async function dashboard(url: URL, config: AppConfig) {
   if (revision === quotaRevision && quotaEntries.every(([id, quota]) => quotaCache.isCurrent(id, quota))) {
     dashboardCache.set(cacheKey, { expiresAt, fetchedAt: value.serverNow, value });
   }
-  return { ...value, cache: { fetchedAt: value.serverNow, expiresAt: new Date(expiresAt).toISOString() } };
+  return { ...value, quotas: liveQuotaCredits(quotas), cache: { fetchedAt: value.serverNow, expiresAt: new Date(expiresAt).toISOString() } };
 }
 
 function json(response: import("node:http").ServerResponse, status: number, body: unknown): void {
@@ -659,12 +662,12 @@ async function handleApi(request: import("node:http").IncomingMessage, response:
   if (request.method === "GET" && url.pathname === "/api/v1/quotas") {
     const enabled = config.providerOrder.filter((id) => config.providers[id].enabled);
     const entries = await Promise.all(enabled.map(async (id) => [id, await getQuota(id, url.searchParams.get("refresh") === "1")]));
-    return json(response, 200, { version: buildInfo.version, apiVersion: 1, serverNow: new Date().toISOString(), quotas: Object.fromEntries(entries) });
+    return json(response, 200, { version: buildInfo.version, apiVersion: 1, serverNow: new Date().toISOString(), quotas: liveQuotaCredits(Object.fromEntries(entries)) });
   }
   if (request.method === "GET" && url.pathname === "/api/v1/widget-summary") {
     const enabled = config.providerOrder.filter((id) => config.providers[id].enabled);
     const entries = await Promise.all(enabled.map(async (id) => [id, await getQuota(id)]));
-    return json(response, 200, { version: buildInfo.version, apiVersion: 1, serverNow: new Date().toISOString(), providers: Object.fromEntries(entries) });
+    return json(response, 200, { version: buildInfo.version, apiVersion: 1, serverNow: new Date().toISOString(), providers: liveQuotaCredits(Object.fromEntries(entries)) });
   }
   const providerMatch = url.pathname.match(/^\/api\/v1\/providers\/([^/]+)\/(enabled|test)$/);
   if (providerMatch && PROVIDER_IDS.includes(providerMatch[1] as ProviderId)) {
@@ -680,7 +683,7 @@ async function handleApi(request: import("node:http").IncomingMessage, response:
     }
     if (request.method === "POST" && providerMatch[2] === "test") {
       if (!config.providers[id].enabled) return json(response, 409, { error: "Provider is disabled" });
-      const quota = await getQuota(id, true);
+      const quota = liveQuotaCredit(await getQuota(id, true));
       return json(response, 200, { provider: providerStatus({ id, config: config.providers[id], result: quota }), quota, verified: quota.status === "ok" && !quota.cached && !quota.stale });
     }
   }
