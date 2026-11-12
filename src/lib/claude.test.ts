@@ -242,7 +242,7 @@ test("Claude reset throttle and cooldown survive same-account token rotation wit
   assert.equal(usageCalls > 0, true);
 });
 
-test("Claude grants reappear after a routine token refresh with one early recheck per token", async (t) => {
+test("Claude grants reappear after a routine token refresh with one early recheck per window", async (t) => {
   let time = now;
   t.mock.method(Date, "now", () => time);
   testUserAgents(t);
@@ -250,7 +250,7 @@ test("Claude grants reappear after a routine token refresh with one early rechec
   t.mock.method(globalThis, "fetch", async (url: string | URL | Request) => {
     if (!String(url).includes("?")) return Response.json({ five_hour: { utilization: 5 } });
     resetCalls++;
-    return resetCalls < 3 ? Response.json(resetPayload) : new Response("", { status: 500 });
+    return Response.json(resetPayload);
   });
   const file = { configured: true, account: "default:/fake/refresh/.credentials.json" };
   const token = (n: number) => ({ ...file, identity: `${file.account}:token-${n}`, accessToken: `FAKE_TOKEN_${n}` });
@@ -261,12 +261,70 @@ test("Claude grants reappear after a routine token refresh with one early rechec
   assert.equal(refreshed.resetCredits?.length, 1);
   await fetchClaude(token(2));
   assert.equal(resetCalls, 2, "the same token is not rechecked before the hourly interval");
+  // A second refresh in the same window waits for the scheduled check instead of adding a request.
   time += 60_000;
-  // A failing recheck is attempted once per token, not on every refresh.
-  assert.equal((await fetchClaude(token(3))).resetCredits, undefined);
   await fetchClaude(token(3));
-  await fetchClaude(token(3));
+  assert.equal(resetCalls, 2);
+  time += 3_600_000;
+  assert.equal((await fetchClaude(token(3))).resetCredits?.length, 1);
   assert.equal(resetCalls, 3);
+});
+
+test("alternating tokens cannot exceed one early grants recheck per window, even after failed rechecks", async (t) => {
+  let time = now;
+  t.mock.method(Date, "now", () => time);
+  testUserAgents(t);
+  let resetCalls = 0;
+  t.mock.method(globalThis, "fetch", async (url: string | URL | Request) => {
+    if (!String(url).includes("?")) return Response.json({ five_hour: { utilization: 5 } });
+    resetCalls++;
+    return new Response("", { status: 500 });
+  });
+  const file = { configured: true, account: "default:/fake/alternate/.credentials.json" };
+  const token = (name: string) => ({ ...file, identity: `${file.account}:${name}`, accessToken: `FAKE_TOKEN_${name}` });
+  for (const name of ["A", "B", "A", "B", "A", "B"]) {
+    await fetchClaude(token(name));
+    time += 60_000;
+  }
+  assert.equal(resetCalls, 2, "one scheduled check plus at most one early recheck");
+  time += 3_600_000;
+  await fetchClaude(token("A"));
+  await fetchClaude(token("B"));
+  assert.equal(resetCalls, 4, "the next window gets its scheduled check plus a single early recheck");
+  await fetchClaude(token("A"));
+  await fetchClaude(token("B"));
+  assert.equal(resetCalls, 4);
+});
+
+test("a late grants 429 never resurrects a good card after plain usage has failed", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let time = now;
+  t.mock.method(Date, "now", () => time);
+  testUserAgents(t);
+  let usageStatus = 200;
+  let release: (response: Response) => void = () => {};
+  t.mock.method(globalThis, "fetch", (url: string | URL | Request) => {
+    if (!String(url).includes("?")) return Promise.resolve(usageStatus === 200 ? Response.json({ five_hour: { utilization: 3 } }) : new Response("", { status: usageStatus }));
+    return new Promise<Response>((resolve) => { release = resolve; });
+  });
+  const credentials = { configured: true, identity: "late-401", accessToken: "FAKE_TOKEN" };
+  const pending = fetchClaude(credentials);
+  for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(3_000);
+  assert.equal((await pending).status, "ok");
+  // Plain usage now fails with 401, and only afterwards does the slow grants request return 429.
+  time += 60_000;
+  usageStatus = 401;
+  const rejected = await fetchClaude({ ...credentials });
+  assert.equal(rejected.status, "error");
+  assert.equal(rejected.errorKind, "authentication");
+  release(new Response("", { status: 429, headers: { "retry-after": "7200" } }));
+  for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
+  time += 60_000;
+  const paused = await fetchClaude(credentials);
+  assert.equal(paused.status, "error");
+  assert.deepEqual(paused.windows, []);
+  assert.equal(paused.resetCredits, undefined);
 });
 
 test("a grants 429 without a usable Retry-After still pauses plain usage through the quota cache", async (t) => {

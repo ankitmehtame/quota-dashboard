@@ -73,7 +73,7 @@ globalThis.fetch = async (url, init) => {
   child.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); });
   child.stderr.on("data", (chunk: Buffer) => { output += chunk.toString(); });
   const calls = async (kind = "request") => { try { return (await readFile(callsPath, "utf8")).trim().split("\n").filter((line) => line === kind).length; } catch { return 0; } };
-  type ApiResponse = { serverNow: string; cache: { fetchedAt: string; expiresAt: string }; quotas: Record<string, ProviderResult>; quota: ProviderResult; verified: boolean };
+  type ApiResponse = { serverNow: string; cache: { fetchedAt: string; expiresAt: string }; quotas: Record<string, ProviderResult>; providers: Record<string, ProviderResult>; quota: ProviderResult; verified: boolean };
   const request = async (path: string, method = "GET", body?: unknown): Promise<ApiResponse> => {
     const response = await fetch(`http://127.0.0.1:${port}${path}`, { method, ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }) });
     assert.equal(response.status, 200, `${path}: ${await response.clone().text()}`);
@@ -108,6 +108,7 @@ globalThis.fetch = async (url, init) => {
     await control(200, undefined, 120_000);
     assert.deepEqual((await request("/api/v1/dashboard")).quotas.claude.resetCredits, []);
     assert.deepEqual((await request("/api/v1/quotas")).quotas.claude.resetCredits, []);
+    assert.deepEqual((await request("/api/v1/widget-summary")).providers.claude.resetCredits, []);
     assert.equal(await calls(), 1);
 
     // A forced attempt fails and must invalidate already-built dashboard snapshots.
