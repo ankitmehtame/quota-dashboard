@@ -19,15 +19,16 @@ test("built server shares Claude fetches across routes, enforces cooldowns, isol
   const configPath = join(root, "config.json");
   const logs = join(root, "logs");
   let time = Date.now();
-  const control = async (status = 200, retryAfter?: string) => {
+  const control = async (status = 200, retryAfter?: string, grantTtl = 86_400_000) => {
     // Date.now in the child reads this during response completion as well as fetches.
     // Replace a complete file so it never sees a truncated or partially written JSON document.
     const temporary = `${controlPath}.${randomUUID()}.tmp`;
-    await writeFile(temporary, JSON.stringify({ now: time, status, retryAfter }));
+    await writeFile(temporary, JSON.stringify({ now: time, status, retryAfter, grantTtl }));
     await rename(temporary, controlPath);
   };
   await mkdir(home);
-  await control();
+  // The first grant is short-lived so the test can expire it while the aggregate dashboard cache is still fresh.
+  await control(200, undefined, 120_000);
   await writeFile(credentialsPath, JSON.stringify({ claudeAiOauth: { accessToken: "FAKE_ACCOUNT_A_TOKEN", scopes: ["user:profile"] } }));
   await writeFile(configPath, JSON.stringify({
     providers: Object.fromEntries(["claude", "codex", "openrouter", "opencode-go", "ollama"].map((id) => [id, { enabled: id === "claude" }])),
@@ -43,7 +44,7 @@ globalThis.fetch = async (url, init) => {
     if ((init.method ?? "GET") !== "GET") throw new Error("Unexpected mutation");
     appendFileSync(process.env.TEST_CALLS_PATH, "grants\\n");
     return Response.json({ cedar_ember: { eligible: true, grants: [{ id: "reset", label: "Full reset", resets_left: 1,
-      ends_at: new Date(control().now + 86400000).toISOString() }] } });
+      ends_at: new Date(control().now + control().grantTtl).toISOString() }] } });
   }
   if (String(url) !== "https://api.anthropic.com/api/oauth/usage") throw new Error("Unexpected upstream request");
   appendFileSync(process.env.TEST_CALLS_PATH, "request\\n");
@@ -102,12 +103,19 @@ globalThis.fetch = async (url, init) => {
     assert.equal(cached.quotas.claude.fetchedAt, first.quotas.claude.fetchedAt);
     assert.equal(await calls(), 1);
 
+    // An expired grant is removed from both cached aggregate and quota responses using the server clock.
+    time += 150_000;
+    await control(200, undefined, 120_000);
+    assert.deepEqual((await request("/api/v1/dashboard")).quotas.claude.resetCredits, []);
+    assert.deepEqual((await request("/api/v1/quotas")).quotas.claude.resetCredits, []);
+    assert.equal(await calls(), 1);
+
     // A forced attempt fails and must invalidate already-built dashboard snapshots.
     await control(429, "600");
     const failed = await request("/api/v1/providers/claude/test", "POST");
     assert.equal(failed.verified, false);
     assert.equal(failed.quota.stale, true);
-    assert.deepEqual(failed.quota.resetCredits, first.quotas.claude.resetCredits);
+    assert.deepEqual(failed.quota.resetCredits, []);
     assert.equal(failed.quota.fetchedAt, first.quotas.claude.fetchedAt);
     assert.equal(failed.quota.cooldownUntil, time + 600_000);
     const routes = await Promise.all([request("/api/v1/dashboard?refresh=1"), request("/api/v1/quotas?refresh=1"),
@@ -135,9 +143,11 @@ globalThis.fetch = async (url, init) => {
     const changed = await request("/api/v1/providers/claude/test", "POST");
     assert.equal(changed.quota.windows[0].usedPercent, 75);
     assert.equal(changed.verified, true);
-    // The same credential file shares one grants throttle, and account A's grants are never shown for account B.
-    assert.equal(await calls("grants"), 1);
-    assert.equal(changed.quota.resetCredits, undefined);
+    // The token change allows one early grants recheck, and the new token only ever sees grants it fetched itself.
+    assert.equal(await calls("grants"), 2);
+    assert.equal(changed.quota.resetCredits?.[0].title, "Full reset");
+    assert.equal((await request("/api/v1/providers/claude/test", "POST")).quota.resetCredits?.length, 1);
+    assert.equal(await calls("grants"), 2);
     assert.equal((await request("/api/v1/dashboard")).quotas.claude.windows[0].usedPercent, 75);
     await control(503);
     const staleB = await request("/api/v1/providers/claude/test", "POST");
@@ -149,7 +159,7 @@ globalThis.fetch = async (url, init) => {
     const failedC = await request("/api/v1/providers/claude/test", "POST");
     assert.deepEqual(failedC.quota.windows, []);
     assert.equal(failedC.quota.resetCredits, undefined);
-    assert.equal(await calls("grants"), 1);
+    assert.equal(await calls("grants"), 2);
     assert.deepEqual((await request("/api/v1/dashboard")).quotas.claude.windows, []);
     // Keep HTTP completion hooks reading the controls while the parent updates them.
     // These requests do not fetch quotas or depend on which complete snapshot they see.

@@ -541,12 +541,19 @@ async function buildUsage(url: URL, config: AppConfig) {
   return { range, usage: { ...usage, from: range.from, to: range.to, providers: usageSources } };
 }
 
+// A saved aggregate can outlive a grant; filter with the server clock each time it is served.
+function liveQuotaCredits<T extends Record<string, ProviderResult>>(quotas: T): T {
+  const now = Date.now();
+  return Object.fromEntries(Object.entries(quotas).map(([id, quota]) => [id, quota.resetCredits
+    ? { ...quota, resetCredits: quota.resetCredits.filter((credit) => !credit.expiresAt || !(Date.parse(credit.expiresAt) <= now)) } : quota])) as T;
+}
+
 async function dashboard(url: URL, config: AppConfig) {
   const range = localDateRange(Number(url.searchParams.get("days") || 30), usageTimezone, url.searchParams.get("range") || "relative");
   const cacheKey = `${range.from}:${range.to}:${range.timeZone}`;
   const forceRefresh = url.searchParams.get("refresh") === "1";
   const cached = dashboardCache.get(cacheKey);
-  if (!forceRefresh && cached && Date.now() < cached.expiresAt) return { ...cached.value, serverNow: new Date().toISOString(), cache: { fetchedAt: cached.fetchedAt, expiresAt: new Date(cached.expiresAt).toISOString() } };
+  if (!forceRefresh && cached && Date.now() < cached.expiresAt) return { ...cached.value, quotas: liveQuotaCredits(cached.value.quotas), serverNow: new Date().toISOString(), cache: { fetchedAt: cached.fetchedAt, expiresAt: new Date(cached.expiresAt).toISOString() } };
   const { usage } = await buildUsage(url, config);
   const enabled = config.providerOrder.filter((id) => config.providers[id].enabled);
   const quotaEntries = await Promise.all(enabled.map(async (id) => [id, await getQuota(id, forceRefresh)] as const));

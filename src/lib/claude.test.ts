@@ -224,21 +224,76 @@ test("Claude reset throttle and cooldown survive same-account token rotation wit
   const first = await fetchClaude({ ...file, identity: `${file.account}:token-1`, accessToken: "FAKE_TOKEN_1" });
   assert.equal(first.resetCredits?.length, 1);
   time += 60_000;
+  // A rotated token gets one early recheck; it is rate limited, so no grants are shown for it.
   const rotated = await fetchClaude({ ...file, identity: `${file.account}:token-2`, accessToken: "FAKE_TOKEN_2" });
-  assert.equal(resetCalls, 1);
+  assert.equal(resetCalls, 2);
   assert.equal(rotated.status, "ok");
   assert.equal(rotated.resetCredits, undefined, "the previous token's grants are not shown to another token until it is checked");
+  assert.equal(rotated.cooldownUntil, time + 7_200_000);
   time += 3_600_000;
   const limited = await fetchClaude({ ...file, identity: `${file.account}:token-3`, accessToken: "FAKE_TOKEN_3" });
-  assert.equal(resetCalls, 2);
-  assert.equal(limited.cooldownUntil, time + 7_200_000);
-  time += 60_000;
-  await fetchClaude({ ...file, identity: `${file.account}:token-4`, accessToken: "FAKE_TOKEN_4" });
-  assert.equal(resetCalls, 2);
+  assert.equal(resetCalls, 2, "rotation cannot bypass the cooldown");
+  // Windows are only replayed for the token that fetched them, so a token refreshed during the pause is paused instead.
+  assert.equal(limited.errorKind, "rate_limit");
+  assert.equal(limited.cooldownUntil, rotated.cooldownUntil);
   // A different credential source has its own throttle.
   await fetchClaude({ configured: true, identity: "other:token", account: "config-dir:/other", accessToken: "FAKE_OTHER" });
   assert.equal(resetCalls, 3);
   assert.equal(usageCalls > 0, true);
+});
+
+test("Claude grants reappear after a routine token refresh with one early recheck per token", async (t) => {
+  let time = now;
+  t.mock.method(Date, "now", () => time);
+  testUserAgents(t);
+  let resetCalls = 0;
+  t.mock.method(globalThis, "fetch", async (url: string | URL | Request) => {
+    if (!String(url).includes("?")) return Response.json({ five_hour: { utilization: 5 } });
+    resetCalls++;
+    return resetCalls < 3 ? Response.json(resetPayload) : new Response("", { status: 500 });
+  });
+  const file = { configured: true, account: "default:/fake/refresh/.credentials.json" };
+  const token = (n: number) => ({ ...file, identity: `${file.account}:token-${n}`, accessToken: `FAKE_TOKEN_${n}` });
+  assert.equal((await fetchClaude(token(1))).resetCredits?.length, 1);
+  time += 60_000;
+  const refreshed = await fetchClaude(token(2));
+  assert.equal(resetCalls, 2);
+  assert.equal(refreshed.resetCredits?.length, 1);
+  await fetchClaude(token(2));
+  assert.equal(resetCalls, 2, "the same token is not rechecked before the hourly interval");
+  time += 60_000;
+  // A failing recheck is attempted once per token, not on every refresh.
+  assert.equal((await fetchClaude(token(3))).resetCredits, undefined);
+  await fetchClaude(token(3));
+  await fetchClaude(token(3));
+  assert.equal(resetCalls, 3);
+});
+
+test("a grants 429 without a usable Retry-After still pauses plain usage through the quota cache", async (t) => {
+  let time = now;
+  t.mock.method(Date, "now", () => time);
+  testUserAgents(t);
+  let usageCalls = 0;
+  let header: string | undefined;
+  t.mock.method(globalThis, "fetch", async (url: string | URL | Request) => {
+    if (!String(url).includes("?")) { usageCalls++; return Response.json({ five_hour: { utilization: 9 } }); }
+    return new Response("", { status: 429, headers: header === undefined ? {} : { "retry-after": header } });
+  });
+  for (const [index, value] of [undefined, "soon", "0"].entries()) {
+    header = value;
+    const credentials = { configured: true, identity: `no-retry-after-${index}`, accessToken: "FAKE_TOKEN" };
+    const cache = createQuotaCache({ now: () => time, prepare: async () => ({ configured: true, identity: credentials.identity, fetch: () => fetchClaude(credentials) }) });
+    const before = usageCalls;
+    const first = await cache.get("claude");
+    assert.equal(first.status, "ok");
+    assert.equal(first.cooldownUntil, time + 300_000);
+    time += 60_000;
+    const forced = await cache.get("claude", true);
+    assert.equal(usageCalls, before + 1);
+    assert.equal(forced.status, "ok");
+    assert.deepEqual(forced.windows.map((window) => window.usedPercent), [9]);
+    time += 300_000;
+  }
 });
 
 test("Claude resolver keeps one account key across file token rotation but separates environment tokens", async () => {
@@ -306,8 +361,41 @@ test("a slow grants check does not delay the usage result and a late 429 pauses 
   time += 60_000;
   const paused = await fetchClaude(credentials);
   assert.equal(usageCalls, 1);
-  assert.equal(paused.errorKind, "rate_limit");
+  assert.equal(paused.status, "ok");
+  assert.deepEqual(paused.windows.map((window) => window.usedPercent), [3]);
   assert.equal(paused.cooldownUntil, now + 7_200_000);
+});
+
+test("a late grants 429 keeps the cached card ok through the quota cache", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let time = now;
+  t.mock.method(Date, "now", () => time);
+  testUserAgents(t);
+  let usageCalls = 0;
+  let release: (response: Response) => void = () => {};
+  t.mock.method(globalThis, "fetch", (url: string | URL | Request) => {
+    if (!String(url).includes("?")) { usageCalls++; return Promise.resolve(Response.json({ five_hour: { utilization: 3 } })); }
+    return new Promise<Response>((resolve) => { release = resolve; });
+  });
+  const credentials = { configured: true, identity: "late-cache", accessToken: "FAKE_TOKEN" };
+  const cache = createQuotaCache({ now: () => time, prepare: async () => ({ configured: true, identity: credentials.identity, fetch: () => fetchClaude(credentials) }) });
+  const pending = cache.get("claude");
+  for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(3_000);
+  assert.equal((await pending).status, "ok");
+  release(new Response("", { status: 429, headers: { "retry-after": "7200" } }));
+  for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
+  time += 60_000;
+  const forced = await cache.get("claude", true);
+  assert.equal(usageCalls, 1);
+  assert.equal(forced.status, "ok");
+  assert.equal(forced.stale, undefined);
+  assert.equal(forced.errorKind, undefined);
+  assert.deepEqual(forced.windows.map((window) => window.usedPercent), [3]);
+  assert.equal(forced.cooldownUntil, now + 7_200_000);
+  time += 60_000;
+  assert.equal((await cache.get("claude", true)).status, "ok");
+  assert.equal(usageCalls, 1);
 });
 
 test("Claude windows preserve fractions, real zero, model order, durations, and microsecond reset times", () => {

@@ -100,11 +100,14 @@ export function parseClaudeResetCredits(payload: unknown, now = Date.now()): Rat
 
 // retryUntil is the server's Retry-After from the grants request; the penalty covers the whole account.
 // Grants are only served to the token identity that fetched them, so a rotated or switched token never shows another account's grants.
-type ResetCreditState = { nextCheck: number; retryUntil?: number; credits?: RateLimitResetCredit[]; creditsIdentity?: string; pending?: Promise<void> };
+type ResetCreditState = { nextCheck: number; retryUntil?: number; credits?: RateLimitResetCredit[]; creditsIdentity?: string; checkedIdentity?: string;
+  lastOk?: { identity: string; result: ProviderResult }; pending?: Promise<void> };
 const resetCreditStates = new Map<string, ResetCreditState>();
 const resetCheckInterval = 3_600_000;
 // How long the card's required result may wait for the optional grants check.
 const resetCheckBudget = 3_000;
+// Pause applied when a grants 429 has no usable Retry-After, matching the first step of the quota cache's own 429 backoff.
+const resetFallbackCooldown = 300_000;
 
 function resetCreditState(auth: ClaudeCredentials): ResetCreditState {
   // Keyed by account, not token hash, so a refreshed OAuth token cannot bypass the throttle or cooldown.
@@ -116,9 +119,12 @@ function resetCreditState(auth: ClaudeCredentials): ResetCreditState {
 
 async function claudeResetCredits(auth: ClaudeCredentials, skip: boolean): Promise<{ credits?: RateLimitResetCredit[]; cooldownUntil?: number }> {
   const state = resetCreditState(auth);
-  if (!skip && Date.now() >= state.nextCheck && !state.pending) {
+  // A refreshed token for the same account gets one early recheck so its grants reappear, but never during a 429 pause.
+  const paused = state.retryUntil !== undefined && state.retryUntil > Date.now();
+  if (!skip && !state.pending && (Date.now() >= state.nextCheck || (state.checkedIdentity !== auth.identity && !paused))) {
     const current = state;
     current.nextCheck = Date.now() + resetCheckInterval;
+    current.checkedIdentity = auth.identity;
     current.pending = (async () => {
       const userAgent = process.env.CLAUDE_RESET_USER_AGENT ?? "claude-cli/2.1.280 (external, cli)";
       if (!userAgent.trim() || !/^[\x20-\x7e]+$/.test(userAgent)) return;
@@ -129,8 +135,10 @@ async function claudeResetCredits(auth: ClaudeCredentials, skip: boolean): Promi
         });
         if (response.status === 429) {
           const deadline = parseRetryAfter(response.headers.get("retry-after"));
-          current.nextCheck = Math.max(current.nextCheck, deadline ?? 0);
-          if (deadline !== undefined) current.retryUntil = deadline;
+          // The penalty covers the whole account, so a missing, malformed, or past Retry-After still pauses plain usage.
+          const until = deadline !== undefined && deadline > Date.now() ? deadline : Date.now() + resetFallbackCooldown;
+          current.retryUntil = until;
+          current.nextCheck = Math.max(current.nextCheck, until);
         }
         if (response.status !== 200) return;
         const credits = parseClaudeResetCredits(await response.json());
@@ -174,9 +182,15 @@ export async function fetchClaude(credentials?: ClaudeCredentials): Promise<Prov
   if (auth.error || !auth.accessToken) return fail(auth.errorKind ?? "configuration", auth.error ?? "Claude OAuth credentials are not configured");
   const userAgent = process.env.CLAUDE_USER_AGENT ?? "claude-code/2.1.69";
   if (!userAgent.trim() || !/^[\x20-\x7e]+$/.test(userAgent)) return fail("configuration", "CLAUDE_USER_AGENT must contain non-empty printable ASCII text");
-  const resetRetry = resetCreditState(auth).retryUntil;
+  const resetState = resetCreditState(auth);
+  const resetRetry = resetState.retryUntil;
   // A grants 429 arriving after the last card result still pauses plain usage requests for the whole account.
-  if (resetRetry !== undefined && resetRetry > Date.now()) return fail("rate_limit", "Claude quota is paused until the server's Retry-After deadline", resetRetry);
+  if (resetRetry !== undefined && resetRetry > Date.now()) {
+    // The optional grants failure must not turn a good card into an error: keep the last successful windows for this token and only carry the cooldown.
+    const last = resetState.lastOk;
+    if (last && last.identity === auth.identity) return { ...last.result, resetCredits: (await claudeResetCredits(auth, true)).credits, cooldownUntil: resetRetry };
+    return fail("rate_limit", "Claude quota is paused until the server's Retry-After deadline", resetRetry);
+  }
   let response: Response;
   try {
     response = await fetch("https://api.anthropic.com/api/oauth/usage", {
@@ -201,6 +215,8 @@ export async function fetchClaude(credentials?: ClaudeCredentials): Promise<Prov
   if (!windows.some((window) => window.usedPercent !== null)) return fail("response", "Claude quota response did not include supported utilization measurements", cooldown);
   const reset = await claudeResetCredits(auth, cooldown !== undefined && cooldown > Date.now());
   const deadline = Math.max(cooldown ?? 0, reset.cooldownUntil ?? 0);
-  return { configured: true, status: "ok", error: null, windows, resetCredits: reset.credits, fetchedAt: new Date().toISOString(),
+  const result: ProviderResult = { configured: true, status: "ok", error: null, windows, resetCredits: reset.credits, fetchedAt: new Date().toISOString(),
     ...(deadline > Date.now() ? { cooldownUntil: deadline } : {}) };
+  resetState.lastOk = { identity: auth.identity, result: { ...result, cooldownUntil: undefined } };
+  return result;
 }
