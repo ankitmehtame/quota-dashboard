@@ -35,7 +35,7 @@ export async function resolveClaudeCredentials(env: NodeJS.ProcessEnv = process.
   const source = direct ? "environment" : `${env.CLAUDE_AUTH_PATH !== undefined ? "auth-path" : env.CLAUDE_CONFIG_DIR !== undefined ? "config-dir" : "default"}:${path}`;
   let identity = source;
   const fail = (message: string, kind: ProviderResult["errorKind"] = "configuration", configured = false): ClaudeCredentials =>
-    ({ configured, identity, error: message, errorKind: kind });
+    ({ configured, identity, account: direct ? identity : source, error: message, errorKind: kind });
   let token: unknown = direct;
   let oauth: ObjectValue = {};
   if (!direct) {
