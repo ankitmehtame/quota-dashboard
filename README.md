@@ -197,9 +197,12 @@ are deferred until their schemas and units are verified.
 
 Unused limit resets appear in "Usage limit resets", ordered by expiry. A separate
 read-only request uses `?cedar_ember=1&skip_spend=1` and `CLAUDE_RESET_USER_AGENT`.
-It runs at most once per hour per credential identity, including forced refreshes,
-and honors longer `Retry-After` deadlines after HTTP 429. Checks wait until the
-normal quota request succeeds and has no active cooldown. Failures retain known,
+It runs at most once per hour per credential source, so a refreshed OAuth token does
+not reset the throttle, including forced refreshes. A `Retry-After` after HTTP 429
+also pauses the normal quota request, since the penalty covers the whole account.
+Checks run after the normal quota request succeeds and has no active cooldown, and
+the card waits at most 3 seconds for them. Grants are only shown for the token that
+fetched them, and expired grants are dropped from cached and stale results. Failures retain known,
 unexpired grants without changing quota windows or card status. Paused, exhausted,
 and expired grants are hidden; multiple resets show their remaining count.
 This cache is in memory and does not survive server restarts. The dashboard never
