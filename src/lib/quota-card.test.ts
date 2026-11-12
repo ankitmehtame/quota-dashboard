@@ -55,6 +55,17 @@ test("OpenRouter renders effective budget and sub-cent credit and BYOK usage", (
   assert.match(html, /No key spending limit reported/);
 });
 
+test("OpenRouter distinguishes sub-cent remaining balances from zero", () => {
+  const html = runInNewContext(`${icons}\n${renderer}\nquotaCard("openrouter", provider, quota);`, {
+    provider: { id: "openrouter", shortName: "OpenRouter", configured: true, status: "ok" },
+    quota: parseOpenRouterUsage({ data: { usage: 0, limit: 20, limit_remaining: 0.004,
+      effective_budget: { scope: "member", limit_usd: 50, remaining_usd: -0.004 } } }),
+    state: { hour12: false }, money: (value: number) => `$${value.toFixed(2)}`, escapeHtml: String,
+  });
+  assert.match(html, /<\$0\.01 remaining/);
+  assert.match(html, /−<\$0\.01 remaining/);
+});
+
 function renderOllama(payload: unknown): string {
   return runInNewContext(`${icons}\n${renderer}\nquotaCard("ollama", provider, quota);`, {
     provider: { id: "ollama", shortName: "Ollama", description: "Monthly cloud credits and balance", accent: "orange", configured: true, status: "ok" },

@@ -438,6 +438,12 @@ function formatPercent(value: number): string {
   return value.toFixed(1).replace(/\.0$/, "");
 }
 
+function remainingMoney(value: number): string {
+  if (value > 0 && value < 0.01) return "<$0.01";
+  if (value < 0 && value > -0.01) return "−<$0.01";
+  return money(value);
+}
+
 function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][string]): string {
   if (id === "openrouter" && quota?.openrouterKeys?.length) {
     return quota.openrouterKeys.map((entry) => quotaCard(id, { ...provider, shortName: `OpenRouter · ${entry.label}`,
@@ -463,8 +469,8 @@ function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][st
   const limit = quota?.spendingLimit;
   const budget = quota?.effectiveBudget;
   const openrouterDetails = id === "openrouter" && quota?.windows?.length ? `<div class="quota-resets"><div class="quota-resets-title">Key spending limit</div><div class="quota-foot"><span>${escapeHtml(limit
-    ? `${money(limit.limitUsd)} · ${limit.reset === null ? "all time" : limit.reset === "unknown" ? "reset period not reported" : `${limit.reset} (UTC)`} · ${limit.remainingUsd === null ? "remaining not reported" : `${money(limit.remainingUsd)} remaining`}${limit.includesByok === null ? "" : limit.includesByok ? " · includes BYOK" : " · excludes BYOK"}`
-    : "No key spending limit reported")}</span></div></div>${budget ? `<div class="quota-resets"><div class="quota-resets-title">Effective budget</div><div class="quota-foot"><span>${escapeHtml(`${budget.scope.replaceAll("_", " ")} · ${money(budget.limitUsd)} · ${budget.remainingUsd === null ? "remaining not reported" : `${money(budget.remainingUsd)} remaining`}`)}</span></div></div>` : ""}${quota.byokWindows?.length ? `<div class="quota-resets"><div class="quota-resets-title">BYOK usage · separate from credits</div>${quota.byokWindows.map((window) => `<div class="quota-foot"><span>${escapeHtml(window.name)}: ${escapeHtml(window.valueLabel)}</span></div>`).join("")}</div>` : ""}` : "";
+    ? `${money(limit.limitUsd)} · ${limit.reset === null ? "all time" : limit.reset === "unknown" ? "reset period not reported" : `${limit.reset} (UTC)`} · ${limit.remainingUsd === null ? "remaining not reported" : `${remainingMoney(limit.remainingUsd)} remaining`}${limit.includesByok === null ? "" : limit.includesByok ? " · includes BYOK" : " · excludes BYOK"}`
+    : "No key spending limit reported")}</span></div></div>${budget ? `<div class="quota-resets"><div class="quota-resets-title">Effective budget</div><div class="quota-foot"><span>${escapeHtml(`${budget.scope.replaceAll("_", " ")} · ${money(budget.limitUsd)} · ${budget.remainingUsd === null ? "remaining not reported" : `${remainingMoney(budget.remainingUsd)} remaining`}`)}</span></div></div>` : ""}${quota.byokWindows?.length ? `<div class="quota-resets"><div class="quota-resets-title">BYOK usage · separate from credits</div>${quota.byokWindows.map((window) => `<div class="quota-foot"><span>${escapeHtml(window.name)}: ${escapeHtml(window.valueLabel)}</span></div>`).join("")}</div>` : ""}` : "";
   const content = windows.map((window, index) => {
     const percent = window?.usedPercent;
     const value = window?.balanceLabel ? `<span class="quota-balance-primary">${escapeHtml(window.balanceLabel)}</span><span class="quota-balance-secondary">${escapeHtml(window.spentLabel || "")}</span>` : escapeHtml(window?.valueLabel || "Not available");
