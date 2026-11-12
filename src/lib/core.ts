@@ -35,6 +35,7 @@ export type ProviderResult = {
   error: string | null;
   fetchedAt: string;
   windows: QuotaWindow[];
+  openrouterKeys?: OpenRouterKeyResult[];
   creditBalance?: { includedUsd: number; purchasedUsd: number | null };
   planType?: string | null;
   subscriptionActiveUntil?: string | null;
@@ -43,6 +44,13 @@ export type ProviderResult = {
   cooldownUntil?: number;
   stale?: boolean;
   cached?: boolean;
+};
+
+export type OpenRouterKeyResult = Pick<ProviderResult, "configured" | "status" | "error" | "fetchedAt" | "windows"> & {
+  id: string;
+  label: string;
+  byokWindows?: QuotaWindow[];
+  spendingLimit?: { limitUsd: number; remainingUsd: number | null; reset: "daily" | "weekly" | "monthly" | "unknown" | null; includesByok: boolean | null };
 };
 
 export type ProviderConfig = { enabled: boolean };
@@ -95,11 +103,11 @@ export const PROVIDER_DEFINITIONS: Record<ProviderId, {
     name: "OpenRouter",
     shortName: "OpenRouter",
     accent: "teal",
-    description: "API key balance and spending limit",
+    description: "Per-key credit usage and spending limits in USD",
     capabilities: {
       quota: true,
       usage: true,
-      usedPercent: true,
+      usedPercent: false,
       remainingValue: true,
       resetAt: false,
       historicalUsage: false,

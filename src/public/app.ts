@@ -1,5 +1,6 @@
 type QuotaWindow = { name?: string; usedPercent?: number | null; usedValue?: number | null; limitValue?: number | null; requestCount?: number | null; windowStart?: string | null; windowEnd?: string | null; unit?: string | null; resetAt?: string | null; windowSeconds?: number | null; valueLabel?: string | null; balanceLabel?: string | null; spentLabel?: string | null };
 type Provider = { id: string; name: string; shortName: string; accent: string; description: string; enabled: boolean; configured: boolean; status: string };
+type OpenRouterKeyResult = { id: string; label: string; configured: boolean; status: string; error: string | null; fetchedAt: string; windows: QuotaWindow[]; byokWindows?: QuotaWindow[]; spendingLimit?: { limitUsd: number; remainingUsd: number | null; reset: "daily" | "weekly" | "monthly" | "unknown" | null; includesByok: boolean | null } };
 type PricingStatus = { missingPricing?: boolean };
 type ModelUsageItem = PricingStatus & { model: string; costUsd: number; totalTokens?: number };
 type UsageModel = ModelUsageItem & { provider: string };
@@ -11,7 +12,7 @@ type UsageBucket = UsageDay & { from: string; to: string; days: UsageDay[] };
 type UsageRecord = PricingStatus & { hostId?: string; date: string; provider: string; model: string; inputTokens: number; cachedInputTokens: number; cacheCreationTokens: number; outputTokens: number; reasoningTokens: number; costUsd: number };
 type UsageHost = { hostId: string; generatedAt?: string | null; category?: string | null; status: string; severity?: "warning" | "error" | null; error?: string | null; stale?: boolean; local?: boolean; active?: boolean; included?: boolean; complete?: boolean; missingDates?: string[]; usable?: boolean; disabledReason?: string | null };
 type Usage = PricingStatus & { totalCostUsd: number; totalTokens?: number; from?: string; to?: string; providers?: string[]; daily?: UsageDay[]; byModel?: UsageModel[]; byProvider?: Array<PricingStatus & { provider: string; costUsd: number; totalTokens: number }>; records?: UsageRecord[]; error?: string | null; hosts?: UsageHost[]; mqtt?: { configured: boolean; connection: string } };
-type Dashboard = { version: string; providerOrder: string[]; providers: Record<string, Provider>; quotas: Record<string, { windows?: QuotaWindow[]; creditBalance?: { includedUsd: number; purchasedUsd: number | null }; planType?: string; subscriptionActiveUntil?: string | null; resetCredits?: Array<{ id: string; title: string; description?: string | null; expiresAt?: string | null }>; fetchedAt?: string; error?: string | null; errorKind?: string; cooldownUntil?: number; stale?: boolean; cached?: boolean }>; usage: Usage; serverNow: string; cache?: { fetchedAt?: string } };
+type Dashboard = { version: string; providerOrder: string[]; providers: Record<string, Provider>; quotas: Record<string, { windows?: QuotaWindow[]; openrouterKeys?: OpenRouterKeyResult[]; byokWindows?: QuotaWindow[]; spendingLimit?: OpenRouterKeyResult["spendingLimit"]; creditBalance?: { includedUsd: number; purchasedUsd: number | null }; planType?: string; subscriptionActiveUntil?: string | null; resetCredits?: Array<{ id: string; title: string; description?: string | null; expiresAt?: string | null }>; fetchedAt?: string; error?: string | null; errorKind?: string; cooldownUntil?: number; stale?: boolean; cached?: boolean }>; usage: Usage; serverNow: string; cache?: { fetchedAt?: string } };
 type UsageResponse = { version: string; apiVersion: number; serverNow: string; timezone: string; from: string; to: string; usage: Usage };
 type ProvidersResponse = { providerOrder: string[]; providers: Record<string, Provider>; usageSources: Record<string, UsageSourceConfig> };
 type AppState = { days: number; range: string; modelsRange: "today" | "selected"; representation: ChartRepresentation; dashboard: Dashboard | null; hostSelections: Map<string, boolean>; sourceSelections: Map<string, boolean>; chartScrollLeft: number; serverClock?: { time: number; monotonic: number } };
@@ -438,6 +439,10 @@ function formatPercent(value: number): string {
 }
 
 function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][string]): string {
+  if (id === "openrouter" && quota?.openrouterKeys?.length) {
+    return quota.openrouterKeys.map((entry) => quotaCard(id, { ...provider, shortName: `OpenRouter · ${entry.label}`,
+      description: "Key credit usage in USD · UTC periods", configured: entry.configured, status: entry.status }, entry)).join("");
+  }
   const now = estimatedServerNow();
   const windows = quota?.windows?.length ? quota.windows : [undefined];
   const status = provider.status === "disabled" ? "off" : provider.status === "error" ? "error" : provider.configured ? "connected" : "setup needed";
@@ -455,6 +460,10 @@ function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][st
   const totalBalance = credits ? money(credits.includedUsd + (credits.purchasedUsd ?? 0)) : "";
   const showIncludedBalance = credits && money(credits.includedUsd) !== totalBalance;
   const creditBalance = credits ? `<div class="quota-percent quota-balance quota-credit-balance${showIncludedBalance ? "" : " quota-credit-balance-inline"}"><span class="quota-balance-primary">${escapeHtml(credits.purchasedUsd === null ? `${money(credits.includedUsd)} included balance` : `${totalBalance} balance`)}</span><span class="quota-balance-secondary">${escapeHtml(`${showIncludedBalance ? `${money(credits.includedUsd)} included · ` : ""}${credits.purchasedUsd === null ? "Purchased balance not reported" : `${money(credits.purchasedUsd)} purchased`}`)}</span></div>` : "";
+  const limit = quota?.spendingLimit;
+  const openrouterDetails = id === "openrouter" && quota?.windows?.length ? `<div class="quota-resets"><div class="quota-resets-title">Key spending limit</div><div class="quota-foot"><span>${escapeHtml(limit
+    ? `${money(limit.limitUsd)} · ${limit.reset === null ? "all time" : limit.reset === "unknown" ? "reset period not reported" : `${limit.reset} (UTC)`} · ${limit.remainingUsd === null ? "remaining not reported" : `${money(limit.remainingUsd)} remaining`}${limit.includesByok === null ? "" : limit.includesByok ? " · includes BYOK" : " · excludes BYOK"}`
+    : "No key spending limit reported")}</span></div></div>${quota.byokWindows?.length ? `<div class="quota-resets"><div class="quota-resets-title">BYOK usage · separate from credits</div>${quota.byokWindows.map((window) => `<div class="quota-foot"><span>${escapeHtml(window.name)}: ${escapeHtml(window.valueLabel)}</span></div>`).join("")}</div>` : ""}` : "";
   const content = windows.map((window, index) => {
     const percent = window?.usedPercent;
     const value = window?.balanceLabel ? `<span class="quota-balance-primary">${escapeHtml(window.balanceLabel)}</span><span class="quota-balance-secondary">${escapeHtml(window.spentLabel || "")}</span>` : escapeHtml(window?.valueLabel || "Not available");
@@ -463,7 +472,7 @@ function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][st
     const percentageValue = percent == null
       ? value
       : `<span class="quota-used-percent">${formatPercent(percent)}% <small>used</small></span>`;
-    const label = windows.length > 1
+    const label = id === "openrouter" ? "" : windows.length > 1
       ? window?.valueLabel || ""
       : percent == null && window?.valueLabel
         ? ""
@@ -488,7 +497,7 @@ function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][st
   }).join("");
   const stale = quota?.stale ? `<div class="quota-error">Stale · last known quota measured ${escapeHtml(formatRefreshTime(quota.fetchedAt))}</div>` : "";
   const cooldown = quota?.cooldownUntil && quota.cooldownUntil > now ? `<div class="quota-foot">Retry after ${escapeHtml(formatRefreshTime(new Date(quota.cooldownUntil).toISOString()))}</div>` : "";
-  return `<article class="quota-card" data-tool="${escapeHtml(toolId(id))}" style="--tool-color:${toolColorValue(id)}"><div class="provider-head"><div><div class="provider-name">${sourceIcon(id, 20)}${escapeHtml(provider.shortName)}</div><div class="provider-sub">${escapeHtml(subtitle)}</div></div><span class="provider-badge">${escapeHtml(status)}</span></div><div class="quota-meta">${plan}${stale}</div><div class="quota-main">${content}${creditBalance}${resetCredits}${quota?.error ? `<div class="quota-error">${escapeHtml(quota.error)}</div>` : ""}${cooldown}</div></article>`;
+  return `<article class="quota-card" data-tool="${escapeHtml(toolId(id))}" style="--tool-color:${toolColorValue(id)}"><div class="provider-head"><div><div class="provider-name">${sourceIcon(id, 20)}${escapeHtml(provider.shortName)}</div><div class="provider-sub">${escapeHtml(subtitle)}</div></div><span class="provider-badge">${escapeHtml(status)}</span></div><div class="quota-meta">${plan}${stale}</div><div class="quota-main">${content}${openrouterDetails}${creditBalance}${resetCredits}${quota?.error ? `<div class="quota-error">${escapeHtml(quota.error)}</div>` : ""}${cooldown}</div></article>`;
 }
 
 function renderQuotas(data: Dashboard): void {
@@ -969,7 +978,7 @@ function openUsageDetails(bucket: UsageBucket | undefined, representation: Concr
 function renderStatus(data: Dashboard): void {
   const statuses = Object.values(data.providers);
   const enabled = statuses.filter((provider) => provider.enabled);
-  const errors = enabled.filter((provider) => provider.status === "error");
+  const errors = enabled.filter((provider) => ["error", "partial"].includes(provider.status));
   const hosts = data.usage.hosts || [];
   const hostProblems = hosts.filter((host) => !hostHealthy(host) && host.severity !== "warning");
   const warnings = hosts.filter((host) => host.severity === "warning").length;
@@ -979,7 +988,8 @@ function renderStatus(data: Dashboard): void {
     ? `${problems} source${problems === 1 ? "" : "s"} need attention · ${hosts.length} usage host${hosts.length === 1 ? "" : "s"}`
     : `${enabled.length} quota source${enabled.length === 1 ? "" : "s"} active · ${hosts.length} usage host${hosts.length === 1 ? "" : "s"} combined`;
   if (warnings) $("#status-copy").textContent += ` · ${warnings} usage warning${warnings === 1 ? "" : "s"}`;
-  const measured = enabled.filter((provider) => data.quotas[provider.id]?.windows?.some((window) => window.usedPercent != null || window.balanceLabel));
+  const measured = enabled.filter((provider) => data.quotas[provider.id]?.windows?.some((window) => window.usedPercent != null || window.balanceLabel)
+    || data.quotas[provider.id]?.openrouterKeys?.some((entry) => entry.windows.some((window) => window.usedValue != null)));
   const stale = enabled.filter((provider) => data.quotas[provider.id]?.stale).length;
   $("#account-summary").textContent = `${measured.length} of ${enabled.length} accounts reporting quota${stale ? `, ${stale} with older measurements` : ""}. Usage across ${hosts.length} machine${hosts.length === 1 ? "" : "s"}.`;
   renderHeaderRefresh();

@@ -2,6 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fetchClaude, resolveClaudeCredentials } from "./claude.js";
+import { fetchOpenRouter, resolveOpenRouterKeys } from "./openrouter.js";
 export { fetchClaude, resolveClaudeCredentials, parseClaudeQuota, parseClaudeResetCredits, parseRetryAfter } from "./claude.js";
 
 import { type ProviderId, clampPercent, formatMoney, numberOrNull, usageWindow, type ProviderResult, type QuotaWindow, type RateLimitResetCredit } from "./core.js";
@@ -16,7 +17,6 @@ function errorMessage(error: unknown, fallback: string): string {
   return error && typeof error === "object" && "message" in error && typeof error.message === "string" ? error.message : fallback;
 }
 
-const authPath = process.env.OPENCODE_AUTH_PATH || join(homedir(), ".local", "share", "opencode", "auth.json");
 const CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann";
 const CODEX_OAUTH_TOKEN_ENDPOINT = "https://auth.openai.com/oauth/token";
 const CODEX_USAGE_ENDPOINT = "https://chatgpt.com/backend-api/wham/usage";
@@ -28,19 +28,6 @@ async function readJson(path: string): Promise<unknown> {
   } catch {
     return null;
   }
-}
-
-function authValue(auth: unknown, aliases: string[]): string | null {
-  for (const alias of aliases) {
-    const entry = objectValue(auth)[alias];
-    if (typeof entry === "string" && entry) return entry;
-    if (entry && typeof entry === "object") {
-      const object = objectValue(entry);
-      const value = object.key || object.token || object.apiKey;
-      if (typeof value === "string" && value) return value;
-    }
-  }
-  return null;
 }
 
 function result(configured: boolean, windows: QuotaWindow[] = [], error: string | null = null): ProviderResult {
@@ -112,54 +99,6 @@ export async function fetchOllama(): Promise<ProviderResult> {
       : result(true, [], "Ollama balance response did not include valid monthly credits");
   } catch (error) {
     return result(true, [], errorMessage(error, "Ollama request failed"));
-  }
-}
-
-async function fetchOpenRouter(): Promise<ProviderResult> {
-  const auth = await readJson(authPath);
-  const key = process.env.OPENROUTER_API_KEY?.trim() || authValue(auth, ["openrouter"]);
-  if (!key) return result(false, [], "OpenRouter API key is not configured");
-  try {
-    const response = await fetch("https://openrouter.ai/api/v1/key", { headers: { Authorization: `Bearer ${key}`, Accept: "application/json" }, signal: AbortSignal.timeout(15_000) });
-    if (!response.ok) return result(true, [], `OpenRouter returned HTTP ${response.status}`);
-    const data = objectValue(objectValue(await response.json()).data);
-    const usage = numberOrNull(data.usage);
-    const rawLimit = numberOrNull(data.limit);
-    // OpenRouter uses zero/null for an unlimited key. It is not a usable cap.
-    const limit = rawLimit !== null && rawLimit > 0 ? rawLimit : null;
-    const reportedRemaining = numberOrNull(data.limit_remaining);
-    const remaining = limit === null ? null : reportedRemaining ?? (usage !== null ? Math.max(0, limit - usage) : null);
-    const percent = limit !== null && usage !== null ? (usage / limit) * 100 : null;
-    let balance = null;
-    try {
-      const creditsResponse = await fetch("https://openrouter.ai/api/v1/credits", { headers: { Authorization: `Bearer ${key}`, Accept: "application/json" }, signal: AbortSignal.timeout(15_000) });
-      if (creditsResponse.ok) {
-        const credits = objectValue(objectValue(await creditsResponse.json()).data);
-        const totalCredits = numberOrNull(credits.total_credits);
-        const totalUsage = numberOrNull(credits.total_usage);
-        if (totalCredits !== null && totalUsage !== null) balance = Math.max(0, totalCredits - totalUsage);
-      }
-    } catch {
-      // The key endpoint remains useful when the credits endpoint is unavailable.
-    }
-    const valueLabel = balance !== null
-      ? `${formatMoney(balance)} balance · ${formatMoney(usage ?? 0)} spent`
-      : remaining !== null
-      ? `${formatMoney(remaining)} remaining${limit !== null ? ` of ${formatMoney(limit)}` : ""}`
-      : usage !== null
-        ? `${formatMoney(usage)} spent · no spending limit`
-        : "No spending limit configured";
-    return result(true, [usageWindow({
-      name: "credits",
-      usedPercent: percent,
-      usedValue: usage,
-      limitValue: limit,
-      valueLabel,
-      balanceLabel: balance !== null ? `${formatMoney(balance)} balance` : null,
-      spentLabel: usage !== null ? `${formatMoney(usage)} spent (all time)` : null,
-    })]);
-  } catch (error) {
-    return result(true, [], errorMessage(error, "OpenRouter request failed"));
   }
 }
 
@@ -334,8 +273,7 @@ export const PROVIDER_FETCHERS: Record<ProviderId, () => Promise<ProviderResult>
 export async function isProviderConfigured(id: ProviderId): Promise<boolean> {
   if (id === "claude") return Boolean((await resolveClaudeCredentials()).accessToken);
   if (id === "openrouter") {
-    const auth = await readJson(authPath);
-    return Boolean(process.env.OPENROUTER_API_KEY?.trim() || authValue(auth, ["openrouter"]));
+    return (await resolveOpenRouterKeys()).some((entry) => !entry.error && Boolean(entry.key));
   }
   if (id === "opencode-go") return Boolean(process.env.OPENCODE_GO_WORKSPACE_ID?.trim() && process.env.OPENCODE_GO_AUTH_COOKIE?.trim());
   if (id === "ollama") return Boolean(process.env.OLLAMA_API_KEY?.trim());

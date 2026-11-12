@@ -26,3 +26,19 @@ test("dashboard summary counts offline warnings separately from errors", () => {
   assert.doesNotMatch(render([warning]), /need attention/);
   assert.match(render([warning, { status: "error", severity: "error" }]), /1 source need attention.*1 usage warning/);
 });
+
+test("dashboard summary counts partial OpenRouter failures and valid usage from any key", () => {
+  const elements = new Map<string, { textContent: string; setAttribute(): void }>();
+  runInNewContext(`${statusRenderer}\nrenderStatus(data);`, {
+    data: { providers: { openrouter: { id: "openrouter", enabled: true, status: "partial" } },
+      quotas: { openrouter: { windows: [], openrouterKeys: [{ windows: [] }, { windows: [{ usedValue: 0 }] }] } },
+      usage: { hosts: [] }, version: "test" },
+    hostHealthy: () => true, renderHeaderRefresh() {},
+    $: (selector: string) => {
+      if (!elements.has(selector)) elements.set(selector, { textContent: "", setAttribute() {} });
+      return elements.get(selector);
+    },
+  });
+  assert.match(elements.get("#status-copy")!.textContent, /1 source need attention/);
+  assert.match(elements.get("#account-summary")!.textContent, /1 of 1 accounts reporting quota/);
+});
