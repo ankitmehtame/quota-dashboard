@@ -181,7 +181,9 @@ Incomplete pairs display a configuration error without blocking valid entries.
 `OPENROUTER_API_KEY` remains a separate entry labeled "Default", even alongside
 numbered keys. When it is absent or empty, the existing OpenCode `openrouter`
 credential remains the default fallback, read from `OPENCODE_AUTH_PATH` or
-`~/.local/share/opencode/auth.json`. No credentials can be entered, edited, or
+`~/.local/share/opencode/auth.json`, even with numbered keys; it can create an
+additional or duplicate card. Quote labels containing ` #`, e.g. `"Home #2"`.
+No credentials can be entered, edited, or
 viewed in the browser.
 
 Each entry independently calls `GET https://openrouter.ai/api/v1/key` with its own
@@ -191,6 +193,12 @@ spending limit, remaining amount, and reset period when reported. Zero usage is
 valid; missing usage stays "Not reported". Authentication errors, invalid responses,
 timeouts, and API failures affect only that entry. Refreshes use the existing
 provider cache, 120 seconds by default, and concurrent refreshes share requests.
+The effective budget, which may apply at a workspace or guardrail scope, is shown
+separately when reported.
+
+API clients should read `openrouterKeys`: the provider-level `windows` now contains
+the first entry's four USD usage windows, not the previous `credits` window. It is
+empty if that entry fails, even when another succeeds.
 
 Daily periods start at midnight UTC, weekly periods run Monday through Sunday UTC,
 and monthly periods use UTC calendar months. These periods do not follow the chart

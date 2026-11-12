@@ -29,7 +29,9 @@ function loadEnvironmentFile(path: string): void {
     for (const line of contents.split(/\r?\n/)) {
       const match = line.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
       if (!match || process.env[match[1]] !== undefined) continue;
-      const value = match[2].replace(/\s+#.*$/, "").replace(/^(['"])(.*)\1$/, "$2");
+      const raw = match[2];
+      const quoted = /^(['"])(.*?)\1\s*(?:#.*)?$/.exec(raw);
+      const value = quoted ? quoted[2] : raw.replace(/\s+#.*$/, "");
       process.env[match[1]] = value;
     }
   } catch {

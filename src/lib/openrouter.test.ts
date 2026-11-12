@@ -72,6 +72,17 @@ test("preserves missing amounts as unknown and rejects malformed usage rather th
   for (const value of [null, {}, [], { data: null }, { data: [] }]) assert.equal(parseOpenRouterUsage(value), null);
 });
 
+test("reports sub-cent credit and BYOK usage and allowlisted effective budget fields", () => {
+  const result = parseOpenRouterUsage({ data: { usage: 0.004, byok_usage: 0.00001, limit: null,
+    effective_budget: { scope: "workspace", limit_usd: 50, remaining_usd: -0.2, guardrail_id: "PRIVATE_SECRET" } } })!;
+  assert.equal(result.windows[0].valueLabel, "<$0.01 spent");
+  assert.equal(result.byokWindows![0].valueLabel, "<$0.01 spent");
+  assert.deepEqual(result.effectiveBudget, { scope: "workspace", limitUsd: 50, remainingUsd: -0.2 });
+  assert.equal(result.spendingLimit, undefined);
+  assert.doesNotMatch(JSON.stringify(result), /PRIVATE_SECRET/);
+  assert.equal(parseOpenRouterUsage({ data: { usage: 0, effective_budget: { scope: "SECRET", limit_usd: 2 } } })!.effectiveBudget?.scope, "unknown");
+});
+
 test("handles null, zero, exhausted and unknown-period limits without inventing remaining balances", () => {
   for (const limit of [null, undefined, false, "20", -1]) {
     assert.equal(parseOpenRouterUsage({ data: { usage: 5, limit } })!.spendingLimit, undefined);
