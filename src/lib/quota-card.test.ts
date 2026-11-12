@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
-import { parseClaudeQuota, parseCodexQuota, parseCodexRenewalDate, parseOllamaBalance, parseOllamaCreditBalance } from "./providers.js";
+import { parseClaudeQuota, parseClaudeResetCredits, parseCodexQuota, parseCodexRenewalDate, parseOllamaBalance, parseOllamaCreditBalance } from "./providers.js";
 
 const app = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const icons = app.slice(app.indexOf("const usageSourceNames ="), app.indexOf("const HOT_USAGE_POLL_INTERVAL_MS"));
@@ -163,6 +163,23 @@ test("Claude cards label even one window and do not invent a balance", () => {
   assert.match(html, /12\.5%/);
   assert.match(html, /resets in/);
   assert.doesNotMatch(html, /No balance reported|quota-credit-balance|limit /);
+});
+
+test("Claude cards render available reset grants in the existing usage limit resets block", () => {
+  const quota = { windows: parseClaudeQuota({ five_hour: { utilization: 12.5 } }),
+    resetCredits: parseClaudeResetCredits({ cedar_ember: { eligible: true, grants: [
+      { id: "launch", label: "Launch <reset>", resets_left: 2, ends_at: "2026-11-17T07:59:00+00:00" },
+    ] } }, Date.parse("2026-11-12T00:00:00Z")) };
+  for (const stale of [false, true]) {
+    const html = renderClaude({ ...quota, stale }, stale ? "error" : "ok");
+    assert.match(html, /Usage limit resets/);
+    assert.match(html, /Launch &lt;reset&gt; \(2 resets remaining\)/);
+    assert.match(html, /quota-reset-expiry">Expires /);
+    assert.match(html, /Nov 17, 2026/);
+    assert.match(html, /12\.5%/);
+    assert.doesNotMatch(html, /<button|redeem|quota-credit-balance/);
+  }
+  for (const resetCredits of [undefined, []]) assert.doesNotMatch(renderClaude({ resetCredits }), /Usage limit resets/);
 });
 
 test("quota cards use 20px decorative icons for every provider, including Go", () => {

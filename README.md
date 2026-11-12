@@ -140,6 +140,7 @@ No machine-specific absolute paths or identifiers are stored in the application.
 - `CLAUDE_AUTH_PATH` (explicit Claude credential file)
 - `CLAUDE_CONFIG_DIR` (directory containing `.credentials.json`)
 - `CLAUDE_USER_AGENT` (defaults to `claude-code/2.1.69`)
+- `CLAUDE_RESET_USER_AGENT` (defaults to `claude-cli/2.1.280 (external, cli)` for reset grants; non-empty printable ASCII only)
 - `CONFIG_PATH` (defaults to `~/.config/quota-dashboard/config.json`)
 - `HOST` and `PORT` (server bind address and port)
 
@@ -191,11 +192,21 @@ Quota comes from the undocumented `https://api.anthropic.com/api/oauth/usage`
 endpoint using `anthropic-beta: oauth-2025-04-20`. Standard 5-hour, weekly, Sonnet,
 and Opus weekly windows appear when reported. Missing utilization remains unavailable,
 not zero. Window start dates are inferred from reset time and fixed duration.
-Scoped `limits[]`, monetary extra usage, browser cookies, billing, and reset credits
+Scoped `limits[]`, monetary extra usage, browser cookies, and billing
 are deferred until their schemas and units are verified.
 
-The default User-Agent version above comes from a reported compatibility test, not
-an authenticated test by this project. Override it with printable ASCII text if
+Unused limit resets appear in "Usage limit resets", ordered by expiry. A separate
+read-only request uses `?cedar_ember=1&skip_spend=1` and `CLAUDE_RESET_USER_AGENT`.
+It runs at most once per hour per credential identity, including forced refreshes,
+and honors longer `Retry-After` deadlines after HTTP 429. Checks wait until the
+normal quota request succeeds and has no active cooldown. Failures retain known,
+unexpired grants without changing quota windows or card status. Paused, exhausted,
+and expired grants are hidden; multiple resets show their remaining count.
+This cache is in memory and does not survive server restarts. The dashboard never
+redeems resets or calls the reset mutation endpoint.
+
+The default User-Agent versions above come from reported compatibility tests, not
+authenticated tests by this project. Override them with printable ASCII text if
 needed. The API and accepted client identities can change. This is not a published
 API contract or a guarantee against throttling or Cloudflare challenges. The
 dashboard does not rotate identities or bypass challenges.

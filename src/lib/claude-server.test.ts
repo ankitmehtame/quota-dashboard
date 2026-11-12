@@ -39,6 +39,12 @@ import { appendFileSync, readFileSync } from "node:fs";
 const control = () => JSON.parse(readFileSync(process.env.TEST_CONTROL_PATH, "utf8"));
 Date.now = () => control().now;
 globalThis.fetch = async (url, init) => {
+  if (String(url) === "https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1") {
+    if ((init.method ?? "GET") !== "GET") throw new Error("Unexpected mutation");
+    appendFileSync(process.env.TEST_CALLS_PATH, "grants\\n");
+    return Response.json({ cedar_ember: { eligible: true, grants: [{ id: "reset", label: "Full reset", resets_left: 1,
+      ends_at: new Date(control().now + 86400000).toISOString() }] } });
+  }
   if (String(url) !== "https://api.anthropic.com/api/oauth/usage") throw new Error("Unexpected upstream request");
   appendFileSync(process.env.TEST_CALLS_PATH, "request\\n");
   const { status, retryAfter } = control();
@@ -56,7 +62,7 @@ globalThis.fetch = async (url, init) => {
   await new Promise<void>((resolve) => socket.close(() => resolve()));
   const child = spawn(process.execPath, ["--import", preloadPath, fileURLToPath(new URL("../server.js", import.meta.url))], {
     env: { ...process.env, HOME: home, HOST: "127.0.0.1", PORT: String(port), CONFIG_PATH: configPath,
-      CLAUDE_OAUTH_TOKEN: "", CLAUDE_AUTH_PATH: credentialsPath, CLAUDE_USER_AGENT: "claude-code/test",
+      CLAUDE_OAUTH_TOKEN: "", CLAUDE_AUTH_PATH: credentialsPath, CLAUDE_USER_AGENT: "claude-code/test", CLAUDE_RESET_USER_AGENT: "claude-cli/test (external, cli)",
       CODEX_AUTH_PATH: join(root, "missing-codex.json"), OPENCODE_AUTH_PATH: join(root, "missing-opencode.json"),
       USAGE_DATA_DIR: join(root, "usage"), QUOTA_LOG_DIR: logs, MQTT_ENABLED: "false", USAGE_TIMEZONE: "UTC",
       TEST_CONTROL_PATH: controlPath, TEST_CALLS_PATH: callsPath },
@@ -65,7 +71,7 @@ globalThis.fetch = async (url, init) => {
   let output = "";
   child.stdout.on("data", (chunk: Buffer) => { output += chunk.toString(); });
   child.stderr.on("data", (chunk: Buffer) => { output += chunk.toString(); });
-  const calls = async () => { try { return (await readFile(callsPath, "utf8")).trim().split("\n").length; } catch { return 0; } };
+  const calls = async (kind = "request") => { try { return (await readFile(callsPath, "utf8")).trim().split("\n").filter((line) => line === kind).length; } catch { return 0; } };
   type ApiResponse = { serverNow: string; cache: { fetchedAt: string; expiresAt: string }; quotas: Record<string, ProviderResult>; quota: ProviderResult; verified: boolean };
   const request = async (path: string, method = "GET", body?: unknown): Promise<ApiResponse> => {
     const response = await fetch(`http://127.0.0.1:${port}${path}`, { method, ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }) });
@@ -84,6 +90,8 @@ globalThis.fetch = async (url, init) => {
       request("/api/v1/dashboard?refresh=1"), request("/api/v1/quotas?refresh=1"), request("/api/v1/providers/claude/test", "POST"),
     ]);
     assert.equal(await calls(), 1);
+    assert.equal(await calls("grants"), 1);
+    assert.equal(first.quotas.claude.resetCredits?.[0].title, "Full reset");
     assert.equal(first.quotas.claude.windows[0].usedPercent, 12.5);
     assert.equal(direct.quotas.claude.windows[0].usedPercent, 12.5);
     assert.equal(tested.verified, true);
@@ -99,11 +107,13 @@ globalThis.fetch = async (url, init) => {
     const failed = await request("/api/v1/providers/claude/test", "POST");
     assert.equal(failed.verified, false);
     assert.equal(failed.quota.stale, true);
+    assert.deepEqual(failed.quota.resetCredits, first.quotas.claude.resetCredits);
     assert.equal(failed.quota.fetchedAt, first.quotas.claude.fetchedAt);
     assert.equal(failed.quota.cooldownUntil, time + 600_000);
     const routes = await Promise.all([request("/api/v1/dashboard?refresh=1"), request("/api/v1/quotas?refresh=1"),
       request("/api/v1/widget-summary"), request("/api/v1/providers/claude/test", "POST")]);
     assert.equal(await calls(), 2);
+    assert.equal(await calls("grants"), 1);
     assert.equal(routes[0].quotas.claude.stale, true);
     assert.equal(routes[3].verified, false);
 
@@ -125,6 +135,7 @@ globalThis.fetch = async (url, init) => {
     const changed = await request("/api/v1/providers/claude/test", "POST");
     assert.equal(changed.quota.windows[0].usedPercent, 75);
     assert.equal(changed.verified, true);
+    assert.equal(await calls("grants"), 2);
     assert.equal((await request("/api/v1/dashboard")).quotas.claude.windows[0].usedPercent, 75);
     await control(503);
     const staleB = await request("/api/v1/providers/claude/test", "POST");
@@ -135,6 +146,8 @@ globalThis.fetch = async (url, init) => {
     assert.deepEqual((await request("/api/v1/dashboard")).quotas.claude.windows, []);
     const failedC = await request("/api/v1/providers/claude/test", "POST");
     assert.deepEqual(failedC.quota.windows, []);
+    assert.equal(failedC.quota.resetCredits, undefined);
+    assert.equal(await calls("grants"), 2);
     assert.deepEqual((await request("/api/v1/dashboard")).quotas.claude.windows, []);
     // Keep HTTP completion hooks reading the controls while the parent updates them.
     // These requests do not fetch quotas or depend on which complete snapshot they see.

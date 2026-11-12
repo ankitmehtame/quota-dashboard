@@ -1,11 +1,206 @@
-import test from "node:test";
+import test, { type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fetchClaude, parseClaudeQuota, parseRetryAfter, resolveClaudeCredentials } from "./providers.js";
+import { fetchClaude, parseClaudeQuota, parseClaudeResetCredits, parseRetryAfter, resolveClaudeCredentials } from "./providers.js";
 
 const now = Date.parse("2026-10-16T12:00:00Z");
+
+const resetGrant = { id: "full-reset", label: "One full limit reset", resets_left: 1, ends_at: "2026-12-10T22:00:00+00:00", paused: false, usable_now: true };
+const resetPayload = { cedar_ember: { eligible: true, grants: [resetGrant] } };
+
+function testUserAgents(t: TestContext) {
+  for (const key of ["CLAUDE_USER_AGENT", "CLAUDE_RESET_USER_AGENT"]) {
+    const original = process.env[key];
+    t.after(() => { if (original === undefined) delete process.env[key]; else process.env[key] = original; });
+  }
+  process.env.CLAUDE_USER_AGENT = "claude-code/test";
+  delete process.env.CLAUDE_RESET_USER_AGENT;
+}
+
+test("Claude reset grants normalize expiry, sort, and show remaining counts without requiring a current limit", () => {
+  assert.deepEqual(parseClaudeResetCredits({ cedar_ember: { eligible: true, exhausted: [], grants: [resetGrant,
+    { ...resetGrant, id: "launch", label: "Launch reset", resets_left: 2, ends_at: "2026-11-17T09:59:00.123456+02:00", usable_now: false, use_requires_limit: true },
+  ] } }, now), [
+    { id: "launch", title: "Launch reset (2 resets remaining)", description: null, expiresAt: "2026-11-17T07:59:00.123Z" },
+    { id: "full-reset", title: "One full limit reset", description: null, expiresAt: "2026-12-10T22:00:00.000Z" },
+  ]);
+});
+
+test("Claude reset grants reject malformed blocks and omit ineligible, exhausted, paused, and expired grants", () => {
+  for (const payload of [null, [], {}, { cedar_ember: null }, { cedar_ember: [] }, { cedar_ember: { eligible: true } },
+    { cedar_ember: { eligible: true, grants: {} } }]) assert.equal(parseClaudeResetCredits(payload, now), undefined);
+  assert.deepEqual(parseClaudeResetCredits({ cedar_ember: { eligible: false, ineligible_reason: "surface", grants: [resetGrant] } }, now), []);
+  assert.deepEqual(parseClaudeResetCredits({ cedar_ember: { eligible: true, grants: [] } }, now), []);
+  const invalid = [null, {}, { ...resetGrant, paused: true },
+    ...[0, -1, null, "1", 1.5, Infinity].map((resets_left) => ({ ...resetGrant, resets_left })),
+    ...[null, "invalid", "2026-02-30T00:00:00Z", "2026-10-16T12:00:00Z", "2026-10-15T12:00:00Z", "2026-12-10"].map((ends_at) => ({ ...resetGrant, ends_at })),
+    { ...resetGrant, id: "" }, { ...resetGrant, label: null }];
+  assert.deepEqual(parseClaudeResetCredits({ cedar_ember: { eligible: true, grants: invalid } }, now), []);
+});
+
+test("Claude reset checks are hourly per identity, share pending checks, and retain grants between checks", async (t) => {
+  let time = now;
+  t.mock.method(Date, "now", () => time);
+  testUserAgents(t);
+  process.env.CLAUDE_RESET_USER_AGENT = "claude-cli/test (external, cli)";
+  let usageCalls = 0;
+  let resetCalls = 0;
+  t.mock.method(globalThis, "fetch", async (url: string | URL | Request, init?: RequestInit) => {
+    const grants = String(url).includes("?");
+    assert.equal(String(url), `https://api.anthropic.com/api/oauth/usage${grants ? "?cedar_ember=1&skip_spend=1" : ""}`);
+    assert.equal(init?.method ?? "GET", "GET");
+    assert.equal(init?.redirect, "error");
+    assert.ok(init?.signal);
+    const headers = new Headers(init?.headers);
+    assert.equal(headers.get("authorization"), "Bearer FAKE_RESET_TOKEN");
+    assert.equal(headers.get("anthropic-beta"), "oauth-2025-04-20");
+    assert.equal(headers.get("accept"), "application/json");
+    assert.equal(headers.get("user-agent"), grants ? "claude-cli/test (external, cli)" : "claude-code/test");
+    if (grants) resetCalls++; else usageCalls++;
+    return Response.json(grants ? resetPayload : { five_hour: { utilization: usageCalls } });
+  });
+  const credentials = { configured: true, identity: "hourly-account-a", accessToken: "FAKE_RESET_TOKEN" };
+  const first = await fetchClaude(credentials);
+  assert.equal(first.resetCredits?.length, 1);
+  assert.doesNotMatch(JSON.stringify(first), /FAKE_RESET_TOKEN|hourly-account/);
+  time += 3_599_999;
+  assert.deepEqual((await fetchClaude(credentials)).resetCredits, first.resetCredits);
+  assert.equal(resetCalls, 1);
+  time++;
+  const concurrent = await Promise.all([fetchClaude(credentials), fetchClaude(credentials)]);
+  assert.equal(resetCalls, 2);
+  assert.deepEqual(concurrent[0].resetCredits, concurrent[1].resetCredits);
+  await fetchClaude({ ...credentials, identity: "hourly-account-b" });
+  assert.equal(resetCalls, 3);
+  await fetchClaude(credentials);
+  assert.equal(resetCalls, 3);
+  assert.equal(usageCalls, 6);
+  time = Date.parse(resetGrant.ends_at);
+  assert.deepEqual((await fetchClaude(credentials)).resetCredits, []);
+});
+
+test("Claude reset failures keep known grants and successful windows until the next hourly check", async (t) => {
+  let time = now;
+  t.mock.method(Date, "now", () => time);
+  testUserAgents(t);
+  let failure: string | undefined;
+  let resetCalls = 0;
+  let percent = 10;
+  t.mock.method(globalThis, "fetch", async (url: string | URL | Request) => {
+    if (!String(url).includes("?")) return Response.json({ five_hour: { utilization: percent }, seven_day: { utilization: 20 } });
+    resetCalls++;
+    if (failure === "network") throw new Error("FAKE_TOKEN_AND_REQUEST_ID");
+    if (failure === "json") return new Response("bad JSON");
+    if (failure === "body") {
+      const response = Response.json({});
+      Object.defineProperty(response, "json", { value: async () => { throw new TypeError("FAKE_TOKEN_AND_REQUEST_ID"); } });
+      return response;
+    }
+    if (failure === "null") return Response.json({ cedar_ember: null });
+    if (failure === "schema") return Response.json({ cedar_ember: { eligible: true } });
+    if (failure === "ineligible") return Response.json({ cedar_ember: { eligible: false, ineligible_reason: "surface", grants: [] } });
+    if (failure === "empty") return Response.json({ cedar_ember: { eligible: true, grants: [] } });
+    if (failure) return new Response("FAKE_TOKEN_AND_REQUEST_ID", { status: Number(failure) });
+    return Response.json(resetPayload);
+  });
+  const credentials = { configured: true, identity: "failure-isolation", accessToken: "FAKE_TOKEN" };
+  const first = await fetchClaude(credentials);
+  for (const kind of ["network", "500", "401", "403", "400", "json", "body", "null", "schema"]) {
+    failure = kind;
+    time += 3_600_000;
+    percent++;
+    const result = await fetchClaude(credentials);
+    assert.equal(result.status, "ok", kind);
+    assert.equal(result.error, null);
+    assert.equal(result.errorKind, undefined);
+    assert.equal(result.stale, undefined);
+    assert.deepEqual(result.windows.map((w) => w.usedPercent), [percent, 20]);
+    assert.deepEqual(result.resetCredits, first.resetCredits);
+    assert.doesNotMatch(JSON.stringify(result), /FAKE_TOKEN|REQUEST_ID|failure-isolation/);
+    const before = resetCalls;
+    assert.deepEqual((await fetchClaude(credentials)).resetCredits, first.resetCredits);
+    assert.equal(resetCalls, before);
+  }
+  for (const kind of ["ineligible", undefined, "empty"]) {
+    failure = kind;
+    time += 3_600_000;
+    const credits = (await fetchClaude(credentials)).resetCredits;
+    assert.deepEqual(credits, kind ? [] : first.resetCredits);
+    const before = resetCalls;
+    assert.deepEqual((await fetchClaude(credentials)).resetCredits, credits);
+    assert.equal(resetCalls, before);
+  }
+});
+
+test("Claude reset 429 honors Retry-After without changing card status or retrying every refresh", async (t) => {
+  let time = now;
+  t.mock.method(Date, "now", () => time);
+  testUserAgents(t);
+  let resetCalls = 0;
+  let retryAfter: string | undefined;
+  t.mock.method(globalThis, "fetch", async (url: string | URL | Request) => {
+    if (!String(url).includes("?")) return Response.json({ five_hour: { utilization: 15 } });
+    resetCalls++;
+    return resetCalls === 1 ? Response.json(resetPayload) : new Response("", { status: 429, headers: retryAfter ? { "retry-after": retryAfter } : {} });
+  });
+  const credentials = { configured: true, identity: "reset-rate-limit", accessToken: "FAKE_TOKEN" };
+  const first = await fetchClaude(credentials);
+  for (const header of ["7200", new Date(now + 10 * 3_600_000).toUTCString(), "invalid", undefined]) {
+    time += 3_600_000;
+    retryAfter = header;
+    const before = resetCalls;
+    const result = await fetchClaude(credentials);
+    assert.equal(result.status, "ok");
+    assert.deepEqual(result.resetCredits, first.resetCredits);
+    assert.equal(resetCalls, before + 1);
+    const deadline = Math.max(time + 3_600_000, parseRetryAfter(header ?? null, time) ?? 0);
+    time = deadline - 1;
+    await fetchClaude(credentials);
+    assert.equal(resetCalls, before + 1);
+    time = deadline;
+    await fetchClaude(credentials);
+    assert.equal(resetCalls, before + 2);
+    time = Math.max(time + 3_600_000, parseRetryAfter(header ?? null, time) ?? 0);
+  }
+});
+
+test("Claude reset checks skip usage errors and cooldowns, and validate the separate user agent", async (t) => {
+  t.mock.method(Date, "now", () => now);
+  testUserAgents(t);
+  let status = 200;
+  let retryAfter: string | undefined;
+  let malformed = false;
+  let resetCalls = 0;
+  t.mock.method(globalThis, "fetch", async (url: string | URL | Request, init?: RequestInit) => {
+    if (String(url).includes("?")) {
+      resetCalls++;
+      assert.equal(new Headers(init?.headers).get("user-agent"), "claude-cli/2.1.280 (external, cli)");
+      return Response.json(resetPayload);
+    }
+    return Response.json(malformed ? {} : { five_hour: { utilization: 0 } }, { status, headers: retryAfter ? { "retry-after": retryAfter } : {} });
+  });
+  const credentials = { configured: true, identity: "skip-usage-errors", accessToken: "FAKE_TOKEN" };
+  for (const code of [429, 500, 401]) {
+    status = code;
+    assert.equal((await fetchClaude(credentials)).status, "error");
+  }
+  status = 200; malformed = true;
+  assert.equal((await fetchClaude(credentials)).status, "error");
+  malformed = false; retryAfter = "7200";
+  assert.equal((await fetchClaude(credentials)).status, "ok");
+  assert.equal(resetCalls, 0);
+  retryAfter = undefined;
+  for (const userAgent of ["", " ", "bad\nagent", "é"]) {
+    process.env.CLAUDE_RESET_USER_AGENT = userAgent;
+    assert.equal((await fetchClaude({ ...credentials, identity: `invalid-reset-agent-${userAgent}` })).status, "ok");
+  }
+  assert.equal(resetCalls, 0);
+  process.env.CLAUDE_RESET_USER_AGENT = "claude-cli/2.1.280 (external, cli)";
+  assert.equal((await fetchClaude(credentials)).resetCredits?.length, 1);
+  assert.equal(resetCalls, 1);
+});
 
 test("Claude windows preserve fractions, real zero, model order, durations, and microsecond reset times", () => {
   const windows = parseClaudeQuota({ seven_day_opus: { utilization: 101 }, seven_day_sonnet: { utilization: 7.25 },
