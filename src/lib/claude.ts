@@ -101,7 +101,8 @@ export function parseClaudeResetCredits(payload: unknown, now = Date.now()): Rat
 // retryUntil is the server's Retry-After from the grants request; the penalty covers the whole account.
 // Grants are only served to the token identity that fetched them, so a rotated or switched token never shows another account's grants.
 type ResetCreditState = { nextCheck: number; retryUntil?: number; credits?: RateLimitResetCredit[]; creditsIdentity?: string; checkedIdentity?: string; earlyRechecked?: boolean;
-  lastOk?: { identity: string; result: ProviderResult }; pending?: Promise<void> };
+  // Bumped whenever a failure clears lastOk, so an in-flight success that started earlier cannot write itself back.
+  generation: number; lastOk?: { identity: string; result: ProviderResult }; pending?: Promise<void> };
 const resetCreditStates = new Map<string, ResetCreditState>();
 const resetCheckInterval = 3_600_000;
 // How long the card's required result may wait for the optional grants check.
@@ -113,7 +114,7 @@ function resetCreditState(auth: ClaudeCredentials): ResetCreditState {
   // Keyed by account, not token hash, so a refreshed OAuth token cannot bypass the throttle or cooldown.
   const key = auth.account ?? auth.identity;
   let state = resetCreditStates.get(key);
-  if (!state) { state = { nextCheck: 0 }; resetCreditStates.set(key, state); }
+  if (!state) { state = { nextCheck: 0, generation: 0 }; resetCreditStates.set(key, state); }
   return state;
 }
 
@@ -181,7 +182,7 @@ export async function fetchClaude(credentials?: ClaudeCredentials): Promise<Prov
   const fail = (errorKind: ProviderResult["errorKind"], error: string, cooldownUntil?: number): ProviderResult => {
     // A newer usage failure supersedes the stored good card, so a late grants 429 can never replay it.
     const stored = resetCreditStates.get(auth.account ?? auth.identity);
-    if (stored) stored.lastOk = undefined;
+    if (stored) { stored.lastOk = undefined; stored.generation++; }
     return failure(errorKind, error, cooldownUntil);
   };
   const failure = (errorKind: ProviderResult["errorKind"], error: string, cooldownUntil?: number): ProviderResult => ({
@@ -192,6 +193,7 @@ export async function fetchClaude(credentials?: ClaudeCredentials): Promise<Prov
   const userAgent = process.env.CLAUDE_USER_AGENT ?? "claude-code/2.1.69";
   if (!userAgent.trim() || !/^[\x20-\x7e]+$/.test(userAgent)) return fail("configuration", "CLAUDE_USER_AGENT must contain non-empty printable ASCII text");
   const resetState = resetCreditState(auth);
+  const generation = resetState.generation;
   const resetRetry = resetState.retryUntil;
   // A grants 429 arriving after the last card result still pauses plain usage requests for the whole account.
   if (resetRetry !== undefined && resetRetry > Date.now()) {
@@ -226,6 +228,7 @@ export async function fetchClaude(credentials?: ClaudeCredentials): Promise<Prov
   const deadline = Math.max(cooldown ?? 0, reset.cooldownUntil ?? 0);
   const result: ProviderResult = { configured: true, status: "ok", error: null, windows, resetCredits: reset.credits, fetchedAt: new Date().toISOString(),
     ...(deadline > Date.now() ? { cooldownUntil: deadline } : {}) };
-  resetState.lastOk = { identity: auth.identity, result: { ...result, cooldownUntil: undefined } };
+  // A failure that arrived while this request was in flight supersedes it, so only a still-current success becomes the replay candidate.
+  if (resetState.generation === generation) resetState.lastOk = { identity: auth.identity, result: { ...result, cooldownUntil: undefined } };
   return result;
 }

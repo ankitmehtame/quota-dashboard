@@ -666,3 +666,36 @@ test("a late grants 429 never resurrects a good card after a credential metadata
   assert.equal(paused.status, "error");
   assert.deepEqual(paused.windows, []);
 });
+
+test("a successful fetch still in flight cannot restore the replay card after a metadata failure", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let time = now;
+  t.mock.method(Date, "now", () => time);
+  testUserAgents(t);
+  let release: (response: Response) => void = () => {};
+  t.mock.method(globalThis, "fetch", (url: string | URL | Request) => {
+    if (!String(url).includes("?")) return Promise.resolve(Response.json({ five_hour: { utilization: 3 } }));
+    return new Promise<Response>((resolve) => { release = resolve; });
+  });
+  const dir = await mkdtemp(join(tmpdir(), "claude-inflight-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, ".credentials.json");
+  const env = { CLAUDE_AUTH_PATH: path } as NodeJS.ProcessEnv;
+  const valid = JSON.stringify({ claudeAiOauth: { accessToken: "FAKE_TOKEN", scopes: ["user:profile"] } });
+  await writeFile(path, valid);
+  // The successful usage request is still waiting on the grants response when the metadata failure lands.
+  const pending = fetchClaude(await resolveClaudeCredentials(env, time));
+  for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
+  await writeFile(path, JSON.stringify({ claudeAiOauth: { accessToken: "FAKE_TOKEN", scopes: [42] } }));
+  assert.equal((await fetchClaude(await resolveClaudeCredentials(env, time))).status, "error");
+  t.mock.timers.tick(3_000);
+  assert.equal((await pending).status, "ok");
+  await writeFile(path, valid);
+  release(new Response("", { status: 429, headers: { "retry-after": "7200" } }));
+  for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
+  time += 60_000;
+  const paused = await fetchClaude(await resolveClaudeCredentials(env, time));
+  assert.equal(paused.status, "error");
+  assert.equal(paused.errorKind, "rate_limit");
+  assert.deepEqual(paused.windows, []);
+});
