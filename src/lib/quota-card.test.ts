@@ -3,10 +3,44 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
 import { parseClaudeQuota, parseClaudeResetCredits, parseCodexQuota, parseCodexRenewalDate, parseOllamaBalance, parseOllamaCreditBalance } from "./providers.js";
+import { parseOpenRouterUsage } from "./openrouter.js";
 
 const app = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const icons = app.slice(app.indexOf("const usageSourceNames ="), app.indexOf("const HOT_USAGE_POLL_INTERVAL_MS"));
 const renderer = app.slice(app.indexOf("function formatTokens("), app.indexOf("function renderQuotas("));
+
+test("OpenRouter renders labeled independent cards, UTC USD usage, limits and separate BYOK with escaped labels", () => {
+  const usage = parseOpenRouterUsage({ data: { usage: 100, usage_daily: 0, usage_weekly: 4, usage_monthly: 8,
+    limit: 20, limit_remaining: 9, limit_reset: "monthly", include_byok_in_limit: true, byok_usage: 10 } });
+  const html = runInNewContext(`${icons}\n${renderer}\nquotaCard("openrouter", provider, quota);`, {
+    provider: { id: "openrouter", shortName: "OpenRouter", description: "Per-key usage", configured: true, status: "partial" },
+    quota: { openrouterKeys: [
+      { id: "key-1", label: "Home <Assistant>", configured: true, status: "ok", ...usage },
+      { id: "key-2", label: "Automations", configured: true, status: "error", windows: [], error: "OpenRouter authentication failed (HTTP 401)" },
+      { id: "key-3", label: "Key 3", configured: false, status: "error", windows: [], error: "OPENROUTER_KEY_3_LABEL is missing or empty" },
+    ] },
+    state: { hour12: false },
+    money: (value: number) => `$${value.toFixed(2)}`,
+    escapeHtml: (value: unknown) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"),
+  });
+  assert.equal([...html.matchAll(/<article/g)].length, 3);
+  for (const text of ["Home &lt;Assistant&gt;", "OpenRouter · Automations", "connected", "error", "total", "daily (UTC)", "weekly (UTC)", "monthly (UTC)",
+    "$100.00 spent", "$0.00 spent", "$4.00 spent", "$8.00 spent", "$20.00", "$9.00 remaining", "includes BYOK", "BYOK usage · separate from credits", "$10.00 spent", "HTTP 401", "OPENROUTER_KEY_3_LABEL is missing"]) {
+    assert.ok(html.includes(text), `Missing ${text}`);
+  }
+  assert.doesNotMatch(html, /Home <Assistant>|500%|No balance reported|type="password"|type="text"/);
+  assert.equal([...html.matchAll(/\$100\.00 spent/g)].length, 1);
+});
+
+test("OpenRouter shows unavailable periods and no reported limit without invented zeros or BYOK totals", () => {
+  const html = runInNewContext(`${icons}\n${renderer}\nquotaCard("openrouter", provider, quota);`, {
+    provider: { id: "openrouter", shortName: "OpenRouter", description: "Per-key usage", configured: true, status: "ok" },
+    quota: parseOpenRouterUsage({ data: { usage: 1 } }), state: { hour12: false }, escapeHtml: String,
+  });
+  assert.equal([...html.matchAll(/Not reported/g)].length, 3);
+  assert.match(html, /No key spending limit reported/);
+  assert.doesNotMatch(html, /BYOK usage|\$0\.00|class="bar"/);
+});
 
 function renderOllama(payload: unknown): string {
   return runInNewContext(`${icons}\n${renderer}\nquotaCard("ollama", provider, quota);`, {

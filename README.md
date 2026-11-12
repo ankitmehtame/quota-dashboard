@@ -130,6 +130,7 @@ No machine-specific absolute paths or identifiers are stored in the application.
 - `MQTT_STALE_AFTER_SECONDS` (defaults to `900`)
 - `MQTT_MAX_PAYLOAD_BYTES` (defaults to 32 MiB)
 - `OPENROUTER_API_KEY`
+- `OPENROUTER_KEY_<number>_LABEL` and `OPENROUTER_KEY_<number>` (multiple labeled OpenRouter keys)
 - `OLLAMA_API_KEY` (reserved for Ollama Cloud API requests)
 - `OPENCODE_GO_WORKSPACE_ID`
 - `OPENCODE_GO_AUTH_COOKIE`
@@ -153,6 +154,56 @@ date. Elapsed time uses the API's actual billing-period dates. A balance summary
 below the quota windows shows total available credits with an included/purchased
 breakdown, including zero purchased credits. Purchased credits do not affect the monthly percentage.
 There is no fallback to `/api/usage` or its old limit response format.
+
+### OpenRouter per-key usage
+
+Keep credentials server-side in `~/.config/quota-dashboard/.env`, owned by the
+account running the dashboard. The dashboard loads this file at startup; restart
+the service after editing it. Existing environment variables take precedence.
+
+```dotenv
+OPENROUTER_KEY_1_LABEL=Home Assistant
+OPENROUTER_KEY_1=sk-or-v1-replace-me
+OPENROUTER_KEY_2_LABEL=Other automations
+OPENROUTER_KEY_2=sk-or-v1-replace-me-too
+```
+
+Use mode `0700` for the configuration directory and `0600` for the file. Run these
+as the service account, and do not commit the file:
+
+```sh
+chmod 700 ~/.config/quota-dashboard
+chmod 600 ~/.config/quota-dashboard/.env
+```
+
+Numbered entries need both a non-empty label and key. Numbers may have gaps.
+Incomplete pairs display a configuration error without blocking valid entries.
+`OPENROUTER_API_KEY` remains a separate entry labeled "Default", even alongside
+numbered keys. When it is absent or empty, the existing OpenCode `openrouter`
+credential remains the default fallback, read from `OPENCODE_AUTH_PATH` or
+`~/.local/share/opencode/auth.json`. No credentials can be entered, edited, or
+viewed in the browser.
+
+Each entry independently calls `GET https://openrouter.ai/api/v1/key` with its own
+key. No management key or account-wide credits endpoint is needed. Each card shows
+total, daily, weekly, and monthly OpenRouter credit usage in USD, plus the key's
+spending limit, remaining amount, and reset period when reported. Zero usage is
+valid; missing usage stays "Not reported". Authentication errors, invalid responses,
+timeouts, and API failures affect only that entry. Refreshes use the existing
+provider cache, 120 seconds by default, and concurrent refreshes share requests.
+
+Daily periods start at midnight UTC, weekly periods run Monday through Sunday UTC,
+and monthly periods use UTC calendar months. These periods do not follow the chart
+date selector or `USAGE_TIMEZONE`. BYOK usage appears separately when reported and
+is not added to credit usage. Limits may include BYOK, as indicated on the card.
+Account-wide balances are not per-key limits and are not shown here.
+
+Usage belongs to the API key, not to an application or machine. A shared key reports
+the combined usage of all its applications. Repeating a key under multiple labels
+shows the same usage more than once. These snapshots are separate from ccusage
+charts and totals to avoid double-counting; they do not create historical records.
+API responses include only labels, non-secret entry IDs, usage, limits, and status,
+never keys or OpenRouter's potentially sensitive response labels or raw errors.
 
 ### Claude subscription quota
 
