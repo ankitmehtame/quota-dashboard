@@ -19,7 +19,7 @@ test("server loads private OpenRouter .env pairs, shares refreshes across routes
   await mkdir(configDirectory, { recursive: true, mode: 0o700 });
   await writeFile(envPath, [
     "OPENROUTER_API_KEY=DOTENV_DEFAULT_SECRET",
-    "OPENROUTER_KEY_2_LABEL='Home Assistant'", "OPENROUTER_KEY_2=VALID_KEY_SECRET",
+    "OPENROUTER_KEY_2_LABEL='Home Assistant #2' # comment", "OPENROUTER_KEY_2=VALID_KEY_SECRET",
     "OPENROUTER_KEY_7_LABEL=Broken automation", "OPENROUTER_KEY_7=INVALID_KEY_SECRET",
     "OPENROUTER_KEY_10_LABEL=Missing key", "OPENROUTER_KEY_11=UNLABELED_KEY_SECRET",
   ].join("\n"), { mode: 0o600 });
@@ -88,7 +88,7 @@ globalThis.fetch = async (url, init) => {
     for (const quota of [dashboard.quotas.openrouter, quotas.quotas.openrouter, tested.quota,
       (await request("/api/v1/widget-summary")).providers.openrouter]) {
       assert.equal(quota.status, "partial");
-      assert.deepEqual(quota.openrouterKeys?.map((entry) => entry.label), ["Default", "Home Assistant", "Broken automation", "Missing key", "Key 11"]);
+      assert.deepEqual(quota.openrouterKeys?.map((entry) => entry.label), ["Default", "Home Assistant #2", "Broken automation", "Missing key", "Key 11"]);
       assert.deepEqual(quota.openrouterKeys?.map((entry) => entry.status), ["ok", "ok", "error", "error", "error"]);
       assert.equal(quota.openrouterKeys![1].windows[0].usedValue, 12);
       assert.equal(quota.openrouterKeys![1].windows[1].usedValue, 0);

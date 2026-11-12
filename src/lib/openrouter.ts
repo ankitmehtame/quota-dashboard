@@ -44,11 +44,11 @@ export async function resolveOpenRouterKeys(env: NodeJS.ProcessEnv = process.env
 function usageWindows(data: JsonObject, prefix = ""): QuotaWindow[] {
   return [["total", "usage"], ["daily (UTC)", "usage_daily"], ["weekly (UTC)", "usage_weekly"], ["monthly (UTC)", "usage_monthly"]].map(([name, field]) => {
     const used = amount(data[`${prefix}${field}`]);
-    return usageWindow({ name, usedValue: used, unit: "USD", valueLabel: used === null ? "Not reported" : `${formatMoney(used)} spent` });
+    return usageWindow({ name, usedValue: used, unit: "USD", valueLabel: used === null ? "Not reported" : `${used > 0 && used < 0.01 ? "<$0.01" : formatMoney(used)} spent` });
   });
 }
 
-export function parseOpenRouterUsage(payload: unknown): Pick<OpenRouterKeyResult, "windows" | "byokWindows" | "spendingLimit"> | null {
+export function parseOpenRouterUsage(payload: unknown): Pick<OpenRouterKeyResult, "windows" | "byokWindows" | "spendingLimit" | "effectiveBudget"> | null {
   const data = object(object(payload).data);
   const windows = usageWindows(data);
   if (!windows.some((window) => window.usedValue !== null)) return null;
@@ -57,11 +57,17 @@ export function parseOpenRouterUsage(payload: unknown): Pick<OpenRouterKeyResult
   // Use reported remaining credit, not lifetime usage, for resettable or BYOK-inclusive limits.
   const remaining = typeof data.limit_remaining === "number" && Number.isFinite(data.limit_remaining) ? data.limit_remaining : null;
   const byokWindows = usageWindows(data, "byok_");
+  const budget = object(data.effective_budget);
+  const budgetLimit = amount(budget.limit_usd);
+  const scopes = ["workspace_default_member", "workspace_default_key", "member", "api_key", "workspace", "key_limit"];
+  const scope = typeof budget.scope === "string" && scopes.includes(budget.scope) ? budget.scope : "unknown";
+  const budgetRemaining = typeof budget.remaining_usd === "number" && Number.isFinite(budget.remaining_usd) ? budget.remaining_usd : null;
   return {
     windows,
     ...(byokWindows.some((window) => window.usedValue !== null) ? { byokWindows } : {}),
     ...(limit !== null ? { spendingLimit: { limitUsd: limit, remainingUsd: remaining, reset,
       includesByok: typeof data.include_byok_in_limit === "boolean" ? data.include_byok_in_limit : null } } : {}),
+    ...(budgetLimit !== null ? { effectiveBudget: { scope, limitUsd: budgetLimit, remainingUsd: budgetRemaining } } : {}),
   };
 }
 
@@ -96,7 +102,7 @@ export async function fetchOpenRouter(): Promise<ProviderResult> {
     status: successes === openrouterKeys.length && successes > 0 ? "ok" : successes > 0 ? "partial" : "error",
     error: !entries.length ? "OpenRouter API key is not configured" : successes < entries.length ? "One or more OpenRouter keys need attention" : null,
     fetchedAt: new Date().toISOString(),
-    // Keep the single-key window field for existing API clients. Never sum overlapping periods or keys.
+    // Expose the first entry's windows without summing overlapping periods or keys.
     windows: openrouterKeys[0]?.windows ?? [],
     openrouterKeys,
   };

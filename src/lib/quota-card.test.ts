@@ -42,6 +42,19 @@ test("OpenRouter shows unavailable periods and no reported limit without invente
   assert.doesNotMatch(html, /BYOK usage|\$0\.00|class="bar"/);
 });
 
+test("OpenRouter renders effective budget and sub-cent credit and BYOK usage", () => {
+  const html = runInNewContext(`${icons}\n${renderer}\nquotaCard("openrouter", provider, quota);`, {
+    provider: { id: "openrouter", shortName: "OpenRouter", description: "Per-key usage", configured: true, status: "ok" },
+    quota: parseOpenRouterUsage({ data: { usage: 0.004, byok_usage: 0.001, limit: null,
+      effective_budget: { scope: "member", limit_usd: 50, remaining_usd: 0 } } }),
+    state: { hour12: false }, money: (value: number) => `$${value.toFixed(2)}`, escapeHtml: String,
+  });
+  assert.equal([...html.matchAll(/<\$0\.01 spent/g)].length, 2);
+  assert.match(html, /Effective budget/);
+  assert.match(html, /member · \$50\.00 · \$0\.00 remaining/);
+  assert.match(html, /No key spending limit reported/);
+});
+
 function renderOllama(payload: unknown): string {
   return runInNewContext(`${icons}\n${renderer}\nquotaCard("ollama", provider, quota);`, {
     provider: { id: "ollama", shortName: "Ollama", description: "Monthly cloud credits and balance", accent: "orange", configured: true, status: "ok" },

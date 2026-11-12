@@ -51,6 +51,7 @@ export type OpenRouterKeyResult = Pick<ProviderResult, "configured" | "status" |
   label: string;
   byokWindows?: QuotaWindow[];
   spendingLimit?: { limitUsd: number; remainingUsd: number | null; reset: "daily" | "weekly" | "monthly" | "unknown" | null; includesByok: boolean | null };
+  effectiveBudget?: { scope: string; limitUsd: number; remainingUsd: number | null };
 };
 
 export type ProviderConfig = { enabled: boolean };
