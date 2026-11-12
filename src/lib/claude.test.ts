@@ -633,3 +633,36 @@ test("Claude requests use OAuth headers and safe structured failures without exp
   assert.equal((await fetchClaude({ configured: false, identity: "invalid", error: "Missing credentials", errorKind: "configuration" })).errorKind, "configuration");
   assert.equal(calls, before);
 });
+
+test("a late grants 429 never resurrects a good card after a credential metadata failure", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let time = now;
+  t.mock.method(Date, "now", () => time);
+  testUserAgents(t);
+  let release: (response: Response) => void = () => {};
+  t.mock.method(globalThis, "fetch", (url: string | URL | Request) => {
+    if (!String(url).includes("?")) return Promise.resolve(Response.json({ five_hour: { utilization: 3 } }));
+    return new Promise<Response>((resolve) => { release = resolve; });
+  });
+  const dir = await mkdtemp(join(tmpdir(), "claude-meta-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, ".credentials.json");
+  const env = { CLAUDE_AUTH_PATH: path } as NodeJS.ProcessEnv;
+  await writeFile(path, JSON.stringify({ claudeAiOauth: { accessToken: "FAKE_TOKEN", scopes: ["user:profile"] } }));
+  const pending = fetchClaude(await resolveClaudeCredentials(env, time));
+  for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
+  t.mock.timers.tick(3_000);
+  assert.equal((await pending).status, "ok");
+  // Credential metadata now fails before any usage request, and only afterwards does the slow grants request return 429.
+  time += 60_000;
+  await writeFile(path, JSON.stringify({ claudeAiOauth: { accessToken: "FAKE_TOKEN", scopes: [42] } }));
+  const invalid = await fetchClaude(await resolveClaudeCredentials(env, time));
+  assert.equal(invalid.status, "error");
+  release(new Response("", { status: 429, headers: { "retry-after": "7200" } }));
+  for (let i = 0; i < 10; i++) await new Promise((resolve) => setImmediate(resolve));
+  time += 60_000;
+  await writeFile(path, JSON.stringify({ claudeAiOauth: { accessToken: "FAKE_TOKEN", scopes: ["user:profile"] } }));
+  const paused = await fetchClaude(await resolveClaudeCredentials(env, time));
+  assert.equal(paused.status, "error");
+  assert.deepEqual(paused.windows, []);
+});
