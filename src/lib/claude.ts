@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { type ProviderResult, type QuotaWindow, usageWindow } from "./core.js";
+import { type ProviderResult, type QuotaWindow, type RateLimitResetCredit, usageWindow } from "./core.js";
 
 type ObjectValue = Record<string, unknown>;
 const object = (value: unknown): ObjectValue => value !== null && typeof value === "object" && !Array.isArray(value) ? value as ObjectValue : {};
@@ -82,6 +82,50 @@ export function parseClaudeQuota(payload: unknown): QuotaWindow[] {
   });
 }
 
+export function parseClaudeResetCredits(payload: unknown, now = Date.now()): RateLimitResetCredit[] | undefined {
+  const block = object(object(payload).cedar_ember);
+  if (block.eligible === false && Array.isArray(block.grants)) return [];
+  if (block.eligible !== true || !Array.isArray(block.grants)) return undefined;
+  return block.grants.flatMap((entry) => {
+    const grant = object(entry);
+    const expiry = isoTimestamp(grant.ends_at);
+    if (typeof grant.id !== "string" || !grant.id.trim() || typeof grant.label !== "string" || !grant.label.trim() ||
+      typeof grant.resets_left !== "number" || !Number.isSafeInteger(grant.resets_left) || grant.resets_left <= 0 || grant.paused === true ||
+      !Number.isFinite(expiry) || expiry <= now) return [];
+    return [{ id: grant.id, title: grant.resets_left > 1 ? `${grant.label} (${grant.resets_left} resets remaining)` : grant.label,
+      description: null, expiresAt: new Date(expiry).toISOString() }];
+  }).sort((a, b) => a.expiresAt.localeCompare(b.expiresAt));
+}
+
+type ResetCreditState = { nextCheck: number; credits?: RateLimitResetCredit[]; pending?: Promise<void> };
+const resetCreditStates = new Map<string, ResetCreditState>();
+const resetCheckInterval = 3_600_000;
+
+async function claudeResetCredits(auth: ClaudeCredentials, skip: boolean): Promise<RateLimitResetCredit[] | undefined> {
+  let state = resetCreditStates.get(auth.identity);
+  if (!state) { state = { nextCheck: 0 }; resetCreditStates.set(auth.identity, state); }
+  if (!skip && Date.now() >= state.nextCheck && !state.pending) {
+    const current = state;
+    current.nextCheck = Date.now() + resetCheckInterval;
+    current.pending = (async () => {
+      const userAgent = process.env.CLAUDE_RESET_USER_AGENT ?? "claude-cli/2.1.280 (external, cli)";
+      if (!userAgent.trim() || !/^[\x20-\x7e]+$/.test(userAgent)) return;
+      try {
+        const response = await fetch("https://api.anthropic.com/api/oauth/usage?cedar_ember=1&skip_spend=1", {
+          headers: { Authorization: `Bearer ${auth.accessToken}`, "anthropic-beta": "oauth-2025-04-20", Accept: "application/json", "User-Agent": userAgent },
+          redirect: "error", signal: AbortSignal.timeout(15_000),
+        });
+        if (response.status === 429) current.nextCheck = Math.max(current.nextCheck, parseRetryAfter(response.headers.get("retry-after")) ?? 0);
+        if (response.status !== 200) return;
+        const credits = parseClaudeResetCredits(await response.json());
+        if (credits !== undefined) current.credits = credits;
+      } catch { /* Reset grants are optional; keep the last answer without changing quota status. */ }
+    })().finally(() => { current.pending = undefined; });
+  }
+  if (!skip) await state.pending;
+  return state.credits?.filter((credit) => Date.parse(credit.expiresAt!) > Date.now());
+}
+
 // Accept HTTP delay-seconds or IMF-fixdate, never JavaScript's loose numeric/date grammar.
 export function parseRetryAfter(value: string | null, now = Date.now()): number | undefined {
   if (value === null) return undefined;
@@ -130,6 +174,7 @@ export async function fetchClaude(credentials?: ClaudeCredentials): Promise<Prov
   }
   const windows = parseClaudeQuota(payload);
   if (!windows.some((window) => window.usedPercent !== null)) return fail("response", "Claude quota response did not include supported utilization measurements", cooldown);
-  return { configured: true, status: "ok", error: null, windows, fetchedAt: new Date().toISOString(),
+  const resetCredits = await claudeResetCredits(auth, cooldown !== undefined && cooldown > Date.now());
+  return { configured: true, status: "ok", error: null, windows, resetCredits, fetchedAt: new Date().toISOString(),
     ...(cooldown !== undefined && cooldown > Date.now() ? { cooldownUntil: cooldown } : {}) };
 }

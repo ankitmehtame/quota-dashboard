@@ -2,7 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fetchClaude, resolveClaudeCredentials } from "./claude.js";
-export { fetchClaude, resolveClaudeCredentials, parseClaudeQuota, parseRetryAfter } from "./claude.js";
+export { fetchClaude, resolveClaudeCredentials, parseClaudeQuota, parseClaudeResetCredits, parseRetryAfter } from "./claude.js";
 
 import { type ProviderId, clampPercent, formatMoney, numberOrNull, usageWindow, type ProviderResult, type QuotaWindow, type RateLimitResetCredit } from "./core.js";
 
