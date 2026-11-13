@@ -127,8 +127,23 @@ async function fetchKey(entry: KeyConfig): Promise<OpenRouterKeyResult> {
     let payload: unknown;
     try { payload = await response.json(); } catch { return { ...base, error: "OpenRouter returned invalid JSON" }; }
     const usage = parseOpenRouterUsage(payload);
-    return usage ? { ...base, ...usage, status: "ok", error: null, fetchedAt: new Date().toISOString() }
-      : { ...base, error: "OpenRouter response did not include valid usage" };
+    if (!usage) return { ...base, error: "OpenRouter response did not include valid usage" };
+    let accountBalanceUsd: number | undefined;
+    try {
+      const creditsResponse = await fetch("https://openrouter.ai/api/v1/credits", {
+        headers: { Authorization: `Bearer ${entry.key}`, Accept: "application/json" },
+        redirect: "error", signal: AbortSignal.timeout(15_000),
+      });
+      if (creditsResponse.ok) {
+        const credits = object(object(await creditsResponse.json()).data);
+        const total = amount(credits.total_credits);
+        const used = amount(credits.total_usage);
+        if (total !== null && used !== null) accountBalanceUsd = Math.max(0, total - used);
+      }
+    } catch {
+      // Account credits are optional; a failure must not hide key usage.
+    }
+    return { ...base, ...usage, ...(accountBalanceUsd !== undefined ? { accountBalanceUsd } : {}), status: "ok", error: null, fetchedAt: new Date().toISOString() };
   } catch {
     // Exceptions and upstream bodies can contain credentials. Return fixed messages only.
     return { ...base, error: "OpenRouter request failed or timed out" };
