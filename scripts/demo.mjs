@@ -16,6 +16,7 @@ const at = (hours) => new Date(Date.now() + hours * 3_600_000).toISOString();
 const providers = Object.fromEntries([
   ['claude', 'Claude', 'Claude', 'orange', 'Max subscription'],
   ['codex', 'ChatGPT / Codex', 'Codex', 'mint', 'Plus subscription'],
+  ['openrouter', 'OpenRouter', 'OpenRouter', 'teal', 'Key credit usage in USD'],
   ['opencode-go', 'OpenCode Go', 'OpenCode Go', 'violet', 'Coding subscription'],
   ['ollama', 'Ollama Cloud', 'Ollama', 'blue', 'Cloud credits'],
 ].map(([id, name, shortName, accent, description]) => [id, { id, name, shortName, accent, description, enabled: true, configured: true, status: 'connected' }]));
@@ -26,6 +27,7 @@ const window = (name, usedPercent, hours, elapsed) => ({ name, usedPercent, rese
 const quotas = {
   claude: { windows: [window('5-hour', 24, 3, 2), window('weekly', 42, 70, 98), window('Fable (Weekly)', 18, 70, 98)], planType: 'Max' },
   codex: { windows: [window('5-hour', 67, 1, 4), window('weekly', 31, 102, 66)], planType: 'Plus', resetCredits: [{ id: 'demo-reset', title: 'Full reset', expiresAt: at(168) }] },
+  openrouter: { openrouterKeys: [{ id: 'default', label: 'Default', configured: true, status: 'ok', error: null, fetchedAt: now(), accountBalanceUsd: 15.16, windows: [{ name: 'total', usedPercent: null, usedValue: 9.84, limitValue: null, unit: 'USD', valueLabel: '$9.84 spent' }], byokWindows: [{ name: 'total', valueLabel: '$7.41 spent' }] }] },
   'opencode-go': { windows: [window('weekly', 83, 30, 138), window('monthly', 56, 240, 480)] },
   ollama: { windows: [{ ...window('monthly', 36, 240, 480), valueLabel: '$7.20 used', limitValue: 20, unit: 'USD' }], creditBalance: { includedUsd: 12.8, purchasedUsd: 5 } },
 };

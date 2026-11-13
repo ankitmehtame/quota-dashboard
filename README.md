@@ -189,7 +189,10 @@ viewed in the browser.
 
 Each active entry independently calls `GET https://openrouter.ai/api/v1/key` with its own
 key. Entries named in `OPENROUTER_INACTIVE_KEYS` are not queried, and
-`OPENROUTER_QUOTA_KEYS` limits which cards appear. No management key or account-wide credits endpoint is needed for quota cards. Each card shows
+`OPENROUTER_QUOTA_KEYS` limits which cards appear. Each successful key also requests
+`GET https://openrouter.ai/api/v1/credits` for its account balance. The balance is
+account-wide, so cards for keys on the same account can show the same balance; if
+the endpoint is unavailable, key usage still appears. Each card shows
 total lifetime OpenRouter credit usage in USD, plus the key's
 spending limit, remaining amount, and reset period when reported. Zero usage is
 valid; missing usage stays "Not reported". Authentication errors, invalid responses,
@@ -209,7 +212,7 @@ date selector or `USAGE_TIMEZONE`.
 
 BYOK lifetime usage appears separately when reported and
 is not added to credit usage. Limits may include BYOK, as indicated on the card.
-Account-wide balances are not per-key limits and are not shown here.
+Account-wide balances are not per-key spending limits.
 
 Usage belongs to the API key, not to an application or machine. A shared key reports
 the combined usage of all its applications. Repeating a key under multiple labels

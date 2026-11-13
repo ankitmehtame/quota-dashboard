@@ -119,7 +119,7 @@ test("handles null, zero, exhausted and unknown-period limits without inventing 
     { limitUsd: 20, remainingUsd: -5, reset: "unknown", includesByok: null });
 });
 
-test("isolates key failures, queries only current-key endpoints, and never exposes raw errors or credentials", async () => {
+test("isolates key failures, retrieves account balances, and never exposes raw errors or credentials", async () => {
   const saved = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.startsWith("OPENROUTER_") || name === "OPENCODE_AUTH_PATH"));
   for (const name of Object.keys(saved)) delete process.env[name];
   Object.assign(process.env, { OPENROUTER_API_KEY: "DEFAULT_SECRET", OPENCODE_AUTH_PATH: "/nonexistent/quota-test-auth.json",
@@ -131,10 +131,11 @@ test("isolates key failures, queries only current-key endpoints, and never expos
   let status = 200;
   let malformed = false;
   mock.method(globalThis, "fetch", async (url: string | URL | Request, init?: RequestInit) => {
-    assert.equal(String(url), "https://openrouter.ai/api/v1/key");
     assert.equal(init?.redirect, "error");
     assert.ok(init?.signal instanceof AbortSignal);
     const auth = new Headers(init?.headers).get("authorization")!;
+    if (String(url) === "https://openrouter.ai/api/v1/credits") return Response.json({ data: { total_credits: 20, total_usage: 12.5 } });
+    assert.equal(String(url), "https://openrouter.ai/api/v1/key");
     calls.push(auth);
     if (auth.includes("INVALID_SECRET")) return new Response("INVALID_SECRET RAW_BODY_SECRET", { status: 401 });
     if (auth.includes("NETWORK_SECRET")) throw new Error("NETWORK_SECRET RAW_EXCEPTION_SECRET");
@@ -148,6 +149,7 @@ test("isolates key failures, queries only current-key endpoints, and never expos
     assert.equal(result.openrouterKeys?.length, 6);
     assert.deepEqual(result.openrouterKeys?.map((entry) => entry.status), ["ok", "ok", "error", "error", "error", "error"]);
     assert.equal(result.openrouterKeys?.[1].windows[0].usedValue, 100);
+    assert.equal(result.openrouterKeys?.[0].accountBalanceUsd, 7.5);
     assert.match(result.openrouterKeys![2].error!, /authentication failed/);
     assert.deepEqual(result.windows, result.openrouterKeys![0].windows);
     assert.doesNotMatch(JSON.stringify(result), /SECRET|RAW_BODY|RAW_EXCEPTION|sk-or|authorization|PRIVATE_HASH/);

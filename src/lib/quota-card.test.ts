@@ -67,6 +67,20 @@ test("OpenRouter distinguishes sub-cent remaining balances from zero", () => {
   assert.match(html, /−<\$0\.01 remaining/);
 });
 
+test("OpenRouter shows account balance separately from key spending", () => {
+  const usage = parseOpenRouterUsage({ data: { usage: 9.84 } });
+  for (const [balance, expected] of [[7.5, "$7.50"], [0, "$0.00"], [0.004, "<$0.01"]] as const) {
+    const html = runInNewContext(`${icons}\n${renderer}\nquotaCard("openrouter", provider, quota);`, {
+      provider: { id: "openrouter", shortName: "OpenRouter", configured: true, status: "ok" },
+      quota: { openrouterKeys: [{ id: "default", label: "Default", configured: true, status: "ok", ...usage, accountBalanceUsd: balance }] },
+      state: { hour12: false }, money: (value: number) => `$${value.toFixed(2)}`, escapeHtml: String,
+    });
+    assert.ok(html.includes(`${expected} <small class="quota-balance-label">account balance</small>`));
+    assert.ok(html.includes("$9.84 spent (key, all time)"));
+    assert.ok(html.includes("No key spending limit reported"));
+  }
+});
+
 function renderOllama(payload: unknown): string {
   return runInNewContext(`${icons}\n${renderer}\nquotaCard("ollama", provider, quota);`, {
     provider: { id: "ollama", shortName: "Ollama", description: "Monthly cloud credits and balance", accent: "orange", configured: true, status: "ok" },

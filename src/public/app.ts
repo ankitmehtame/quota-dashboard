@@ -1,6 +1,6 @@
 type QuotaWindow = { name?: string; usedPercent?: number | null; usedValue?: number | null; limitValue?: number | null; requestCount?: number | null; windowStart?: string | null; windowEnd?: string | null; unit?: string | null; resetAt?: string | null; windowSeconds?: number | null; valueLabel?: string | null; balanceLabel?: string | null; spentLabel?: string | null };
 type Provider = { id: string; name: string; shortName: string; accent: string; description: string; enabled: boolean; configured: boolean; status: string };
-type OpenRouterKeyResult = { id: string; label: string; configured: boolean; status: string; error: string | null; fetchedAt: string; windows: QuotaWindow[]; byokWindows?: QuotaWindow[]; effectiveBudget?: { scope: string; limitUsd: number; remainingUsd: number | null }; spendingLimit?: { limitUsd: number; remainingUsd: number | null; reset: "daily" | "weekly" | "monthly" | "unknown" | null; includesByok: boolean | null } };
+type OpenRouterKeyResult = { id: string; label: string; configured: boolean; status: string; error: string | null; fetchedAt: string; windows: QuotaWindow[]; accountBalanceUsd?: number; byokWindows?: QuotaWindow[]; effectiveBudget?: { scope: string; limitUsd: number; remainingUsd: number | null }; spendingLimit?: { limitUsd: number; remainingUsd: number | null; reset: "daily" | "weekly" | "monthly" | "unknown" | null; includesByok: boolean | null } };
 type PricingStatus = { missingPricing?: boolean };
 type ModelUsageItem = PricingStatus & { model: string; costUsd: number; totalTokens?: number };
 type UsageModel = ModelUsageItem & { provider: string };
@@ -448,7 +448,7 @@ function remainingMoney(value: number): string {
 function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][string]): string {
   if (id === "openrouter" && quota?.openrouterKeys?.length) {
     return quota.openrouterKeys.map((entry) => quotaCard(id, { ...provider, shortName: `OpenRouter · ${entry.label}`,
-      description: "Key credit usage in USD", configured: entry.configured, status: entry.status }, entry)).join("");
+      description: "Key credit usage in USD", configured: entry.configured, status: entry.status }, { ...entry, windows: entry.windows.map((window) => window.name === "total" && entry.accountBalanceUsd !== undefined ? { ...window, balanceLabel: remainingMoney(entry.accountBalanceUsd), spentLabel: `${window.valueLabel} (key, all time)` } : window) })).join("");
   }
   const now = estimatedServerNow();
   const visibleWindows = id === "openrouter" ? quota?.windows?.filter((window) => window.name === "total") : quota?.windows;
@@ -475,7 +475,7 @@ function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][st
     : "No key spending limit reported")}</span></div></div>${budget ? `<div class="quota-resets"><div class="quota-resets-title">Effective budget</div><div class="quota-foot"><span>${escapeHtml(`${budget.scope.replaceAll("_", " ")} · ${money(budget.limitUsd)} · ${budget.remainingUsd === null ? "remaining not reported" : `${remainingMoney(budget.remainingUsd)} remaining`}`)}</span></div></div>` : ""}${quota.byokWindows?.some((window) => window.name === "total") ? `<div class="quota-resets"><div class="quota-resets-title">BYOK usage · separate from credits</div>${quota.byokWindows.filter((window) => window.name === "total").map((window) => `<div class="quota-foot"><span>${escapeHtml(window.name)}: ${escapeHtml(window.valueLabel)}</span></div>`).join("")}</div>` : ""}` : "";
   const content = windows.map((window, index) => {
     const percent = window?.usedPercent;
-    const value = window?.balanceLabel ? `<span class="quota-balance-primary">${escapeHtml(window.balanceLabel)}</span><span class="quota-balance-secondary">${escapeHtml(window.spentLabel || "")}</span>` : escapeHtml(window?.valueLabel || "Not available");
+    const value = window?.balanceLabel ? `<span class="quota-balance-primary">${escapeHtml(window.balanceLabel)}${id === "openrouter" ? ' <small class="quota-balance-label">account balance</small>' : ""}</span><span class="quota-balance-secondary">${escapeHtml(window.spentLabel || "")}</span>` : escapeHtml(window?.valueLabel || "Not available");
     const nowPosition = quotaNowPosition(window, now);
     const nowExpected = nowPosition === null ? null : Math.floor(nowPosition * 10) / 10;
     const percentageValue = percent == null
