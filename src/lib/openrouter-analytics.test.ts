@@ -1,6 +1,6 @@
 import test, { mock } from "node:test";
 import assert from "node:assert/strict";
-import { fetchOpenRouterDay, fetchOpenRouterKeyId, openRouterDayRange, openRouterKeyHash } from "./openrouter-analytics.js";
+import { AnalyticsRateLimiter, fetchOpenRouterDay, fetchOpenRouterKeyId, openRouterDayRange, openRouterKeyHash } from "./openrouter-analytics.js";
 import { summarizeUsage } from "./usage.js";
 
 const KEY_ID = "a".repeat(64);
@@ -30,7 +30,7 @@ test("storage hash is stable, per secret and not the credential", () => {
   assert.ok(!openRouterKeyHash("key").includes("key"));
 });
 
-test("queries one local day filtered by OpenRouter's key id, never the local storage hash", async () => {
+test("queries one local day filtered by OpenRouter's key hash", async () => {
   let request: any;
   let headers: Headers | undefined;
   mock.method(globalThis, "fetch", async (url: string | URL | Request, init?: RequestInit) => {
@@ -45,6 +45,24 @@ test("queries one local day filtered by OpenRouter's key id, never the local sto
     assert.deepEqual(request.filters, [{ field: "api_key_id", operator: "eq", value: KEY_ID }]);
     assert.deepEqual(request.dimensions, ["model"]);
     assert.equal(headers?.get("authorization"), "Bearer management");
+  } finally { mock.restoreAll(); }
+});
+
+test("shared limiter spaces concurrent requests deterministically", async () => {
+  let now = 0;
+  const limiter = new AnalyticsRateLimiter(() => now, async (ms) => { now += ms; });
+  const starts: number[] = [];
+  await Promise.all(Array.from({ length: 70 }, async () => { await limiter.wait(); starts.push(now); }));
+  assert.equal(starts.length, 70);
+  assert.equal(now, 69_000);
+});
+
+test("null optional token breakdowns are zero", async () => {
+  mockAnalytics({ data: [row({ cached_tokens: null, reasoning_tokens: null })], metadata: { truncated: false } });
+  try {
+    const [result] = await fetchOpenRouterDay("management", KEY_ID, "2026-11-12", "UTC");
+    assert.equal(result.cachedInputTokens, 0);
+    assert.equal(result.reasoningTokens, 0);
   } finally { mock.restoreAll(); }
 });
 

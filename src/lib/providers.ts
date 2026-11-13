@@ -2,7 +2,7 @@ import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fetchClaude, resolveClaudeCredentials } from "./claude.js";
-import { fetchOpenRouter, resolveOpenRouterKeys } from "./openrouter.js";
+import { fetchOpenRouter, resolveOpenRouterKeys, selectOpenRouterKeys, filterInactiveOpenRouterKeys } from "./openrouter.js";
 export { fetchClaude, resolveClaudeCredentials, parseClaudeQuota, parseClaudeResetCredits, parseRetryAfter } from "./claude.js";
 
 import { type ProviderId, clampPercent, formatMoney, numberOrNull, usageWindow, type ProviderResult, type QuotaWindow, type RateLimitResetCredit } from "./core.js";
@@ -273,7 +273,11 @@ export const PROVIDER_FETCHERS: Record<ProviderId, () => Promise<ProviderResult>
 export async function isProviderConfigured(id: ProviderId): Promise<boolean> {
   if (id === "claude") return Boolean((await resolveClaudeCredentials()).accessToken);
   if (id === "openrouter") {
-    return (await resolveOpenRouterKeys()).some((entry) => !entry.error && Boolean(entry.key));
+    try {
+      const all = await resolveOpenRouterKeys();
+      const active = new Set(filterInactiveOpenRouterKeys(all, process.env.OPENROUTER_INACTIVE_KEYS).map((entry) => entry.id));
+      return selectOpenRouterKeys(all, process.env.OPENROUTER_QUOTA_KEYS, "all").some((entry) => active.has(entry.id) && !entry.error && Boolean(entry.key));
+    } catch { return false; }
   }
   if (id === "opencode-go") return Boolean(process.env.OPENCODE_GO_WORKSPACE_ID?.trim() && process.env.OPENCODE_GO_AUTH_COOKIE?.trim());
   if (id === "ollama") return Boolean(process.env.OLLAMA_API_KEY?.trim());

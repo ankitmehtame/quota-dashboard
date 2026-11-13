@@ -42,3 +42,17 @@ test("dashboard summary counts partial OpenRouter failures and valid usage from 
   assert.match(elements.get("#status-copy")!.textContent, /1 source need attention/);
   assert.match(elements.get("#account-summary")!.textContent, /1 of 1 accounts reporting quota/);
 });
+
+test("analytics error is visible even when quotas and hosts are healthy", () => {
+  const elements = new Map<string, { textContent: string; setAttribute(): void }>();
+  runInNewContext(`${statusRenderer}\nrenderStatus(data);`, {
+    data: { providers: { codex: { id: "codex", enabled: true, status: "ok" } }, quotas: {},
+      usage: { status: "partial", error: "OpenRouter refresh failed", hosts: [{ status: "ok" }] }, version: "test" },
+    hostHealthy: () => true, renderHeaderRefresh() {},
+    $: (selector: string) => {
+      if (!elements.has(selector)) elements.set(selector, { textContent: "", setAttribute() {} });
+      return elements.get(selector);
+    },
+  });
+  assert.match(elements.get("#status-copy")!.textContent, /1 source need attention/);
+});

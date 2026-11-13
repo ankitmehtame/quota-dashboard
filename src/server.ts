@@ -67,6 +67,7 @@ let openRouterHotPromise: Promise<void> | null = null;
 let openRouterHotStartedAt = 0;
 let openRouterColdRunning = false;
 const openRouterColdQueue: Array<{ from: string; to: string }> = [];
+const openRouterColdAttempts = new Map<string, number>();
 function positiveNumber(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -384,7 +385,7 @@ function queueOpenRouterHot(force: boolean): void {
 
 /** Cold: older days, newest first, one range at a time. Duplicate queued ranges are ignored. */
 function queueOpenRouterCold(from: string, to: string): void {
-  if (shuttingDown || openRouterColdQueue.some((job) => job.from === from && job.to === to)) return;
+  if (shuttingDown || openRouterColdQueue.length >= MAX_LOCAL_COLD_QUEUE || openRouterColdQueue.some((job) => job.from === from && job.to === to)) return;
   openRouterColdQueue.push({ from, to });
   void drainOpenRouterCold();
 }
@@ -393,12 +394,14 @@ async function drainOpenRouterCold(): Promise<void> {
   if (openRouterColdRunning) return;
   openRouterColdRunning = true;
   try {
+    if (!await openRouterUsageCollector.enabled()) { openRouterColdQueue.length = 0; openRouterRefreshErrors.cold = null; return; }
     for (let job = openRouterColdQueue[0]; job && !shuttingDown; job = openRouterColdQueue[0]) {
       let failure: string | null = null;
       try {
         for (const date of dateList(job.from, job.to).reverse()) {
           if (shuttingDown) break;
-          failure ??= (await openRouterUsageCollector.refresh(date, usageTimezone)).error;
+          const result = await openRouterUsageCollector.refresh(date, usageTimezone);
+          failure ??= result.error;
         }
       } catch { failure = "OpenRouter usage refresh failed"; }
       openRouterRefreshErrors.cold = failure;
@@ -433,7 +436,6 @@ type LocalColdQueueResult = "accepted" | "duplicate" | "full" | "shutdown";
 
 function queueLocalCold(from: string, to: string, offline: boolean, requestId: string = randomUUID(), scheduled = false): LocalColdQueueResult {
   if (shuttingDown) { logColdLocal(requestId, `local enqueue skipped reason=shutdown range=${from}..${to}`, false, scheduled); return "shutdown"; }
-  if (!scheduled) queueOpenRouterCold(from, to);
   const key = `${from}:${to}:${offline ? "offline" : "online"}`;
   if (localColdQueued.has(key)) {
     const originalJobId = localColdQueuedJobIds.get(key) || "unknown";
@@ -441,6 +443,8 @@ function queueLocalCold(from: string, to: string, offline: boolean, requestId: s
     return "duplicate";
   }
   if (localColdQueue.length >= MAX_LOCAL_COLD_QUEUE) { logColdLocal(requestId, `local enqueue skipped reason=full range=${from}..${to} mode=${offline ? "offline" : "online"}`, false, scheduled); return "full"; }
+  if (!scheduled && openRouterColdQueue.length >= MAX_LOCAL_COLD_QUEUE) return "full";
+  if (!scheduled) queueOpenRouterCold(from, to);
   localColdQueued.add(key);
   localColdQueuedJobIds.set(key, requestId);
   localColdQueue.push({ from, to, offline, requestId, scheduled });
@@ -501,9 +505,16 @@ async function scheduleLocalColdDate(checkId: string): Promise<void> {
   const rolling = rollingDateRange(usageTimezone, new Date(), localRollingDays);
   const newestColdDate = previousDate(localDateRange(2, usageTimezone).from);
   if (!openRouterColdRunning && !openRouterColdQueue.length) {
+    let candidate: string | null = null;
+    let oldestAttempt = Infinity;
     for (let date = newestColdDate; date >= rolling.from; date = previousDate(date)) {
-      if (await openRouterUsageCollector.needsRefresh(date, usageTimezone).catch(() => false)) { queueOpenRouterCold(date, date); break; }
+      if (await openRouterUsageCollector.needsRefresh(date, usageTimezone).catch(() => false)) {
+        const attempted = openRouterColdAttempts.get(date) ?? 0;
+        if (attempted < oldestAttempt) { candidate = date; oldestAttempt = attempted; }
+      }
     }
+    if (candidate) { openRouterColdAttempts.set(candidate, Date.now()); queueOpenRouterCold(candidate, candidate); }
+    for (const date of openRouterColdAttempts.keys()) if (date < rolling.from || date > newestColdDate) openRouterColdAttempts.delete(date);
   }
   const coveredDates = await usageStore.readStoredDates(localHostId, rolling.from, newestColdDate);
   for (let date = newestColdDate; date >= rolling.from; date = previousDate(date)) {
@@ -608,14 +619,14 @@ async function buildUsage(url: URL, config: AppConfig) {
       || (!host.local && !["ok", "online"].includes(host.status));
   });
   const hostProblem = problemHosts.length > 0;
-  const severity = aggregateUsageSeverity([...problemHosts.map((host) => host.severity), ...(remoteState.configured && remoteState.connection !== "connected" ? ["error" as const] : [])]);
+  const severity = aggregateUsageSeverity([...problemHosts.map((host) => host.severity), ...(openRouterUsageError ? ["error" as const] : []), ...(remoteState.configured && remoteState.connection !== "connected" ? ["error" as const] : [])]);
   const usageStatus = usageSources.length === 0 ? "disabled" : hostProblem || openRouterUsageError ? (records.length ? "partial" : "error") : "ok";
   const usageResult = usageSources.length ? {
     status: usageStatus,
     severity,
     error: [hosts.find((host) => Boolean(host.error))?.error, openRouterUsageError].filter(Boolean).join("; ") || null,
     source: "filesystem",
-    sources: usageSources.map((provider) => ({ provider, status: usageStatus, severity, error: hosts.find((host) => Boolean(host.error))?.error ?? null })),
+    sources: usageSources.map((provider) => ({ provider, status: usageStatus, severity, error: (provider in sourceLabels ? openRouterUsageError : null) ?? hosts.find((host) => Boolean(host.error))?.error ?? null })),
     hosts,
     records,
     ...summary,
@@ -623,6 +634,7 @@ async function buildUsage(url: URL, config: AppConfig) {
   const usage = {
     ...usageResult,
     sourceLabels,
+    analyticsRefreshing: Boolean(openRouterHotPromise),
     mqtt: { configured: remoteState.configured, connection: remoteState.connection },
     hosts: usageSources.length ? hosts : [],
   };

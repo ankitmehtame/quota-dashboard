@@ -25,7 +25,7 @@ async function freePort(): Promise<number> {
   return address.port;
 }
 
-/** Spawn the real server against a fake OpenRouter: /key resolves ids, /analytics/query serves rows from a file. */
+/** Spawn the real server against a fake OpenRouter analytics endpoint. */
 async function harness(env: Record<string, string>, enabledSources: string[] = []) {
   const root = await mkdtemp(join(tmpdir(), "quota-openrouter-usage-"));
   const home = join(root, "home");
@@ -83,7 +83,7 @@ globalThis.fetch = async (url, init) => {
   const calls = async (): Promise<Call[]> => (await readFile(callsPath, "utf8")).split("\n").filter(Boolean).map((line) => JSON.parse(line));
   const queries = async () => (await calls()).filter((call) => call.path === "/api/v1/analytics/query");
   const waitFor = async (predicate: () => Promise<boolean>, what: string) => {
-    for (let attempt = 0; attempt < 120; attempt++) {
+    for (let attempt = 0; attempt < 400; attempt++) {
       if (await predicate()) return;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
@@ -115,7 +115,7 @@ const raw = (model: string, cost: number, prompt: number, cached: number, comple
   ({ model, total_usage: cost, tokens_prompt: String(prompt), cached_tokens: String(cached), tokens_completion: String(completion), reasoning_tokens: String(reasoning) });
 const localDate = (daysAgo: number, timezone: string) => new Intl.DateTimeFormat("en-CA", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" }).format(Date.now() - daysAgo * 86_400_000);
 
-test("server collects hot and cold OpenRouter usage per key, groups by label and never exposes secrets or hashes", { timeout: 40_000 }, async () => {
+test("server collects hot and cold OpenRouter usage per key, groups by label and never exposes secrets or hashes", { timeout: 70_000 }, async () => {
   const timezone = "Asia/Singapore";
   const secrets = { alpha: "ALPHA_SECRET", beta: "BETA_SECRET", gamma: "GAMMA_SECRET", delta: "DELTA_SECRET" };
   const h = await harness({
@@ -229,7 +229,7 @@ test("server collects hot and cold OpenRouter usage per key, groups by label and
     assert.deepEqual(newestTwo(recovered.usage.records.filter((record) => record.provider === idOf("Work"))).map((record) => record.costUsd), [5, 5]);
 
     // Cold backfill is newest first, covers the requested local days for active keys only, and is queued rather than dropped.
-    await h.setRows({ [keyIdOf(secrets.alpha)]: { data: [raw("model/a", 1, 1, 0, 1, 0)] }, [keyIdOf(secrets.beta)]: { data: [] }, [keyIdOf(secrets.gamma)]: { data: [] } });
+    await h.setRows({ [keyIdOf(secrets.alpha)]: { data: [raw("model/a", 1, 1, 0, 1, 0)] }, [keyIdOf(secrets.beta)]: { data: [] }, [keyIdOf(secrets.gamma)]: { status: 500 } });
     const beforeCold = (await h.queries()).length;
     const older = localDate(20, timezone);
     const oldest = localDate(21, timezone);
@@ -263,6 +263,18 @@ test("server does not poll OpenRouter without a management key, keeps retained h
     assert.deepEqual(await h.calls(), []);
     assert.deepEqual(usage.usage.sourceLabels, {});
     assert.ok(!JSON.stringify(await h.api("providers")).includes("openrouter-"));
+  } finally { await h.cleanup(); }
+});
+
+test("cold scheduler advances past a persistently failing key and retries fairly", { timeout: 30_000 }, async () => {
+  const h = await harness({ USAGE_TIMEZONE: "UTC", CCUSAGE_DAYS: "5", CCUSAGE_COLD_INTERVAL_MS: "200",
+    OPENROUTER_KEY_1: "HEALTHY", OPENROUTER_KEY_1_LABEL: "Healthy", OPENROUTER_KEY_2: "BROKEN", OPENROUTER_KEY_2_LABEL: "Broken" }, ["codex"]);
+  await h.setRows({ [keyIdOf("HEALTHY")]: { data: [raw("model", 1, 1, 0, 1, 0)] }, [keyIdOf("BROKEN")]: { status: 500 } });
+  try {
+    await h.start;
+    const coldDates = async () => new Set((await h.queries()).filter((call) => call.body.time_range.start.slice(0, 10) <= localDate(2, "UTC")).map((call) => call.body.time_range.start.slice(0, 10)));
+    await h.waitFor(async () => (await coldDates()).size >= 2, "scheduler progress past failing key");
+    assert.ok((await coldDates()).size >= 2);
   } finally { await h.cleanup(); }
 });
 

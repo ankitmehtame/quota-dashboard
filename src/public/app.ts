@@ -11,7 +11,7 @@ type ConcreteRepresentation = Exclude<ChartRepresentation, "auto">;
 type UsageBucket = UsageDay & { from: string; to: string; days: UsageDay[] };
 type UsageRecord = PricingStatus & { hostId?: string; date: string; provider: string; model: string; inputTokens: number; cachedInputTokens: number; cacheCreationTokens: number; outputTokens: number; reasoningTokens: number; costUsd: number };
 type UsageHost = { hostId: string; generatedAt?: string | null; category?: string | null; status: string; severity?: "warning" | "error" | null; error?: string | null; stale?: boolean; local?: boolean; active?: boolean; included?: boolean; complete?: boolean; missingDates?: string[]; usable?: boolean; disabledReason?: string | null };
-type Usage = PricingStatus & { totalCostUsd: number; totalTokens?: number; from?: string; to?: string; providers?: string[]; sourceLabels?: Record<string, string>; daily?: UsageDay[]; byModel?: UsageModel[]; byProvider?: Array<PricingStatus & { provider: string; costUsd: number; totalTokens: number }>; records?: UsageRecord[]; error?: string | null; hosts?: UsageHost[]; mqtt?: { configured: boolean; connection: string } };
+type Usage = PricingStatus & { totalCostUsd: number; totalTokens?: number; from?: string; to?: string; providers?: string[]; sourceLabels?: Record<string, string>; analyticsRefreshing?: boolean; daily?: UsageDay[]; byModel?: UsageModel[]; byProvider?: Array<PricingStatus & { provider: string; costUsd: number; totalTokens: number }>; records?: UsageRecord[]; error?: string | null; hosts?: UsageHost[]; mqtt?: { configured: boolean; connection: string } };
 type Dashboard = { version: string; providerOrder: string[]; providers: Record<string, Provider>; quotas: Record<string, { windows?: QuotaWindow[]; openrouterKeys?: OpenRouterKeyResult[]; byokWindows?: QuotaWindow[]; effectiveBudget?: OpenRouterKeyResult["effectiveBudget"]; spendingLimit?: OpenRouterKeyResult["spendingLimit"]; creditBalance?: { includedUsd: number; purchasedUsd: number | null }; planType?: string; subscriptionActiveUntil?: string | null; resetCredits?: Array<{ id: string; title: string; description?: string | null; expiresAt?: string | null }>; fetchedAt?: string; error?: string | null; errorKind?: string; cooldownUntil?: number; stale?: boolean; cached?: boolean }>; usage: Usage; serverNow: string; cache?: { fetchedAt?: string } };
 type UsageResponse = { version: string; apiVersion: number; serverNow: string; timezone: string; from: string; to: string; usage: Usage };
 type ProvidersResponse = { providerOrder: string[]; providers: Record<string, Provider>; usageSources: Record<string, UsageSourceConfig>; usageSourceLabels?: Record<string, string> };
@@ -24,6 +24,7 @@ const $ = (selector: string): any => document.querySelector(selector);
 const element = (target: EventTarget | null): HTMLElement => target as HTMLElement;
 const escapeHtml = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] || character);
 const usageSourceNames: Record<string, string> = { codex: "Codex", opencode: "OpenCode", hermes: "Hermes", antigravity: "Antigravity", claude: "Claude", shared: "Shared" };
+let settingsUsageSourceLabels: Record<string, string> = {};
 const usageSourceColors: Record<string, string> = { codex: "mint", opencode: "violet", hermes: "yellow", antigravity: "antigravity", claude: "claude", gemini: "gemini", "gemini-cli": "gemini", openrouter: "teal", ollama: "neutral", shared: "neutral" };
 const usageColorPalette = ["mint", "violet", "neutral", "rose", "yellow", "teal"] as const;
 // Mirrors the --<token> custom properties in styles.css so defaults can seed <input type="color">.
@@ -35,7 +36,7 @@ function toolId(id: string): string {
   return id === "opencode-go" ? "opencode" : id === "gemini-cli" ? "gemini" : id;
 }
 function usageSourceName(id: string): string {
-  return (typeof state !== "undefined" ? state.dashboard?.usage?.sourceLabels?.[id] : "") || (Object.hasOwn(usageSourceNames, id) ? usageSourceNames[id] : "") || id.split(/[-_.~\s]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ") || id;
+  return settingsUsageSourceLabels[id] || (typeof state !== "undefined" ? state.dashboard?.usage?.sourceLabels?.[id] : "") || (Object.hasOwn(usageSourceNames, id) ? usageSourceNames[id] : "") || id.split(/[-_.~\s]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ") || id;
 }
 function usageSourceColor(id: string): string {
   if (Object.hasOwn(usageSourceColors, id)) return usageSourceColors[id];
@@ -866,8 +867,8 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
   if (enabledSources.size && usage.records?.some((record) => record.provider === "shared")) enabledSources.add("shared");
   const sourceUsage = filterUsageBySources(usage, enabledSources);
   const selectedUsage = filterUsageByHosts(sourceUsage, selectedHostIds);
-  $("#pricing-status").hidden = !selectedUsage.missingPricing;
-  $("#pricing-status").textContent = selectedUsage.missingPricing ? "Pricing unavailable for some models. Totals reflect reported costs only; + marks incomplete spend." : "";
+  $("#pricing-status").hidden = !selectedUsage.missingPricing && !usage.error;
+  $("#pricing-status").textContent = [usage.error ? `Usage may be incomplete: ${usage.error}` : "", selectedUsage.missingPricing ? "Pricing unavailable for some models. Totals reflect reported costs only; + marks incomplete spend." : ""].filter(Boolean).join(" ");
   const noHostsSelected = usableHosts.length > 0 && selectedHostIds.size === 0;
   renderSpendMetrics(sourceUsage, hosts, usableHosts, selectedUsage, selectedHostIds);
   updateRepresentationControls();
@@ -991,7 +992,7 @@ function renderStatus(data: Dashboard): void {
   const hostProblems = hosts.filter((host) => !hostHealthy(host) && host.severity !== "warning");
   const warnings = hosts.filter((host) => host.severity === "warning").length;
   const mqttProblem = data.usage.mqtt?.configured && data.usage.mqtt.connection !== "connected";
-  const problems = errors.length + hostProblems.length + (mqttProblem ? 1 : 0);
+  const problems = errors.length + hostProblems.length + (mqttProblem ? 1 : 0) + (data.usage.error && !hostProblems.some((host) => host.error === data.usage.error) ? 1 : 0);
   $("#status-copy").textContent = problems
     ? `${problems} source${problems === 1 ? "" : "s"} need attention · ${hosts.length} usage host${hosts.length === 1 ? "" : "s"}`
     : `${enabled.length} quota source${enabled.length === 1 ? "" : "s"} active · ${hosts.length} usage host${hosts.length === 1 ? "" : "s"} combined`;
@@ -1093,9 +1094,9 @@ function evaluateHotUsagePoll(poller: NonNullable<typeof hotUsagePoller>, usage:
       const previous = poller.baseline.get(host.hostId);
       return Number.isFinite(generatedAt) && (!previous || !Number.isFinite(previous.generatedAt) || generatedAt > previous.generatedAt);
     });
-    if (freshHotUsage) {
+    if (freshHotUsage && !usage?.analyticsRefreshing) {
       stopHotUsagePolling();
-      const message = unresolvedRetryHosts.length > 0
+      const message = usage?.error ? `Usage refresh incomplete: ${usage.error}` : unresolvedRetryHosts.length > 0
         ? `Hot usage refresh partially complete: ${unresolvedRetryHosts.join(", ")} did not recover`
         : "Usage refresh complete";
       setRefreshStatus(message);
@@ -1311,6 +1312,7 @@ function renderColdUsageSettings(usage: Usage | undefined): void {
 async function loadSettings(): Promise<void> {
   const response = await fetch("/api/v1/providers");
   const data = await response.json() as ProvidersResponse;
+  settingsUsageSourceLabels = data.usageSourceLabels || {};
   providerOrder = data.providerOrder;
   const quotaSettings = providerOrder.map((id, index) => { const provider = data.providers[id]; return `<div class="setting-row" data-provider-row="${id}"><div class="setting-copy"><div class="provider-name">${sourceIcon(id)}${provider.name}</div><div class="provider-sub">${provider.description}${provider.configured ? " · configured" : " · credentials not detected"}</div></div><div class="order-actions"><button class="order-button" type="button" data-order-direction="up" data-provider="${id}" aria-label="Move ${provider.name} up" ${index === 0 ? "disabled" : ""}>↑</button><button class="order-button" type="button" data-order-direction="down" data-provider="${id}" aria-label="Move ${provider.name} down" ${index === providerOrder.length - 1 ? "disabled" : ""}>↓</button><input class="switch" type="checkbox" data-kind="provider" data-provider="${id}" ${provider.enabled ? "checked" : ""} aria-label="Enable ${provider.name}" /></div></div>`; }).join("");
   const usageNames = usageSourceName;
