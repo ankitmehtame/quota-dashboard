@@ -190,7 +190,7 @@ viewed in the browser.
 Each active entry independently calls `GET https://openrouter.ai/api/v1/key` with its own
 key. Entries named in `OPENROUTER_INACTIVE_KEYS` are not queried, and
 `OPENROUTER_QUOTA_KEYS` limits which cards appear. No management key or account-wide credits endpoint is needed for quota cards. Each card shows
-total OpenRouter credit usage in USD, plus the key's
+total lifetime OpenRouter credit usage in USD, plus the key's
 spending limit, remaining amount, and reset period when reported. Zero usage is
 valid; missing usage stays "Not reported". Authentication errors, invalid responses,
 timeouts, and API failures affect only that entry. Refreshes use the existing
@@ -200,8 +200,12 @@ separately when reported.
 
 API clients should read `openrouterKeys`: the provider-level `windows` now contains
 the first entry's four USD usage windows, not the previous `credits` window. It is
-empty if that entry fails, even when another succeeds. The dashboard displays only the
-total; the other windows remain in the API.
+empty if that entry fails, even when another succeeds. The dashboard displays only
+the lifetime total; the other windows remain in the API.
+
+Daily periods start at midnight UTC, weekly periods run Monday through Sunday UTC,
+and monthly periods use UTC calendar months. These periods do not follow the chart
+date selector or `USAGE_TIMEZONE`.
 
 BYOK lifetime usage appears separately when reported and
 is not added to credit usage. Limits may include BYOK, as indicated on the card.
@@ -260,6 +264,13 @@ rolling window, newest first one day at a time, plus ranges requested through
 15 minutes of ending, is fetched once more afterwards, because analytics rows can
 arrive late. Dates are local calendar days: each query covers local midnight to the
 next local midnight, including daylight-saving days and fractional offsets.
+Manual local cold requests are accepted for both ccusage and analytics together: if
+either queue is full, a local-targeted request returns 429. An all-host request can
+still dispatch remotely and reports `localAccepted: false`; retry the local work.
+Failed analytics dates remain recorded in memory and are retried even after leaving
+the rolling window. When both need work, rolling and historical dates alternate;
+cold failures affect usage health only for ranges containing the failed dates.
+Failures are not persisted across server restarts.
 
 **Accuracy and errors.** A day is replaced only after the whole query and write
 succeed. A failed, rate-limited (OpenRouter allows 64 requests a minute), truncated,
@@ -268,8 +279,7 @@ partial; other keys and days are unaffected. A successful empty response replace
 day with zero. Cache reads and reasoning tokens are stored as part of prompt and
 completion tokens, never added on top, so token totals equal OpenRouter's. Treat the
 result as operational analytics, not a billing ledger: OpenRouter's history and
-delivery can be incomplete. Quota cards stay on `GET /api/v1/key` and show only total
-spend; daily, weekly and monthly spend is not displayed there.
+delivery can be incomplete. Quota cards stay on `GET /api/v1/key` and show lifetime spend.
 
 **Privacy and storage.** Snapshots are stored under `openrouter-usage` beside the
 usage data directory, separated by `USAGE_TIMEZONE`, in `0700` directories with `0600`

@@ -29,7 +29,7 @@ test("OpenRouter renders labeled independent cards, UTC USD usage, limits and se
     assert.ok(html.includes(text), `Missing ${text}`);
   }
   assert.doesNotMatch(html, /Home <Assistant>|500%|No balance reported|type="password"|type="text"/);
-  assert.doesNotMatch(html, /\$4\.00 spent|\$8\.00 spent/);
+  assert.doesNotMatch(html, /daily \(UTC\)|weekly \(UTC\)|\$4\.00 spent|\$8\.00 spent/);
   assert.equal([...html.matchAll(/\$100\.00 spent/g)].length, 1);
 });
 
