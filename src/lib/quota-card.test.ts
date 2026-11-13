@@ -24,11 +24,12 @@ test("OpenRouter renders labeled independent cards, UTC USD usage, limits and se
     escapeHtml: (value: unknown) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;"),
   });
   assert.equal([...html.matchAll(/<article/g)].length, 3);
-  for (const text of ["Home &lt;Assistant&gt;", "OpenRouter · Automations", "connected", "error", "total", "daily (UTC)", "weekly (UTC)", "monthly (UTC)",
-    "$100.00 spent", "$0.00 spent", "$4.00 spent", "$8.00 spent", "$20.00", "$9.00 remaining", "includes BYOK", "BYOK usage · separate from credits", "$10.00 spent", "HTTP 401", "OPENROUTER_KEY_3_LABEL is missing"]) {
+  for (const text of ["Home &lt;Assistant&gt;", "OpenRouter · Automations", "connected", "error", "total",
+    "$100.00 spent", "$20.00", "$9.00 remaining", "includes BYOK", "BYOK usage · separate from credits", "$10.00 spent", "HTTP 401", "OPENROUTER_KEY_3_LABEL is missing"]) {
     assert.ok(html.includes(text), `Missing ${text}`);
   }
   assert.doesNotMatch(html, /Home <Assistant>|500%|No balance reported|type="password"|type="text"/);
+  assert.doesNotMatch(html, /\$4\.00 spent|\$8\.00 spent/);
   assert.equal([...html.matchAll(/\$100\.00 spent/g)].length, 1);
 });
 
@@ -37,7 +38,7 @@ test("OpenRouter shows unavailable periods and no reported limit without invente
     provider: { id: "openrouter", shortName: "OpenRouter", description: "Per-key usage", configured: true, status: "ok" },
     quota: parseOpenRouterUsage({ data: { usage: 1 } }), state: { hour12: false }, escapeHtml: String,
   });
-  assert.equal([...html.matchAll(/Not reported/g)].length, 3);
+  assert.equal([...html.matchAll(/Not reported/g)].length, 0);
   assert.match(html, /No key spending limit reported/);
   assert.doesNotMatch(html, /BYOK usage|\$0\.00|class="bar"/);
 });

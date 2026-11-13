@@ -3,13 +3,34 @@ import assert from "node:assert/strict";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fetchOpenRouter, parseOpenRouterUsage, resolveOpenRouterKeys } from "./openrouter.js";
+import { fetchOpenRouter, filterInactiveOpenRouterKeys, parseOpenRouterUsage, resolveOpenRouterKeys, resolveOpenRouterUsageSelection, selectOpenRouterKeys } from "./openrouter.js";
 import { isProviderConfigured } from "./providers.js";
 
 const payload = { data: { usage: 100, usage_daily: 0, usage_weekly: 4, usage_monthly: 8,
   limit: 20, limit_remaining: 9, limit_reset: "monthly", include_byok_in_limit: true,
   byok_usage: 10, byok_usage_daily: 0, byok_usage_weekly: 1, byok_usage_monthly: 3,
   label: "sk-or-v1-SECRET_UPSTREAM_LABEL", hash: "PRIVATE_HASH" } };
+
+test("selectors default to all, reject unknown keys and inactivity overrides duplicate credentials", async () => {
+  const entries = await resolveOpenRouterKeys({ OPENROUTER_API_KEY: "default", OPENROUTER_KEY_1: "same",
+    OPENROUTER_KEY_1_LABEL: "Home", OPENROUTER_KEY_2: "same", OPENROUTER_KEY_2_LABEL: "Home",
+    OPENROUTER_KEY_3: "other", OPENROUTER_KEY_3_LABEL: "Other" });
+  assert.deepEqual(selectOpenRouterKeys(entries, "", "numbered").map((e) => e.id), ["key-1", "key-2", "key-3"]);
+  assert.deepEqual(selectOpenRouterKeys(entries, "default,3", "all").map((e) => e.id), ["default", "key-3"]);
+  assert.deepEqual(selectOpenRouterKeys(entries, "none", "all"), []);
+  assert.throws(() => selectOpenRouterKeys(entries, "9", "all"));
+  assert.deepEqual(filterInactiveOpenRouterKeys(entries, "1").map((e) => e.id), ["default", "key-3"]);
+  const selection = resolveOpenRouterUsageSelection(entries, "1,2,3", "1");
+  assert.deepEqual(selection.visible.map((e) => e.id), ["key-1", "key-3"]);
+  assert.deepEqual(selection.active.map((e) => e.id), ["key-3"]);
+  assert.equal(selection.incomplete, 0);
+  const partial = resolveOpenRouterUsageSelection([...entries, { id: "key-4", label: "Key 4", key: null, error: "missing" }], "", "");
+  assert.deepEqual(partial.visible.map((e) => e.id), ["key-1", "key-3"]);
+  assert.equal(partial.incomplete, 1);
+  // Only selected entries can conflict; the unselected default may differ.
+  assert.equal(resolveOpenRouterUsageSelection([{ id: "default", label: "Default", key: "same", error: null }, ...entries], "", "").visible.length, 2);
+  assert.throws(() => resolveOpenRouterUsageSelection(entries.map((e) => e.id === "key-2" ? { ...e, label: "Different" } : e), "", ""));
+});
 
 test("discovers numbered keys and incomplete pairs, in numeric order, alongside the default", async () => {
   const entries = await resolveOpenRouterKeys({ OPENROUTER_API_KEY: " default-secret ",

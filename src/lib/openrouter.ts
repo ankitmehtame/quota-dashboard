@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { formatMoney, usageWindow, type OpenRouterKeyResult, type ProviderResult, type QuotaWindow } from "./core.js";
 
-type KeyConfig = { id: string; label: string; key: string | null; error: string | null };
+export type KeyConfig = { id: string; label: string; key: string | null; error: string | null };
 type JsonObject = Record<string, unknown>;
 const object = (value: unknown): JsonObject => value && typeof value === "object" && !Array.isArray(value) ? value as JsonObject : {};
 const amount = (value: unknown): number | null => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
@@ -39,6 +39,48 @@ export async function resolveOpenRouterKeys(env: NodeJS.ProcessEnv = process.env
     entry.label = entry.label.replace(/sk-or-[a-z0-9._-]+/gi, "[redacted]").replace(/[\x00-\x1f\x7f]/g, " ").slice(0, 200);
   }
   return entries;
+}
+
+/** Resolve user-facing selectors without ever treating key numbers as identities. */
+export function selectOpenRouterKeys(entries: KeyConfig[], selector: string | undefined, defaultSelection: "all" | "numbered"): KeyConfig[] {
+  const value = selector?.trim();
+  if (!value) return entries.filter((entry) => defaultSelection === "all" || entry.id !== "default");
+  if (value.toLowerCase() === "none") return [];
+  const requested = value.split(",").map((part) => part.trim());
+  if (requested.some((part) => !/^(?:default|[0-9]+)$/.test(part))) throw new Error("Invalid OpenRouter key selector");
+  const ids = new Set(requested.map((part) => part === "default" ? part : `key-${part}`));
+  if ([...ids].some((id) => !entries.some((entry) => entry.id === id))) throw new Error("OpenRouter key selector references an unknown entry");
+  return entries.filter((entry) => ids.has(entry.id));
+}
+
+export function filterInactiveOpenRouterKeys(entries: KeyConfig[], selector: string | undefined): KeyConfig[] {
+  if (!selector?.trim() || selector.trim().toLowerCase() === "none") return entries;
+  const inactive = selectOpenRouterKeys(entries, selector, "numbered");
+  const inactiveSecrets = new Set(inactive.flatMap((entry) => entry.key ? [entry.key] : []));
+  const inactiveIds = new Set(inactive.map((entry) => entry.id));
+  return entries.filter((entry) => !inactiveIds.has(entry.id) && (!entry.key || !inactiveSecrets.has(entry.key)));
+}
+
+/** Distinguish visibility from polling: inactive selected keys retain their history. */
+export function resolveOpenRouterUsageSelection(entries: KeyConfig[], selector: string | undefined, inactiveSelector: string | undefined): { visible: KeyConfig[]; active: KeyConfig[]; incomplete: number } {
+  const selected = selectOpenRouterKeys(entries, selector, "numbered");
+  const activeEntries = filterInactiveOpenRouterKeys(entries, inactiveSelector);
+  // Incomplete pairs cannot be queried or labelled; skip them so one bad entry does not hide the others.
+  const complete = selected.filter((entry) => !entry.error && entry.key);
+  const labelsBySecret = new Map<string, string>();
+  for (const entry of complete) {
+    const label = labelsBySecret.get(entry.key!);
+    if (label !== undefined && label !== entry.label) throw new Error("Duplicate OpenRouter key has conflicting labels");
+    labelsBySecret.set(entry.key!, entry.label);
+  }
+  const unique = new Set<string>();
+  const visible = complete.filter((entry) => {
+    if (unique.has(entry.key!)) return false;
+    unique.add(entry.key!);
+    return true;
+  });
+  const activeSecrets = new Set(activeEntries.flatMap((entry) => entry.key ? [entry.key] : []));
+  return { visible, active: visible.filter((entry) => activeSecrets.has(entry.key!)), incomplete: selected.length - complete.length };
 }
 
 function usageWindows(data: JsonObject, prefix = ""): QuotaWindow[] {
@@ -94,7 +136,16 @@ async function fetchKey(entry: KeyConfig): Promise<OpenRouterKeyResult> {
 }
 
 export async function fetchOpenRouter(): Promise<ProviderResult> {
-  const entries = await resolveOpenRouterKeys();
+  let entries: KeyConfig[];
+  try {
+    const all = await resolveOpenRouterKeys();
+    const selected = selectOpenRouterKeys(all, process.env.OPENROUTER_QUOTA_KEYS, "all");
+    const active = filterInactiveOpenRouterKeys(all, process.env.OPENROUTER_INACTIVE_KEYS);
+    const activeIds = new Set(active.map((entry) => entry.id));
+    entries = selected.filter((entry) => activeIds.has(entry.id));
+  } catch {
+    return { configured: false, status: "error", error: "Invalid OpenRouter quota or inactive key selector", fetchedAt: new Date().toISOString(), windows: [], openrouterKeys: [] };
+  }
   const openrouterKeys = await Promise.all(entries.map(fetchKey));
   const successes = openrouterKeys.filter((entry) => entry.status === "ok").length;
   return {
