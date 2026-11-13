@@ -131,6 +131,7 @@ No machine-specific absolute paths or identifiers are stored in the application.
 - `MQTT_MAX_PAYLOAD_BYTES` (defaults to 32 MiB)
 - `OPENROUTER_API_KEY`
 - `OPENROUTER_KEY_<number>_LABEL` and `OPENROUTER_KEY_<number>` (multiple labeled OpenRouter keys)
+- `OPENROUTER_MANAGEMENT_API_KEY`, `OPENROUTER_USAGE_KEYS`, `OPENROUTER_QUOTA_KEYS`, `OPENROUTER_INACTIVE_KEYS` (OpenRouter model and token usage; see below)
 - `OLLAMA_API_KEY` (reserved for Ollama Cloud API requests)
 - `OPENCODE_GO_WORKSPACE_ID`
 - `OPENCODE_GO_AUTH_COOKIE`
@@ -186,9 +187,10 @@ additional or duplicate card. Quote labels containing ` #`, e.g. `"Home #2"`.
 No credentials can be entered, edited, or
 viewed in the browser.
 
-Each entry independently calls `GET https://openrouter.ai/api/v1/key` with its own
-key. No management key or account-wide credits endpoint is needed. Each card shows
-total, daily, weekly, and monthly OpenRouter credit usage in USD, plus the key's
+Each active entry independently calls `GET https://openrouter.ai/api/v1/key` with its own
+key. Entries named in `OPENROUTER_INACTIVE_KEYS` are not queried, and
+`OPENROUTER_QUOTA_KEYS` limits which cards appear. No management key or account-wide credits endpoint is needed for quota cards. Each card shows
+total OpenRouter credit usage in USD, plus the key's
 spending limit, remaining amount, and reset period when reported. Zero usage is
 valid; missing usage stays "Not reported". Authentication errors, invalid responses,
 timeouts, and API failures affect only that entry. Refreshes use the existing
@@ -198,20 +200,84 @@ separately when reported.
 
 API clients should read `openrouterKeys`: the provider-level `windows` now contains
 the first entry's four USD usage windows, not the previous `credits` window. It is
-empty if that entry fails, even when another succeeds.
+empty if that entry fails, even when another succeeds. The dashboard displays only the
+total; the other windows remain in the API.
 
-Daily periods start at midnight UTC, weekly periods run Monday through Sunday UTC,
-and monthly periods use UTC calendar months. These periods do not follow the chart
-date selector or `USAGE_TIMEZONE`. BYOK usage appears separately when reported and
+BYOK lifetime usage appears separately when reported and
 is not added to credit usage. Limits may include BYOK, as indicated on the card.
 Account-wide balances are not per-key limits and are not shown here.
 
 Usage belongs to the API key, not to an application or machine. A shared key reports
 the combined usage of all its applications. Repeating a key under multiple labels
-shows the same usage more than once. These snapshots are separate from ccusage
-charts and totals to avoid double-counting; they do not create historical records.
+shows the same quota usage more than once. Selecting a key whose usage is also reported
+by ccusage can double-count usage in charts.
 API responses include only labels, non-secret entry IDs, usage, limits, and status,
 never keys or OpenRouter's potentially sensitive response labels or raw errors.
+
+### OpenRouter detailed usage
+
+To chart model and token usage per key, add an OpenRouter management key to the
+server's `.env`. Management keys can read analytics but cannot make model requests;
+keep it as private as the keys above.
+
+```dotenv
+OPENROUTER_MANAGEMENT_API_KEY=sk-or-v1-replace-me
+# Optional: usage selector, default is every numbered key.
+OPENROUTER_USAGE_KEYS=1,2
+# Optional: quota card selector, default is every key including the default.
+OPENROUTER_QUOTA_KEYS=1,2
+# Optional: keys that are never queried, for usage or quota.
+OPENROUTER_INACTIVE_KEYS=2
+```
+
+Selectors are comma-separated numbers matching `OPENROUTER_KEY_<number>`, plus
+`default` for `OPENROUTER_API_KEY` or the OpenCode fallback. `none` selects nothing.
+An unset or empty usage selector selects every numbered key, so the default key is
+only charted when listed; an unset or empty quota selector selects every key. The two
+selectors are independent. An unknown number or malformed value is a configuration
+error: nothing is queried or shown for that setting, and the dashboard reports a
+fixed message rather than the offending value.
+
+**Inactive keys.** `OPENROUTER_INACTIVE_KEYS` stops all requests for a key, including
+through any other entry that carries the same credential. A selected inactive key
+keeps its stored history on the charts. Leave its secret and label configured: the
+history is found by a hash of the secret, and the label names it. Unselect the key
+with `OPENROUTER_USAGE_KEYS` to hide that history; deleting the secret orphans it.
+
+**Labels.** Each usage source is the key's exact current label. Keys sharing a label
+(case-sensitive) are combined into one source, summed per day and model, and
+relabelling a key regroups its history immediately without refetching. Repeating one
+credential under two different labels is an error and charts nothing, since its
+usage cannot belong to both. Repeating it under one label counts it once.
+An incomplete numbered pair is skipped and reported while other keys keep working.
+
+**Collection.** Usage follows the same hot and cold schedule as ccusage, in
+`USAGE_TIMEZONE`. Hot refreshes today and yesterday every `CCUSAGE_HOT_INTERVAL_MS`
+(10 minutes), on a manual refresh, and on dashboard requests, which start a refresh
+at most once per 10 minutes. Cold backfills older days within the
+rolling window, newest first one day at a time, plus ranges requested through
+`POST /api/v1/usage/cold`. A day that was only fetched before it ended, or within
+15 minutes of ending, is fetched once more afterwards, because analytics rows can
+arrive late. Dates are local calendar days: each query covers local midnight to the
+next local midnight, including daylight-saving days and fractional offsets.
+
+**Accuracy and errors.** A day is replaced only after the whole query and write
+succeed. A failed, rate-limited (OpenRouter allows 64 requests a minute), truncated,
+warned or inconsistent response leaves the last good snapshot and marks usage as
+partial; other keys and days are unaffected. A successful empty response replaces the
+day with zero. Cache reads and reasoning tokens are stored as part of prompt and
+completion tokens, never added on top, so token totals equal OpenRouter's. Treat the
+result as operational analytics, not a billing ledger: OpenRouter's history and
+delivery can be incomplete. Quota cards stay on `GET /api/v1/key` and show only total
+spend; daily, weekly and monthly spend is not displayed there.
+
+**Privacy and storage.** Snapshots are stored under `openrouter-usage` beside the
+usage data directory, separated by `USAGE_TIMEZONE`, in `0700` directories with `0600`
+files, named by a SHA-256 of the secret. Neither secrets nor hashes appear in
+snapshots, API responses, logs or `config.json`; OpenRouter's key identifier is used
+only in memory. Usage source IDs are derived from labels, which are visible to the
+dashboard, so do not put secrets in labels. Usage sources that no longer match a
+current label disappear from the source list, while their history stays on disk.
 
 ### Claude subscription quota
 

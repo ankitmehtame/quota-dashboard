@@ -11,10 +11,10 @@ type ConcreteRepresentation = Exclude<ChartRepresentation, "auto">;
 type UsageBucket = UsageDay & { from: string; to: string; days: UsageDay[] };
 type UsageRecord = PricingStatus & { hostId?: string; date: string; provider: string; model: string; inputTokens: number; cachedInputTokens: number; cacheCreationTokens: number; outputTokens: number; reasoningTokens: number; costUsd: number };
 type UsageHost = { hostId: string; generatedAt?: string | null; category?: string | null; status: string; severity?: "warning" | "error" | null; error?: string | null; stale?: boolean; local?: boolean; active?: boolean; included?: boolean; complete?: boolean; missingDates?: string[]; usable?: boolean; disabledReason?: string | null };
-type Usage = PricingStatus & { totalCostUsd: number; totalTokens?: number; from?: string; to?: string; providers?: string[]; daily?: UsageDay[]; byModel?: UsageModel[]; byProvider?: Array<PricingStatus & { provider: string; costUsd: number; totalTokens: number }>; records?: UsageRecord[]; error?: string | null; hosts?: UsageHost[]; mqtt?: { configured: boolean; connection: string } };
+type Usage = PricingStatus & { totalCostUsd: number; totalTokens?: number; from?: string; to?: string; providers?: string[]; sourceLabels?: Record<string, string>; daily?: UsageDay[]; byModel?: UsageModel[]; byProvider?: Array<PricingStatus & { provider: string; costUsd: number; totalTokens: number }>; records?: UsageRecord[]; error?: string | null; hosts?: UsageHost[]; mqtt?: { configured: boolean; connection: string } };
 type Dashboard = { version: string; providerOrder: string[]; providers: Record<string, Provider>; quotas: Record<string, { windows?: QuotaWindow[]; openrouterKeys?: OpenRouterKeyResult[]; byokWindows?: QuotaWindow[]; effectiveBudget?: OpenRouterKeyResult["effectiveBudget"]; spendingLimit?: OpenRouterKeyResult["spendingLimit"]; creditBalance?: { includedUsd: number; purchasedUsd: number | null }; planType?: string; subscriptionActiveUntil?: string | null; resetCredits?: Array<{ id: string; title: string; description?: string | null; expiresAt?: string | null }>; fetchedAt?: string; error?: string | null; errorKind?: string; cooldownUntil?: number; stale?: boolean; cached?: boolean }>; usage: Usage; serverNow: string; cache?: { fetchedAt?: string } };
 type UsageResponse = { version: string; apiVersion: number; serverNow: string; timezone: string; from: string; to: string; usage: Usage };
-type ProvidersResponse = { providerOrder: string[]; providers: Record<string, Provider>; usageSources: Record<string, UsageSourceConfig> };
+type ProvidersResponse = { providerOrder: string[]; providers: Record<string, Provider>; usageSources: Record<string, UsageSourceConfig>; usageSourceLabels?: Record<string, string> };
 type AppState = { days: number; range: string; modelsRange: "today" | "selected"; representation: ChartRepresentation; dashboard: Dashboard | null; hostSelections: Map<string, boolean>; sourceSelections: Map<string, boolean>; chartScrollLeft: number; serverClock?: { time: number; monotonic: number } };
 const timeFormatStorageKey = "quota-dashboard.time-format";
 const storedTimeFormat = localStorage.getItem(timeFormatStorageKey);
@@ -35,7 +35,7 @@ function toolId(id: string): string {
   return id === "opencode-go" ? "opencode" : id === "gemini-cli" ? "gemini" : id;
 }
 function usageSourceName(id: string): string {
-  return (Object.hasOwn(usageSourceNames, id) ? usageSourceNames[id] : "") || id.split(/[-_.~\s]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ") || id;
+  return (typeof state !== "undefined" ? state.dashboard?.usage?.sourceLabels?.[id] : "") || (Object.hasOwn(usageSourceNames, id) ? usageSourceNames[id] : "") || id.split(/[-_.~\s]+/).filter(Boolean).map((part) => part.charAt(0).toUpperCase() + part.slice(1)).join(" ") || id;
 }
 function usageSourceColor(id: string): string {
   if (Object.hasOwn(usageSourceColors, id)) return usageSourceColors[id];
@@ -447,10 +447,11 @@ function remainingMoney(value: number): string {
 function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][string]): string {
   if (id === "openrouter" && quota?.openrouterKeys?.length) {
     return quota.openrouterKeys.map((entry) => quotaCard(id, { ...provider, shortName: `OpenRouter · ${entry.label}`,
-      description: "Key credit usage in USD · UTC periods", configured: entry.configured, status: entry.status }, entry)).join("");
+      description: "Key credit usage in USD", configured: entry.configured, status: entry.status }, entry)).join("");
   }
   const now = estimatedServerNow();
-  const windows = quota?.windows?.length ? quota.windows : [undefined];
+  const visibleWindows = id === "openrouter" ? quota?.windows?.filter((window) => window.name === "total") : quota?.windows;
+  const windows = visibleWindows?.length ? visibleWindows : [undefined];
   const status = provider.status === "disabled" ? "off" : provider.status === "error" ? "error" : provider.configured ? "connected" : "setup needed";
   const renewalDate = formatRenewalDate(quota?.subscriptionActiveUntil, true);
   const subtitle = quota?.planType ? `${quota.planType} subscription` : provider.description;
@@ -470,7 +471,7 @@ function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][st
   const budget = quota?.effectiveBudget;
   const openrouterDetails = id === "openrouter" && quota?.windows?.length ? `<div class="quota-resets"><div class="quota-resets-title">Key spending limit</div><div class="quota-foot"><span>${escapeHtml(limit
     ? `${money(limit.limitUsd)} · ${limit.reset === null ? "all time" : limit.reset === "unknown" ? "reset period not reported" : `${limit.reset} (UTC)`} · ${limit.remainingUsd === null ? "remaining not reported" : `${remainingMoney(limit.remainingUsd)} remaining`}${limit.includesByok === null ? "" : limit.includesByok ? " · includes BYOK" : " · excludes BYOK"}`
-    : "No key spending limit reported")}</span></div></div>${budget ? `<div class="quota-resets"><div class="quota-resets-title">Effective budget</div><div class="quota-foot"><span>${escapeHtml(`${budget.scope.replaceAll("_", " ")} · ${money(budget.limitUsd)} · ${budget.remainingUsd === null ? "remaining not reported" : `${remainingMoney(budget.remainingUsd)} remaining`}`)}</span></div></div>` : ""}${quota.byokWindows?.length ? `<div class="quota-resets"><div class="quota-resets-title">BYOK usage · separate from credits</div>${quota.byokWindows.map((window) => `<div class="quota-foot"><span>${escapeHtml(window.name)}: ${escapeHtml(window.valueLabel)}</span></div>`).join("")}</div>` : ""}` : "";
+    : "No key spending limit reported")}</span></div></div>${budget ? `<div class="quota-resets"><div class="quota-resets-title">Effective budget</div><div class="quota-foot"><span>${escapeHtml(`${budget.scope.replaceAll("_", " ")} · ${money(budget.limitUsd)} · ${budget.remainingUsd === null ? "remaining not reported" : `${remainingMoney(budget.remainingUsd)} remaining`}`)}</span></div></div>` : ""}${quota.byokWindows?.length ? `<div class="quota-resets"><div class="quota-resets-title">BYOK usage · separate from credits</div>${quota.byokWindows.filter((window) => window.name === "total").map((window) => `<div class="quota-foot"><span>${escapeHtml(window.name)}: ${escapeHtml(window.valueLabel)}</span></div>`).join("")}</div>` : ""}` : "";
   const content = windows.map((window, index) => {
     const percent = window?.usedPercent;
     const value = window?.balanceLabel ? `<span class="quota-balance-primary">${escapeHtml(window.balanceLabel)}</span><span class="quota-balance-secondary">${escapeHtml(window.spentLabel || "")}</span>` : escapeHtml(window?.valueLabel || "Not available");

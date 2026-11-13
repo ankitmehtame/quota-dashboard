@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { readFileSync } from "node:fs";
 import { homedir, hostname } from "node:os";
@@ -15,6 +15,8 @@ import { createQuotaCache } from "./lib/quota-cache.js";
 import { createIconCache, isIconId } from "./lib/provider-icons.js";
 import { filterUsageRecords, summarizeUsage } from "./lib/usage.js";
 import { FilesystemUsageStore } from "./lib/usage-store.js";
+import { OpenRouterUsageStore } from "./lib/openrouter-usage-store.js";
+import { OpenRouterUsageCollector } from "./lib/openrouter-usage-collector.js";
 import { aggregateUsageSeverity, offlineUsageWarning, type UsageSeverity } from "./lib/usage-health.js";
 import { createDailyLogger, formatLocalTimestamp } from "./lib/daily-logger.js";
 import { createHttpRequestLog } from "./lib/http-request-log.js";
@@ -57,6 +59,14 @@ function validatedTimezone(value: string): string {
 const usageTimezone = validatedTimezone(process.env.USAGE_TIMEZONE?.trim() || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC");
 const usageDataRoot = resolve(process.env.USAGE_DATA_DIR?.trim() || join(homedir(), ".local", "share", "quota-dashboard", "usage"));
 const usageStore = new FilesystemUsageStore({ dataRoot: usageDataRoot });
+const openRouterUsageCollector = new OpenRouterUsageCollector(new OpenRouterUsageStore(join(dirname(usageDataRoot), "openrouter-usage")));
+// Refresh failures are kept per job type so a later success of one does not hide the other's failure.
+const openRouterRefreshErrors: { hot: string | null; cold: string | null } = { hot: null, cold: null };
+const OPENROUTER_STALE_MS = 10 * 60 * 1000;
+let openRouterHotPromise: Promise<void> | null = null;
+let openRouterHotStartedAt = 0;
+let openRouterColdRunning = false;
+const openRouterColdQueue: Array<{ from: string; to: string }> = [];
 function positiveNumber(value: string | undefined, fallback: number): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
@@ -172,7 +182,25 @@ async function loadConfig(): Promise<AppConfig> {
     config = structuredClone(DEFAULT_CONFIG);
   }
   for (const id of await usageStore.listToolIds()) config.usageSources[id] ??= { enabled: true };
+  const labels = await openRouterUsageLabels();
+  // Sources follow current labels: drop ones whose label no longer exists, unless the configuration is unreadable.
+  if (labels.error === null) for (const id of Object.keys(config.usageSources)) if (id.startsWith("openrouter-") && !Object.hasOwn(labels.labels, id)) delete config.usageSources[id];
+  for (const id of Object.keys(labels.labels)) config.usageSources[id] ??= { enabled: true };
   return config;
+}
+
+/** Opaque, label-derived source ID. Labels are operator-supplied and never contain credentials; key hashes are never used. */
+function openRouterSourceId(label: string): string {
+  return `openrouter-${createHash("sha256").update(label).digest("hex").slice(0, 24)}`;
+}
+
+async function openRouterUsageLabels(): Promise<{ labels: Record<string, string>; error: string | null }> {
+  try {
+    const { entries } = await openRouterUsageCollector.read([], usageTimezone);
+    return { labels: Object.fromEntries(entries.map((entry) => [openRouterSourceId(entry.label), entry.label])), error: null };
+  } catch {
+    return { labels: {}, error: "Invalid OpenRouter usage key configuration" };
+  }
 }
 
 async function saveConfig(config: AppConfig): Promise<void> {
@@ -315,6 +343,7 @@ async function runLocalUsageJob(range: { from: string; to: string }, category: "
 }
 
 function queueLocalHot(scheduled = false, correlation: { httpId?: string; requestId?: string; checkId?: string } = {}): void {
+  queueOpenRouterHot(scheduled || Boolean(correlation.httpId));
   const jobId = randomUUID();
   const requestId = correlation.requestId || randomUUID();
   const context = `${correlation.httpId ? ` httpId=${correlation.httpId}` : ""}${correlation.checkId ? ` checkId=${correlation.checkId}` : ""} requestId=${requestId}`;
@@ -337,6 +366,46 @@ function queueLocalHot(scheduled = false, correlation: { httpId?: string; reques
       console.error(`Local hot usage refresh failed: ${safeCcusageLogSummary(error)}`);
     })
     .finally(() => { localHotPromise = null; localHotJobId = null; });
+}
+
+/** Hot: today and yesterday, like ccusage. On-demand checks are throttled; scheduled and explicit refreshes are not. */
+function queueOpenRouterHot(force: boolean): void {
+  if (openRouterHotPromise || shuttingDown) return;
+  if (!force && Date.now() - openRouterHotStartedAt < OPENROUTER_STALE_MS) return;
+  openRouterHotPromise = (async () => {
+    if (!await openRouterUsageCollector.enabled()) { openRouterRefreshErrors.hot = null; openRouterRefreshErrors.cold = null; return; }
+    openRouterHotStartedAt = Date.now();
+    const range = localDateRange(2, usageTimezone);
+    const results = await Promise.all(dateList(range.from, range.to).map((date) => openRouterUsageCollector.refresh(date, usageTimezone)));
+    openRouterRefreshErrors.hot = results.find((result) => result.error)?.error ?? null;
+  })().catch(() => { openRouterRefreshErrors.hot = "OpenRouter usage refresh failed"; })
+    .finally(() => { openRouterHotPromise = null; dashboardCache.clear(); });
+}
+
+/** Cold: older days, newest first, one range at a time. Duplicate queued ranges are ignored. */
+function queueOpenRouterCold(from: string, to: string): void {
+  if (shuttingDown || openRouterColdQueue.some((job) => job.from === from && job.to === to)) return;
+  openRouterColdQueue.push({ from, to });
+  void drainOpenRouterCold();
+}
+
+async function drainOpenRouterCold(): Promise<void> {
+  if (openRouterColdRunning) return;
+  openRouterColdRunning = true;
+  try {
+    for (let job = openRouterColdQueue[0]; job && !shuttingDown; job = openRouterColdQueue[0]) {
+      let failure: string | null = null;
+      try {
+        for (const date of dateList(job.from, job.to).reverse()) {
+          if (shuttingDown) break;
+          failure ??= (await openRouterUsageCollector.refresh(date, usageTimezone)).error;
+        }
+      } catch { failure = "OpenRouter usage refresh failed"; }
+      openRouterRefreshErrors.cold = failure;
+      openRouterColdQueue.shift();
+      dashboardCache.clear();
+    }
+  } finally { openRouterColdRunning = false; }
 }
 
 function startLocalHotScheduler(): void {
@@ -364,6 +433,7 @@ type LocalColdQueueResult = "accepted" | "duplicate" | "full" | "shutdown";
 
 function queueLocalCold(from: string, to: string, offline: boolean, requestId: string = randomUUID(), scheduled = false): LocalColdQueueResult {
   if (shuttingDown) { logColdLocal(requestId, `local enqueue skipped reason=shutdown range=${from}..${to}`, false, scheduled); return "shutdown"; }
+  if (!scheduled) queueOpenRouterCold(from, to);
   const key = `${from}:${to}:${offline ? "offline" : "online"}`;
   if (localColdQueued.has(key)) {
     const originalJobId = localColdQueuedJobIds.get(key) || "unknown";
@@ -430,6 +500,11 @@ async function scheduleLocalColdDate(checkId: string): Promise<void> {
   }
   const rolling = rollingDateRange(usageTimezone, new Date(), localRollingDays);
   const newestColdDate = previousDate(localDateRange(2, usageTimezone).from);
+  if (!openRouterColdRunning && !openRouterColdQueue.length) {
+    for (let date = newestColdDate; date >= rolling.from; date = previousDate(date)) {
+      if (await openRouterUsageCollector.needsRefresh(date, usageTimezone).catch(() => false)) { queueOpenRouterCold(date, date); break; }
+    }
+  }
   const coveredDates = await usageStore.readStoredDates(localHostId, rolling.from, newestColdDate);
   for (let date = newestColdDate; date >= rolling.from; date = previousDate(date)) {
     if (!coveredDates.has(date)) {
@@ -469,7 +544,17 @@ async function buildUsage(url: URL, config: AppConfig) {
   const configuredStaleSeconds = Number(process.env.MQTT_STALE_AFTER_SECONDS || 900);
   const staleAfterMs = (Number.isFinite(configuredStaleSeconds) && configuredStaleSeconds > 0 ? configuredStaleSeconds : 900) * 1000;
   const storedFiles = normalizedFiles.filter((file) => file.timezone === usageTimezone);
-  const storedRecords = storedFiles.flatMap((file) => file.records.map((record) => ({ ...record, hostId: file.hostId })));
+  if (usageSources.length) queueOpenRouterHot(false);
+  let openRouterRecords: import("./lib/usage.js").UsageRecord[] = [];
+  let sourceLabels: Record<string, string> = {};
+  let openRouterUsageError: string | null = openRouterRefreshErrors.hot ?? openRouterRefreshErrors.cold;
+  try {
+    const { entries, error } = await openRouterUsageCollector.read(dateList(range.from, range.to), usageTimezone);
+    sourceLabels = Object.fromEntries(entries.map((entry) => [openRouterSourceId(entry.label), entry.label]));
+    openRouterRecords = entries.flatMap((entry) => entry.records.map((record) => ({ ...record, provider: openRouterSourceId(entry.label), hostId: localHostId })));
+    openRouterUsageError ??= error;
+  } catch { openRouterUsageError = "Invalid OpenRouter usage key configuration"; }
+  const storedRecords = [...storedFiles.flatMap((file) => file.records.map((record) => ({ ...record, hostId: file.hostId }))), ...openRouterRecords];
   const records = filterUsageRecords(usageSources, storedRecords);
   const summary = summarizeUsage(records);
   const hostIds = new Set<string>([localHostId, ...persistedHostIds, ...storedFiles.map((file) => file.hostId), ...Object.keys(remoteState.hosts)]);
@@ -524,11 +609,11 @@ async function buildUsage(url: URL, config: AppConfig) {
   });
   const hostProblem = problemHosts.length > 0;
   const severity = aggregateUsageSeverity([...problemHosts.map((host) => host.severity), ...(remoteState.configured && remoteState.connection !== "connected" ? ["error" as const] : [])]);
-  const usageStatus = usageSources.length === 0 ? "disabled" : hostProblem ? (records.length ? "partial" : "error") : "ok";
+  const usageStatus = usageSources.length === 0 ? "disabled" : hostProblem || openRouterUsageError ? (records.length ? "partial" : "error") : "ok";
   const usageResult = usageSources.length ? {
     status: usageStatus,
     severity,
-    error: hosts.find((host) => Boolean(host.error))?.error ?? null,
+    error: [hosts.find((host) => Boolean(host.error))?.error, openRouterUsageError].filter(Boolean).join("; ") || null,
     source: "filesystem",
     sources: usageSources.map((provider) => ({ provider, status: usageStatus, severity, error: hosts.find((host) => Boolean(host.error))?.error ?? null })),
     hosts,
@@ -537,6 +622,7 @@ async function buildUsage(url: URL, config: AppConfig) {
   } : { status: "disabled", daily: [], byModel: [], byProvider: [], totalCostUsd: 0, totalTokens: 0, error: null, source: null, sources: [], hosts: [], records: [] };
   const usage = {
     ...usageResult,
+    sourceLabels,
     mqtt: { configured: remoteState.configured, connection: remoteState.connection },
     hosts: usageSources.length ? hosts : [],
   };
@@ -611,7 +697,7 @@ async function handleApi(request: import("node:http").IncomingMessage, response:
   const config = await loadConfig();
   if (request.method === "GET" && url.pathname === "/api/v1/providers") {
     const statuses = Object.fromEntries(await Promise.all(config.providerOrder.map(async (id) => [id, providerStatus({ id, config: config.providers[id], result: { configured: await configuredStatus(id, config.providers[id].enabled) } })])));
-    return json(response, 200, { version: buildInfo.version, apiVersion: 1, providerOrder: config.providerOrder, providers: statuses, usageSources: config.usageSources });
+    return json(response, 200, { version: buildInfo.version, apiVersion: 1, providerOrder: config.providerOrder, providers: statuses, usageSources: config.usageSources, usageSourceLabels: (await openRouterUsageLabels()).labels });
   }
   if (request.method === "GET" && url.pathname === "/api/v1/usage") {
     const { range, usage } = await buildUsage(url, config);
