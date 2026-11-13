@@ -69,18 +69,36 @@ export function parseClaudeQuota(payload: unknown): QuotaWindow[] {
   const data = object(payload);
   const fields = [["five_hour", "5-hour", 18_000], ["seven_day", "Weekly", 604_800],
     ["seven_day_sonnet", "Sonnet (Weekly)", 604_800], ["seven_day_opus", "Opus (Weekly)", 604_800]] as const;
-  return fields.flatMap(([field, name, seconds]) => {
+  const build = (name: string, seconds: number, percent: number | null, resetsAt: unknown) => {
+    const end = isoTimestamp(resetsAt);
+    const start = end - seconds * 1000;
+    const valid = Number.isFinite(end) && Number.isFinite(new Date(start).getTime());
+    return usageWindow({ name, usedPercent: percent, windowSeconds: seconds,
+      resetAt: valid ? new Date(end).toISOString() : null,
+      windowEnd: valid ? new Date(end).toISOString() : null,
+      windowStart: valid ? new Date(start).toISOString() : null });
+  };
+  const windows = fields.flatMap(([field, name, seconds]) => {
     const value = object(data[field]);
     if (!Object.keys(value).length) return [];
     const percent = typeof value.utilization === "number" && Number.isFinite(value.utilization) ? value.utilization : null;
-    const end = isoTimestamp(value.resets_at);
-    const start = end - seconds * 1000;
-    const valid = Number.isFinite(end) && Number.isFinite(new Date(start).getTime());
-    return [usageWindow({ name, usedPercent: percent, windowSeconds: seconds,
-      resetAt: valid ? new Date(end).toISOString() : null,
-      windowEnd: valid ? new Date(end).toISOString() : null,
-      windowStart: valid ? new Date(start).toISOString() : null })];
+    return [build(name, seconds, percent, value.resets_at)];
   });
+  // Model-scoped weekly limits (such as Fable) are only reported in limits[]. Anything unrecognised is skipped, and a model
+  // already covered by a legacy field is not added twice.
+  const taken = new Set(windows.map((w) => w.name.toLowerCase()));
+  const scoped = Array.isArray(data.limits) ? data.limits.flatMap((entry) => {
+    const limit = object(entry);
+    const model = object(object(limit.scope).model);
+    const label = typeof model.display_name === "string" ? model.display_name.trim() : "";
+    if (limit.kind !== "weekly_scoped" || !label) return [];
+    const name = `${label} (Weekly)`;
+    if (taken.has(name.toLowerCase())) return [];
+    taken.add(name.toLowerCase());
+    const percent = typeof limit.percent === "number" && Number.isFinite(limit.percent) ? limit.percent : null;
+    return [build(name, 604_800, percent, limit.resets_at)];
+  }) : [];
+  return [...windows, ...scoped];
 }
 
 export function parseClaudeResetCredits(payload: unknown, now = Date.now()): RateLimitResetCredit[] | undefined {

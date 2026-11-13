@@ -249,9 +249,10 @@ not detected immediately while a cached result or cooldown is active.
 
 Quota comes from the undocumented `https://api.anthropic.com/api/oauth/usage`
 endpoint using `anthropic-beta: oauth-2025-04-20`. Standard 5-hour, weekly, Sonnet,
-and Opus weekly windows appear when reported. Missing utilization remains unavailable,
-not zero. Window start dates are inferred from reset time and fixed duration.
-Scoped `limits[]`, monetary extra usage, browser cookies, and billing
+and Opus weekly windows appear when reported, as do other model-scoped weekly limits
+(such as Fable) reported as `weekly_scoped` entries in `limits[]`. Missing utilization
+remains unavailable, not zero. Window start dates are inferred from reset time and
+fixed duration. Monetary extra usage, browser cookies, and billing
 are deferred until their schemas and units are verified.
 
 Unused limit resets appear in "Usage limit resets", ordered by expiry. A separate
