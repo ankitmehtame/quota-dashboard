@@ -85,16 +85,21 @@ export function parseClaudeQuota(payload: unknown): QuotaWindow[] {
     return [build(name, seconds, percent, value.resets_at)];
   });
   // Model-scoped weekly limits (such as Fable) are only reported in limits[]. Anything unrecognised is skipped, and a model
-  // already covered by a legacy field is not added twice.
+  // already covered by a legacy field is not added twice, whatever the API calls it ("Sonnet", "Claude Sonnet 4.5", ...).
   const taken = new Set(windows.map((w) => w.name.toLowerCase()));
+  const legacyModels = ["sonnet", "opus"].filter((word) => taken.has(`${word} (weekly)`));
   const scoped = Array.isArray(data.limits) ? data.limits.flatMap((entry) => {
     const limit = object(entry);
-    const model = object(object(limit.scope).model);
+    const scope = object(limit.scope);
+    const model = object(scope.model);
     const label = typeof model.display_name === "string" ? model.display_name.trim() : "";
     if (limit.kind !== "weekly_scoped" || !label) return [];
+    // The surface schema is unverified (null live), so a surface-specific limit is skipped rather than shown without its context.
+    if (scope.surface != null) return [];
     const name = `${label} (Weekly)`;
-    if (taken.has(name.toLowerCase())) return [];
+    if (taken.has(name.toLowerCase()) || legacyModels.some((word) => label.toLowerCase().includes(word))) return [];
     taken.add(name.toLowerCase());
+    // percent shares utilization's 0-100 scale (live: weekly_all 45 matched seven_day 45); is_active only marks the binding limit, so it is ignored.
     const percent = typeof limit.percent === "number" && Number.isFinite(limit.percent) ? limit.percent : null;
     return [build(name, 604_800, percent, limit.resets_at)];
   }) : [];

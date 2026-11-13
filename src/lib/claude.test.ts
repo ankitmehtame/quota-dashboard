@@ -484,6 +484,37 @@ test("Claude model-scoped weekly limits come from limits[] without duplicating l
   assert.equal(fable.windowStart, "2026-11-08T18:00:00.000Z");
 });
 
+test("Claude model-scoped weekly limits handle odd resets, labels, scopes, legacy gaps, and surfaces", () => {
+  const entry = (extra: object, scope: unknown = { model: { display_name: "Fable" } }) => ({ kind: "weekly_scoped", percent: 4, scope, ...extra });
+  for (const resets_at of [undefined, null, 123, "garbage"]) {
+    const [window] = parseClaudeQuota({ limits: [entry({ resets_at })] });
+    assert.equal(window.usedPercent, 4);
+    assert.equal(window.resetAt, null);
+    assert.equal(window.windowStart, null);
+  }
+  const skipped = [entry({}, { model: { display_name: "   " } }), { kind: "weekly_scoped", percent: 4 }, entry({}, null), entry({}, "x"), entry({}, []),
+    entry({}, {}), entry({}, { model: null }), entry({}, { model: "Fable" }), entry({}, { model: { display_name: "Fable" }, surface: "cli" })];
+  assert.deepEqual(parseClaudeQuota({ limits: skipped }), []);
+  assert.deepEqual(parseClaudeQuota({ limits: [entry({}, { model: { display_name: "Fable" }, surface: null })] }).map((w) => w.name), ["Fable (Weekly)"]);
+  // Without a legacy field the scoped Sonnet/Opus entries are the only source, so they appear.
+  const named = (display_name: string) => entry({}, { model: { display_name } });
+  assert.deepEqual(parseClaudeQuota({ limits: [named("Sonnet"), named("Opus")] }).map((w) => w.name), ["Sonnet (Weekly)", "Opus (Weekly)"]);
+  // With the legacy field present, differently-labelled variants are duplicates, but other models are kept.
+  const windows = parseClaudeQuota({ seven_day_sonnet: { utilization: 1 }, seven_day_opus: { utilization: 2 },
+    limits: [named("Claude Sonnet"), named("SONNET 4.5"), named("Opus 4"), named("Fable")] });
+  assert.deepEqual(windows.map((w) => w.name), ["Sonnet (Weekly)", "Opus (Weekly)", "Fable (Weekly)"]);
+  assert.deepEqual(parseClaudeQuota({ seven_day_sonnet: { utilization: 1 }, limits: [named("Opus")] }).map((w) => w.name), ["Sonnet (Weekly)", "Opus (Weekly)"]);
+});
+
+test("Claude fetch returns the Fable window from a limits[]-only payload", async (t) => {
+  testUserAgents(t);
+  t.mock.method(globalThis, "fetch", async () => Response.json({ limits: [
+    { kind: "weekly_scoped", percent: 12, resets_at: "2026-11-15T18:00:00+00:00", scope: { model: { display_name: "Fable" } } }] }));
+  const result = await fetchClaude({ configured: true, identity: "limits-only-account", accessToken: "FAKE_LIMITS_TOKEN" });
+  assert.equal(result.status, "ok");
+  assert.deepEqual(result.windows.map((w) => [w.name, w.usedPercent]), [["Fable (Weekly)", 12]]);
+});
+
 test("Claude null, absent, and malformed data never becomes zero", () => {
   for (const payload of [null, [], {}, { five_hour: null }, { five_hour: [] }, { limits: [] }]) assert.deepEqual(parseClaudeQuota(payload), []);
   for (const utilization of [null, undefined, "", "2", false, NaN, Infinity]) {
