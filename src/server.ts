@@ -60,8 +60,8 @@ const usageTimezone = validatedTimezone(process.env.USAGE_TIMEZONE?.trim() || In
 const usageDataRoot = resolve(process.env.USAGE_DATA_DIR?.trim() || join(homedir(), ".local", "share", "quota-dashboard", "usage"));
 const usageStore = new FilesystemUsageStore({ dataRoot: usageDataRoot });
 const openRouterUsageCollector = new OpenRouterUsageCollector(new OpenRouterUsageStore(join(dirname(usageDataRoot), "openrouter-usage")));
-// Refresh failures are kept per job type so a later success of one does not hide the other's failure.
-const openRouterRefreshErrors: { hot: string | null; cold: string | null } = { hot: null, cold: null };
+// A cold failure remains visible until all selected keys succeed for that same date.
+const openRouterRefreshErrors: { hot: string | null; cold: Map<string, string> } = { hot: null, cold: new Map() };
 const OPENROUTER_STALE_MS = 10 * 60 * 1000;
 let openRouterHotPromise: Promise<void> | null = null;
 let openRouterHotStartedAt = 0;
@@ -182,10 +182,11 @@ async function loadConfig(): Promise<AppConfig> {
   } catch {
     config = structuredClone(DEFAULT_CONFIG);
   }
-  for (const id of await usageStore.listToolIds()) config.usageSources[id] ??= { enabled: true };
+  const toolIds = new Set(await usageStore.listToolIds());
+  for (const id of toolIds) config.usageSources[id] ??= { enabled: true };
   const labels = await openRouterUsageLabels();
   // Sources follow current labels: drop ones whose label no longer exists, unless the configuration is unreadable.
-  if (labels.error === null) for (const id of Object.keys(config.usageSources)) if (id.startsWith("openrouter-") && !Object.hasOwn(labels.labels, id)) delete config.usageSources[id];
+  if (labels.error === null) for (const id of Object.keys(config.usageSources)) if (/^openrouter-[a-f0-9]{24}$/.test(id) && !toolIds.has(id) && !Object.hasOwn(labels.labels, id)) delete config.usageSources[id];
   for (const id of Object.keys(labels.labels)) config.usageSources[id] ??= { enabled: true };
   return config;
 }
@@ -373,14 +374,23 @@ function queueLocalHot(scheduled = false, correlation: { httpId?: string; reques
 function queueOpenRouterHot(force: boolean): void {
   if (openRouterHotPromise || shuttingDown) return;
   if (!force && Date.now() - openRouterHotStartedAt < OPENROUTER_STALE_MS) return;
+  openRouterHotStartedAt = Date.now();
+  let invalidate = false;
   openRouterHotPromise = (async () => {
-    if (!await openRouterUsageCollector.enabled()) { openRouterRefreshErrors.hot = null; openRouterRefreshErrors.cold = null; return; }
-    openRouterHotStartedAt = Date.now();
+    if (!await openRouterUsageCollector.enabled()) {
+      invalidate = openRouterRefreshErrors.hot !== null || openRouterRefreshErrors.cold.size > 0;
+      openRouterRefreshErrors.hot = null; openRouterRefreshErrors.cold.clear(); return;
+    }
+    invalidate = true;
     const range = localDateRange(2, usageTimezone);
-    const results = await Promise.all(dateList(range.from, range.to).map((date) => openRouterUsageCollector.refresh(date, usageTimezone)));
+    const results = await Promise.all(dateList(range.from, range.to).map(async (date) => {
+      const result = await openRouterUsageCollector.refresh(date, usageTimezone);
+      if (!result.error) openRouterRefreshErrors.cold.delete(date);
+      return result;
+    }));
     openRouterRefreshErrors.hot = results.find((result) => result.error)?.error ?? null;
-  })().catch(() => { openRouterRefreshErrors.hot = "OpenRouter usage refresh failed"; })
-    .finally(() => { openRouterHotPromise = null; dashboardCache.clear(); });
+  })().catch(() => { invalidate = true; openRouterRefreshErrors.hot = "OpenRouter usage refresh failed"; })
+    .finally(() => { openRouterHotPromise = null; if (invalidate) dashboardCache.clear(); });
 }
 
 /** Cold: older days, newest first, one range at a time. Duplicate queued ranges are ignored. */
@@ -394,17 +404,16 @@ async function drainOpenRouterCold(): Promise<void> {
   if (openRouterColdRunning) return;
   openRouterColdRunning = true;
   try {
-    if (!await openRouterUsageCollector.enabled()) { openRouterColdQueue.length = 0; openRouterRefreshErrors.cold = null; return; }
+    if (!await openRouterUsageCollector.enabled()) { openRouterColdQueue.length = 0; if (openRouterRefreshErrors.cold.size) { openRouterRefreshErrors.cold.clear(); dashboardCache.clear(); } return; }
     for (let job = openRouterColdQueue[0]; job && !shuttingDown; job = openRouterColdQueue[0]) {
-      let failure: string | null = null;
-      try {
-        for (const date of dateList(job.from, job.to).reverse()) {
-          if (shuttingDown) break;
+      for (const date of dateList(job.from, job.to).reverse()) {
+        if (shuttingDown) break;
+        try {
           const result = await openRouterUsageCollector.refresh(date, usageTimezone);
-          failure ??= result.error;
-        }
-      } catch { failure = "OpenRouter usage refresh failed"; }
-      openRouterRefreshErrors.cold = failure;
+          if (result.error) openRouterRefreshErrors.cold.set(date, result.error);
+          else openRouterRefreshErrors.cold.delete(date);
+        } catch { openRouterRefreshErrors.cold.set(date, "OpenRouter usage refresh failed"); }
+      }
       openRouterColdQueue.shift();
       dashboardCache.clear();
     }
@@ -508,7 +517,7 @@ async function scheduleLocalColdDate(checkId: string): Promise<void> {
     let candidate: string | null = null;
     let oldestAttempt = Infinity;
     for (let date = newestColdDate; date >= rolling.from; date = previousDate(date)) {
-      if (await openRouterUsageCollector.needsRefresh(date, usageTimezone).catch(() => false)) {
+      if (openRouterRefreshErrors.cold.has(date) || await openRouterUsageCollector.needsRefresh(date, usageTimezone).catch(() => false)) {
         const attempted = openRouterColdAttempts.get(date) ?? 0;
         if (attempted < oldestAttempt) { candidate = date; oldestAttempt = attempted; }
       }
@@ -558,7 +567,7 @@ async function buildUsage(url: URL, config: AppConfig) {
   if (usageSources.length) queueOpenRouterHot(false);
   let openRouterRecords: import("./lib/usage.js").UsageRecord[] = [];
   let sourceLabels: Record<string, string> = {};
-  let openRouterUsageError: string | null = openRouterRefreshErrors.hot ?? openRouterRefreshErrors.cold;
+  let openRouterUsageError: string | null = openRouterRefreshErrors.hot ?? openRouterRefreshErrors.cold.values().next().value ?? null;
   try {
     const { entries, error } = await openRouterUsageCollector.read(dateList(range.from, range.to), usageTimezone);
     sourceLabels = Object.fromEntries(entries.map((entry) => [openRouterSourceId(entry.label), entry.label]));

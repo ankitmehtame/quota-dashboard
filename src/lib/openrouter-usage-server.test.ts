@@ -53,7 +53,8 @@ globalThis.fetch = async (url, init) => {
   if (path === "/api/v1/key") return Response.json({ data: { label: "sk-or-v1-UPSTREAM_LABEL", usage: 1, hash: createHash("sha256").update("upstream:" + authorization.slice(7)).digest("hex") } });
   if (path === "/api/v1/analytics/query") {
     if (authorization !== "Bearer MANAGEMENT_SECRET") return new Response("RAW_MANAGEMENT_SECRET", { status: 403 });
-    const plan = JSON.parse(readFileSync(process.env.TEST_ROWS_PATH, "utf8"))[body.filters[0].value] ?? { data: [] };
+    const plans = JSON.parse(readFileSync(process.env.TEST_ROWS_PATH, "utf8"));
+    const plan = plans[body.filters[0].value + ":" + body.time_range.start.slice(0, 10)] ?? plans[body.filters[0].value] ?? { data: [] };
     if (plan.status) return new Response("RAW_UPSTREAM_SECRET", { status: plan.status });
     return Response.json({ data: { data: plan.data, metadata: { truncated: Boolean(plan.truncated) } } });
   }
@@ -276,6 +277,64 @@ test("cold scheduler advances past a persistently failing key and retries fairly
     await h.waitFor(async () => (await coldDates()).size >= 2, "scheduler progress past failing key");
     assert.ok((await coldDates()).size >= 2);
   } finally { await h.cleanup(); }
+});
+
+test("cold failures survive unrelated successes and recover only when the affected date succeeds", { timeout: 35_000 }, async () => {
+  const key = keyIdOf("TEST_KEY");
+  const failed = localDate(10, "UTC");
+  const other = localDate(11, "UTC");
+  const h = await harness({ USAGE_TIMEZONE: "UTC", CCUSAGE_DAYS: "2", OPENROUTER_KEY_1: "TEST_KEY", OPENROUTER_KEY_1_LABEL: "Test" }, ["codex"]);
+  try {
+    await h.start;
+    await h.waitFor(async () => (await h.queries()).length >= 2, "startup hot queries");
+    await h.setRows({ [`${key}:${failed}`]: { status: 500 } });
+    await h.api("usage/cold", "POST", { from: failed, to: failed });
+    await h.waitFor(async () => /OpenRouter usage keys could not be refreshed/.test((await h.api("usage?days=15") as UsageBody).usage.error ?? ""), "cold failure");
+    const before = (await h.queries()).length;
+    await h.api("usage/cold", "POST", { from: other, to: other });
+    await h.waitFor(async () => (await h.queries()).length > before, "unrelated cold success");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.match((await h.api("usage?days=15") as UsageBody).usage.error ?? "", /OpenRouter usage keys could not be refreshed/);
+    await h.setRows({});
+    const retry = (await h.queries()).length;
+    await h.api("usage/cold", "POST", { from: failed, to: failed });
+    await h.waitFor(async () => (await h.queries()).length > retry, "same-day retry");
+    await h.waitFor(async () => !/OpenRouter/.test((await h.api("usage?days=15") as UsageBody).usage.error ?? ""), "same-day recovery");
+  } finally { await h.cleanup(); }
+});
+
+test("a successful hot refresh clears a cold failure for the same hot date", { timeout: 25_000 }, async () => {
+  const key = keyIdOf("TEST_KEY");
+  const today = localDate(0, "UTC");
+  const h = await harness({ USAGE_TIMEZONE: "UTC", CCUSAGE_DAYS: "2", OPENROUTER_KEY_1: "TEST_KEY", OPENROUTER_KEY_1_LABEL: "Test" }, ["codex"]);
+  try {
+    await h.start;
+    await h.waitFor(async () => (await h.queries()).length >= 2, "startup hot queries");
+    await h.setRows({ [`${key}:${today}`]: { status: 500 } });
+    await h.api("usage/cold", "POST", { from: today, to: today });
+    await h.waitFor(async () => /OpenRouter usage keys could not be refreshed/.test((await h.api("usage?days=3") as UsageBody).usage.error ?? ""), "cold failure on today");
+    await h.setRows({});
+    await h.api("usage/refresh", "POST");
+    await h.waitFor(async () => !/OpenRouter/.test((await h.api("usage?days=3") as UsageBody).usage.error ?? ""), "hot recovery of today");
+  } finally { await h.cleanup(); }
+});
+
+test("disabled analytics does not invalidate a cached dashboard during usage polls", { timeout: 25_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "quota-healthy-ccusage-"));
+  const binary = join(root, "ccusage");
+  await writeFile(binary, '#!/bin/sh\nprintf \'{"daily":[{"date":"%s","agent":"codex","modelBreakdowns":[{"modelName":"model","inputTokens":1,"cost":1}]}]}\\n\' "$(date -u +%F)"\n', { mode: 0o755 });
+  const h = await harness({ USAGE_TIMEZONE: "UTC", CCUSAGE_DAYS: "2", CCUSAGE_BIN: binary, OPENROUTER_MANAGEMENT_API_KEY: "", OPENROUTER_KEY_1: "TEST_KEY", OPENROUTER_KEY_1_LABEL: "Test" }, ["codex"]);
+  try {
+    await h.start;
+    await h.waitFor(async () => (await h.api("usage?days=2") as UsageBody).usage.status === "ok", "healthy ccusage");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const first = await h.api("dashboard?days=2");
+    await h.api("usage?days=2");
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const second = await h.api("dashboard?days=2");
+    assert.equal(second.cache.fetchedAt, first.cache.fetchedAt);
+    assert.deepEqual(await h.calls(), []);
+  } finally { await h.cleanup(); await rm(root, { recursive: true, force: true }); }
 });
 
 test("server reports conflicting duplicate labels and invalid selectors as configuration errors without querying", { timeout: 25_000 }, async () => {

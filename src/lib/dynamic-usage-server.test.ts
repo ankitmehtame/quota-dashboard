@@ -33,6 +33,8 @@ test("server discovers tools across dates and hosts and persists dynamic toggles
     data: { daily: [{ date, agent, ...(shared ? { metadata: { agents: ["new-tool", "other-agent"] } } : {}), modelBreakdowns: [{ modelName: "example", inputTokens: 1, cost: 2 }] }] },
   });
   await ingest("local-test", today, "New Tool");
+  await ingest("prefix-test", today, "openrouter-custom");
+  await ingest("collision-test", today, "openrouter-0123456789abcdef01234567");
   await ingest("remote-test", "2020-01-02", "historic-agent");
   await ingest("mixed-test", today, "all", true);
   const socket = createServer();
@@ -84,13 +86,15 @@ test("server discovers tools across dates and hosts and persists dynamic toggles
     const sources = (await get("providers")).usageSources;
     assert.deepEqual(sources["new-tool"], { enabled: true });
     assert.deepEqual(sources["historic-agent"], { enabled: true });
+    assert.deepEqual(sources["openrouter-custom"], { enabled: true });
+    assert.deepEqual(sources["openrouter-0123456789abcdef01234567"], { enabled: true });
     assert.equal(Object.hasOwn(sources, "shared"), false);
     const usage = (await get("usage?days=1")).usage;
-    assert.deepEqual(usage.records.map((record: UsageRecord) => record.provider).sort(), ["new-tool", "shared"]);
+    assert.deepEqual(usage.records.map((record: UsageRecord) => record.provider).sort(), ["new-tool", "openrouter-0123456789abcdef01234567", "openrouter-custom", "shared"]);
     await ingest("new-host", "2020-01-03", "late-agent");
     // External filesystem writes are picked up on cache expiry, not on every request.
     assert.equal((await get("providers")).usageSources["late-agent"], undefined);
-    for (const id of ["new-tool", "historic-agent", "late-agent"]) {
+    for (const id of ["new-tool", "historic-agent", "late-agent", "openrouter-custom", "openrouter-0123456789abcdef01234567"]) {
       assert.equal((await request(`usage-sources/${id}/enabled`, false)).status, 200);
     }
     assert.equal((await request("usage-sources/future_agent.v2/enabled", false)).status, 200);
