@@ -93,6 +93,18 @@ test("starting another refresh cancels the previous completion timer", () => {
   assert.ok(![...timers.values()].some((timer) => timer.delay === 3_000));
 });
 
+test("manual refresh waits for analytics and reports its failure", () => {
+  const { api, status } = setup();
+  const host = { hostId: "local", category: "hot", generatedAt: "2026-10-21T12:00:00Z", status: "online" };
+  api.beginRefresh("refresh-button");
+  api.startHotUsagePolling(new Map([["local", { generatedAt: Date.parse(host.generatedAt), error: null }]]), { hosts: [host] }, Date.now(), new Set(["local"]));
+  api.endRefresh();
+  const fresh = { ...host, generatedAt: "2026-10-21T12:01:00Z" };
+  assert.equal(api.evaluate({ hosts: [fresh], analyticsRefreshing: true }), false);
+  assert.equal(api.evaluate({ hosts: [fresh], analyticsRefreshing: false, error: "OpenRouter refresh failed" }), true);
+  assert.match(status.textContent, /incomplete: OpenRouter refresh failed/);
+});
+
 test("failed requests, missing hosts, host failures, and polling timeouts clear loading", () => {
   for (const outcome of ["request failure", "no hosts", "host failure", "timeout"]) {
     const { api, buttons, status } = setup();

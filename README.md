@@ -273,9 +273,9 @@ spend; daily, weekly and monthly spend is not displayed there.
 
 **Privacy and storage.** Snapshots are stored under `openrouter-usage` beside the
 usage data directory, separated by `USAGE_TIMEZONE`, in `0700` directories with `0600`
-files, named by a SHA-256 of the secret. Neither secrets nor hashes appear in
-snapshots, API responses, logs or `config.json`; OpenRouter's key identifier is used
-only in memory. Usage source IDs are derived from labels, which are visible to the
+files, named by a SHA-256 of the secret. That same hash is sent as the `api_key_id`
+analytics filter; `/key` does not return it. Neither secrets nor hashes appear in
+snapshot contents, dashboard API responses, logs or `config.json`. Usage source IDs are derived from labels, which are visible to the
 dashboard, so do not put secrets in labels. Usage sources that no longer match a
 current label disappear from the source list, while their history stays on disk.
 
@@ -508,6 +508,18 @@ The normalized, versioned API is designed for native clients and widgets:
 - `GET /api/v1/quotas`
 - `GET /api/v1/widget-summary`
 - `PUT /api/v1/providers/:id/enabled`
+
+`GET /api/v1/usage` and the dashboard expose `usage.status`, `severity`, `error`,
+`sources`, `sourceLabels`, `analyticsRefreshing`, and normalized records. Analytics failures can make usage
+partial even when quota cards and usage hosts are healthy; saved data may be stale.
+`GET /api/v1/providers` exposes `usageSourceLabels` for display names. `POST
+/api/v1/usage/refresh` returns 202 after scheduling hot collection. `POST
+/api/v1/usage/cold` accepts JSON `from` and `to` (inclusive YYYY-MM-DD, at most
+370 days), `mode` (`offline` or `online`), and optional `hostId` and `requestId`.
+Its 202 response means queued, not completed; `localAccepted: false` reports a full
+local queue for an all-host request, while a targeted local request returns 429.
+Analytics queries share pacing across hot and cold work and retry 429s with bounded
+backoff. Long ranges may take many minutes; failed dates remain eligible for retry.
 
 The widget endpoint deliberately returns a compact provider snapshot, separate from the web dashboard response.
 

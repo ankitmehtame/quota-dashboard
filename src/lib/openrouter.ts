@@ -137,8 +137,10 @@ async function fetchKey(entry: KeyConfig): Promise<OpenRouterKeyResult> {
 
 export async function fetchOpenRouter(): Promise<ProviderResult> {
   let entries: KeyConfig[];
+  let hasCredentials = false;
   try {
     const all = await resolveOpenRouterKeys();
+    hasCredentials = all.some((entry) => !entry.error && Boolean(entry.key));
     const selected = selectOpenRouterKeys(all, process.env.OPENROUTER_QUOTA_KEYS, "all");
     const active = filterInactiveOpenRouterKeys(all, process.env.OPENROUTER_INACTIVE_KEYS);
     const activeIds = new Set(active.map((entry) => entry.id));
@@ -151,7 +153,7 @@ export async function fetchOpenRouter(): Promise<ProviderResult> {
   return {
     configured: openrouterKeys.some((entry) => entry.configured),
     status: successes === openrouterKeys.length && successes > 0 ? "ok" : successes > 0 ? "partial" : "error",
-    error: !entries.length ? "OpenRouter API key is not configured" : successes < entries.length ? "One or more OpenRouter keys need attention" : null,
+    error: !entries.length ? hasCredentials ? "No OpenRouter quota keys selected" : "OpenRouter API key is not configured" : successes < entries.length ? "One or more OpenRouter keys need attention" : null,
     fetchedAt: new Date().toISOString(),
     // Expose the first entry's windows without summing overlapping periods or keys.
     windows: openrouterKeys[0]?.windows ?? [],

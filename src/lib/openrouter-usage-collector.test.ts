@@ -189,6 +189,12 @@ test("without a management key history stays readable but nothing is queried; ke
   } finally { await f.cleanup(); }
 });
 
+test("quota-only incomplete and duplicate pairs do not produce analytics errors", async () => {
+  const f = await fixture({ OPENROUTER_KEY_1: "same", OPENROUTER_KEY_1_LABEL: "One", OPENROUTER_KEY_2: "same", OPENROUTER_KEY_2_LABEL: "Two", OPENROUTER_KEY_3: "incomplete" });
+  delete f.env.OPENROUTER_MANAGEMENT_API_KEY;
+  try { assert.deepEqual(await f.collector.read([DATE], "UTC"), { entries: [], error: null }); } finally { await f.cleanup(); }
+});
+
 test("a corrupt snapshot is reported while other snapshots and keys are still returned", async () => {
   const f = await fixture({ OPENROUTER_KEY_1: "one", OPENROUTER_KEY_1_LABEL: "Home" });
   try {

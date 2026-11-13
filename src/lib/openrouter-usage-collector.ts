@@ -92,8 +92,16 @@ export class OpenRouterUsageCollector {
    * including selected inactive keys. A corrupt snapshot is skipped and reported.
    */
   async read(dates: string[], timezone: string): Promise<OpenRouterReadResult> {
-    const selection = await this.selection();
-    let error: string | null = selection.incomplete ? "One or more OpenRouter usage keys are incomplete" : null;
+    let selection: Selection;
+    try { selection = await this.selection(); }
+    catch (error) {
+      if (this.env.OPENROUTER_MANAGEMENT_API_KEY?.trim()) throw error;
+      const keys = await resolveOpenRouterKeys(this.env);
+      const history = await Promise.all(keys.filter((entry) => entry.key).map((entry) => this.store.has(openRouterKeyHash(entry.key!), timezone).catch(() => false)));
+      if (history.some(Boolean)) throw error;
+      return { entries: [], error: null };
+    }
+    let error: string | null = selection.managed && selection.incomplete ? "One or more OpenRouter usage keys are incomplete" : null;
     const groups = new Map<string, UsageRecord[]>();
     await Promise.all(selection.visible.map(async (entry) => {
       const hash = openRouterKeyHash(entry.key!);
@@ -108,6 +116,7 @@ export class OpenRouterUsageCollector {
     // Entry order is deterministic regardless of which reads finished first.
     const order = selection.visible.map((entry) => entry.label);
     const entries = [...groups].sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0])).map(([label, records]) => ({ label, records: combine(records) }));
+    if (!error && selection.incomplete && entries.length) error = "One or more OpenRouter usage keys are incomplete";
     return { entries, error };
   }
 

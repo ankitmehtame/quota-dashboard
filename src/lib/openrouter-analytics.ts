@@ -40,20 +40,42 @@ function metric(row: Record<string, unknown>, name: string): number {
   return value;
 }
 
-/** OpenRouter's key hash is SHA-256 of the key, as verified against its keys API. */
+/** The analytics filter accepts the SHA-256 of the API key. */
 export async function fetchOpenRouterKeyId(secret: string): Promise<string> {
   return openRouterKeyHash(secret);
 }
 
 /** Fetch one complete local day. Reject partial results instead of replacing saved data. */
+export class AnalyticsRateLimiter {
+  private next = 0;
+  private tail: Promise<void> = Promise.resolve();
+  constructor(private readonly now = Date.now, private readonly sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))) {}
+  async wait(): Promise<void> {
+    const task = this.tail.then(async () => {
+      const delay = Math.max(0, this.next - this.now());
+      if (delay) await this.sleep(delay);
+      this.next = this.now() + 1000;
+    });
+    this.tail = task.catch(() => {});
+    await task;
+  }
+}
+const analyticsLimiter = new AnalyticsRateLimiter();
+
 export async function fetchOpenRouterDay(managementKey: string, keyId: string, date: string, timezone: string): Promise<UsageRecord[]> {
-  const response = await fetch("https://openrouter.ai/api/v1/analytics/query", {
+  let response!: Response;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    await analyticsLimiter.wait();
+    response = await fetch("https://openrouter.ai/api/v1/analytics/query", {
     method: "POST", redirect: "error", signal: AbortSignal.timeout(30_000),
     headers: { Authorization: `Bearer ${managementKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({ metrics: ["total_usage", "tokens_prompt", "tokens_completion", "cached_tokens", "reasoning_tokens"],
       dimensions: ["model"], filters: [{ field: "api_key_id", operator: "eq", value: keyId }],
       time_range: openRouterDayRange(date, timezone), limit: 10000 }),
-  });
+    });
+    if (response.status !== 429 || attempt === 3) break;
+    await new Promise((resolve) => setTimeout(resolve, 1000 * 2 ** attempt));
+  }
   if (!response.ok) throw new Error(`OpenRouter analytics HTTP ${response.status}`);
   const payload = await response.json() as { data?: { data?: unknown; metadata?: { truncated?: unknown }; warnings?: unknown[] } };
   const data = payload?.data;
@@ -63,9 +85,9 @@ export async function fetchOpenRouterDay(managementKey: string, keyId: string, d
     const row = value as Record<string, unknown>;
     if (typeof row.model !== "string" || !row.model.trim()) throw new Error("Invalid analytics model");
     const prompt = metric(row, "tokens_prompt");
-    const cached = metric(row, "cached_tokens");
+    const cached = row.cached_tokens === null ? 0 : metric(row, "cached_tokens");
     const completion = metric(row, "tokens_completion");
-    const reasoning = metric(row, "reasoning_tokens");
+    const reasoning = row.reasoning_tokens === null ? 0 : metric(row, "reasoning_tokens");
     // OpenRouter reports cache and reasoning as breakdowns of prompt and completion.
     // Refuse inconsistent data rather than silently double-counting tokens.
     if (cached > prompt || reasoning > completion) throw new Error("Inconsistent analytics token breakdown");
