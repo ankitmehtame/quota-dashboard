@@ -190,9 +190,9 @@ viewed in the browser.
 
 Each active entry independently calls `GET https://openrouter.ai/api/v1/key` with its own
 key. Entries named in `OPENROUTER_INACTIVE_KEYS` are not queried, and
-`OPENROUTER_QUOTA_KEYS` limits which cards appear. Each successful key also requests
-`GET https://openrouter.ai/api/v1/credits` for its account balance. The balance is
-account-wide, so cards for keys on the same account can show the same balance; if
+`OPENROUTER_QUOTA_KEYS` limits which cards appear. An optional management-key request
+to `GET https://openrouter.ai/api/v1/credits` retrieves one account-wide balance per
+refresh, shown only on cards selected by `OPENROUTER_CREDIT_KEYS` (see below). If
 the endpoint is unavailable, key usage still appears. Each card shows
 total lifetime OpenRouter credit usage in USD, plus the key's
 spending limit, remaining amount, and reset period when reported. Zero usage is
