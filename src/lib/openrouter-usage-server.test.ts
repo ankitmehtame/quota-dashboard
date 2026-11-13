@@ -279,6 +279,94 @@ test("cold scheduler advances past a persistently failing key and retries fairly
   } finally { await h.cleanup(); }
 });
 
+test("historical failures cannot monopolize rolling backfill", { timeout: 30_000 }, async () => {
+  const key = keyIdOf("TEST_KEY");
+  const h = await harness({ USAGE_TIMEZONE: "UTC", CCUSAGE_DAYS: "6", CCUSAGE_COLD_INTERVAL_MS: "200",
+    OPENROUTER_KEY_1: "TEST_KEY", OPENROUTER_KEY_1_LABEL: "Test" }, ["codex"]);
+  await h.setRows(Object.fromEntries(Array.from({ length: 5 }, (_, i) => [`${key}:${localDate(10 + i, "UTC")}`, { status: 500 }])));
+  try {
+    await h.start;
+    await h.api("usage/cold", "POST", { from: localDate(14, "UTC"), to: localDate(10, "UTC") });
+    await h.waitFor(async () => (await h.queries()).some((call) => call.body.time_range.start.slice(0, 10) === localDate(14, "UTC")), "manual historical failures");
+    const count = (await h.queries()).length;
+    // One rolling job may already have been queued before the manual range.
+    await h.waitFor(async () => (await h.queries()).length >= count + 3, "rolling and historical turns");
+    const next = (await h.queries()).slice(count, count + 3).map((call) => call.body.time_range.start.slice(0, 10));
+    assert.ok(next.some((date) => date >= localDate(5, "UTC") && date <= localDate(2, "UTC")), `no rolling turn: ${next}`);
+    assert.ok(next.some((date) => date <= localDate(10, "UTC")), `no historical turn: ${next}`);
+  } finally { await h.cleanup(); }
+});
+
+test("incomplete key warning remains visible without retrying settled cold dates", { timeout: 20_000 }, async () => {
+  const h = await harness({ USAGE_TIMEZONE: "UTC", CCUSAGE_DAYS: "3", CCUSAGE_COLD_INTERVAL_MS: "200",
+    OPENROUTER_KEY_1: "HEALTHY", OPENROUTER_KEY_1_LABEL: "Healthy", OPENROUTER_KEY_2: "INCOMPLETE" }, ["codex"]);
+  const date = localDate(2, "UTC");
+  try {
+    await h.start;
+    const coldCount = async () => (await h.queries()).filter((call) => call.body.time_range.start.slice(0, 10) === date).length;
+    await h.waitFor(async () => await coldCount() === 1, "settled cold query");
+    await new Promise((resolve) => setTimeout(resolve, 3500));
+    assert.equal(await coldCount(), 1);
+    assert.match((await h.api("usage?days=3") as UsageBody).usage.error ?? "", /OpenRouter usage keys are incomplete/);
+  } finally { await h.cleanup(); }
+});
+
+test("scheduler retries failed manual dates outside the rolling window", { timeout: 25_000 }, async () => {
+  const key = keyIdOf("TEST_KEY");
+  const date = localDate(10, "UTC");
+  const h = await harness({ USAGE_TIMEZONE: "UTC", CCUSAGE_DAYS: "2", CCUSAGE_COLD_INTERVAL_MS: "200",
+    OPENROUTER_KEY_1: "TEST_KEY", OPENROUTER_KEY_1_LABEL: "Test" }, ["codex"]);
+  try {
+    await h.start;
+    await h.setRows({ [`${key}:${date}`]: { status: 500 } });
+    await h.api("usage/cold", "POST", { from: date, to: date });
+    await h.waitFor(async () => /OpenRouter usage keys could not be refreshed/.test((await h.api("usage?days=15") as UsageBody).usage.error ?? ""), "manual failure");
+    assert.doesNotMatch((await h.api("usage?days=3") as UsageBody).usage.error ?? "", /OpenRouter usage keys could not be refreshed/);
+    await h.setRows({});
+    const count = (await h.queries()).filter((call) => call.body.time_range.start.slice(0, 10) === date).length;
+    await h.waitFor(async () => (await h.queries()).filter((call) => call.body.time_range.start.slice(0, 10) === date).length > count, "automatic historical retry");
+    await h.waitFor(async () => !/OpenRouter/.test((await h.api("usage?days=15") as UsageBody).usage.error ?? ""), "historical recovery");
+  } finally { await h.cleanup(); }
+});
+
+test("a full analytics queue reports local backpressure instead of accepting only ccusage", { timeout: 20_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "quota-fast-ccusage-"));
+  const binary = join(root, "ccusage");
+  await writeFile(binary, '#!/bin/sh\nprintf \'{"daily":[{"date":"%s","agent":"codex","modelBreakdowns":[{"modelName":"model","inputTokens":1,"cost":1}]}]}\\n\' "$(date -u +%F)"\n', { mode: 0o755 });
+  const h = await harness({ USAGE_TIMEZONE: "UTC", CCUSAGE_DAYS: "2", CCUSAGE_BIN: binary,
+    OPENROUTER_KEY_1: "TEST_KEY", OPENROUTER_KEY_1_LABEL: "Test" }, ["codex"]);
+  try {
+    await h.start;
+    const results = [];
+    for (let i = 10; i < 21; i++) {
+      const date = localDate(i, "UTC");
+      results.push(await h.api("usage/cold", "POST", { from: date, to: date }));
+      await new Promise((resolve) => setTimeout(resolve, 80));
+    }
+    assert.ok(results.some((result) => result.localAccepted === true));
+    assert.equal(results[10].localAccepted, false);
+    const queued = localDate(10 + results.findIndex((result) => result.localAccepted), "UTC");
+    assert.equal((await h.api("usage/cold", "POST", { from: queued, to: queued, mode: "online" })).localAccepted, true);
+    assert.match(await h.everything(), /analytics enqueue skipped reason=full/);
+  } finally { await h.cleanup(); await rm(root, { recursive: true, force: true }); }
+});
+
+test("manual duplicate of scheduled ccusage still queues settled analytics", { timeout: 25_000 }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "quota-slow-ccusage-"));
+  const binary = join(root, "ccusage");
+  await writeFile(binary, '#!/bin/sh\nsleep 5\nprintf \'{"daily":[]}\\n\'\n', { mode: 0o755 });
+  const date = localDate(2, "UTC");
+  const h = await harness({ USAGE_TIMEZONE: "UTC", CCUSAGE_DAYS: "3", CCUSAGE_BIN: binary,
+    OPENROUTER_KEY_1: "TEST_KEY", OPENROUTER_KEY_1_LABEL: "Test" }, ["codex"]);
+  await new OpenRouterUsageStore(join(h.root, "openrouter-usage")).write(openRouterKeyHash("TEST_KEY"), date, "UTC", []);
+  try {
+    await h.start;
+    await h.waitFor(async () => (await h.everything()).includes(`local enqueue range=${date}..${date}`), "scheduled ccusage");
+    assert.equal((await h.api("usage/cold", "POST", { from: date, to: date, mode: "offline" })).localAccepted, true);
+    await h.waitFor(async () => (await h.queries()).some((call) => call.body.time_range.start.slice(0, 10) === date), "manual analytics refresh");
+  } finally { await h.cleanup(); await rm(root, { recursive: true, force: true }); }
+});
+
 test("cold failures survive unrelated successes and recover only when the affected date succeeds", { timeout: 35_000 }, async () => {
   const key = keyIdOf("TEST_KEY");
   const failed = localDate(10, "UTC");

@@ -385,7 +385,7 @@ function queueOpenRouterHot(force: boolean): void {
     const range = localDateRange(2, usageTimezone);
     const results = await Promise.all(dateList(range.from, range.to).map(async (date) => {
       const result = await openRouterUsageCollector.refresh(date, usageTimezone);
-      if (!result.error) openRouterRefreshErrors.cold.delete(date);
+      if (!result.failed) openRouterRefreshErrors.cold.delete(date);
       return result;
     }));
     openRouterRefreshErrors.hot = results.find((result) => result.error)?.error ?? null;
@@ -410,7 +410,7 @@ async function drainOpenRouterCold(): Promise<void> {
         if (shuttingDown) break;
         try {
           const result = await openRouterUsageCollector.refresh(date, usageTimezone);
-          if (result.error) openRouterRefreshErrors.cold.set(date, result.error);
+          if (result.failed) openRouterRefreshErrors.cold.set(date, result.error ?? "OpenRouter usage refresh failed");
           else openRouterRefreshErrors.cold.delete(date);
         } catch { openRouterRefreshErrors.cold.set(date, "OpenRouter usage refresh failed"); }
       }
@@ -446,14 +446,16 @@ type LocalColdQueueResult = "accepted" | "duplicate" | "full" | "shutdown";
 function queueLocalCold(from: string, to: string, offline: boolean, requestId: string = randomUUID(), scheduled = false): LocalColdQueueResult {
   if (shuttingDown) { logColdLocal(requestId, `local enqueue skipped reason=shutdown range=${from}..${to}`, false, scheduled); return "shutdown"; }
   const key = `${from}:${to}:${offline ? "offline" : "online"}`;
-  if (localColdQueued.has(key)) {
+  const duplicate = localColdQueued.has(key);
+  const analyticsDuplicate = openRouterColdQueue.some((job) => job.from === from && job.to === to);
+  if (!duplicate && localColdQueue.length >= MAX_LOCAL_COLD_QUEUE) { logColdLocal(requestId, `local enqueue skipped reason=full range=${from}..${to} mode=${offline ? "offline" : "online"}`, false, scheduled); return "full"; }
+  if (!scheduled && !analyticsDuplicate && openRouterColdQueue.length >= MAX_LOCAL_COLD_QUEUE) { logColdLocal(requestId, `analytics enqueue skipped reason=full range=${from}..${to}`, false, scheduled); return "full"; }
+  if (!scheduled && !analyticsDuplicate) queueOpenRouterCold(from, to);
+  if (duplicate) {
     const originalJobId = localColdQueuedJobIds.get(key) || "unknown";
     logColdLocal(requestId, `local enqueue deduplicated jobId=${originalJobId} range=${from}..${to} mode=${offline ? "offline" : "online"}`, false, scheduled);
     return "duplicate";
   }
-  if (localColdQueue.length >= MAX_LOCAL_COLD_QUEUE) { logColdLocal(requestId, `local enqueue skipped reason=full range=${from}..${to} mode=${offline ? "offline" : "online"}`, false, scheduled); return "full"; }
-  if (!scheduled && openRouterColdQueue.length >= MAX_LOCAL_COLD_QUEUE) return "full";
-  if (!scheduled) queueOpenRouterCold(from, to);
   localColdQueued.add(key);
   localColdQueuedJobIds.set(key, requestId);
   localColdQueue.push({ from, to, offline, requestId, scheduled });
@@ -505,6 +507,7 @@ function previousDate(value: string): string {
   return date.toISOString().slice(0, 10);
 }
 
+let preferHistoricalCold = false;
 async function scheduleLocalColdDate(checkId: string): Promise<void> {
   const config = await loadConfig();
   if (!Object.values(config.usageSources).some((source) => source.enabled)) {
@@ -522,8 +525,22 @@ async function scheduleLocalColdDate(checkId: string): Promise<void> {
         if (attempted < oldestAttempt) { candidate = date; oldestAttempt = attempted; }
       }
     }
+    const rollingCandidate = candidate;
+    candidate = null;
+    oldestAttempt = Infinity;
+    // Keep historical failures eligible, but reserve alternating turns for the
+    // rolling window so a large failed manual range cannot monopolize backfill.
+    for (const date of openRouterRefreshErrors.cold.keys()) {
+      if (date >= rolling.from && date <= newestColdDate) continue;
+      if (date > newestColdDate) continue; // Hot refresh owns today and yesterday.
+      const attempted = openRouterColdAttempts.get(date) ?? 0;
+      if (attempted < oldestAttempt) { candidate = date; oldestAttempt = attempted; }
+    }
+    const historicalCandidate = candidate;
+    candidate = rollingCandidate && historicalCandidate ? (preferHistoricalCold ? historicalCandidate : rollingCandidate) : rollingCandidate ?? historicalCandidate;
+    if (rollingCandidate && historicalCandidate) preferHistoricalCold = !preferHistoricalCold;
     if (candidate) { openRouterColdAttempts.set(candidate, Date.now()); queueOpenRouterCold(candidate, candidate); }
-    for (const date of openRouterColdAttempts.keys()) if (date < rolling.from || date > newestColdDate) openRouterColdAttempts.delete(date);
+    for (const date of openRouterColdAttempts.keys()) if ((date < rolling.from || date > newestColdDate) && !openRouterRefreshErrors.cold.has(date)) openRouterColdAttempts.delete(date);
   }
   const coveredDates = await usageStore.readStoredDates(localHostId, rolling.from, newestColdDate);
   for (let date = newestColdDate; date >= rolling.from; date = previousDate(date)) {
@@ -567,7 +584,7 @@ async function buildUsage(url: URL, config: AppConfig) {
   if (usageSources.length) queueOpenRouterHot(false);
   let openRouterRecords: import("./lib/usage.js").UsageRecord[] = [];
   let sourceLabels: Record<string, string> = {};
-  let openRouterUsageError: string | null = openRouterRefreshErrors.hot ?? openRouterRefreshErrors.cold.values().next().value ?? null;
+  let openRouterUsageError: string | null = openRouterRefreshErrors.hot ?? [...openRouterRefreshErrors.cold].find(([date]) => date >= range.from && date <= range.to)?.[1] ?? null;
   try {
     const { entries, error } = await openRouterUsageCollector.read(dateList(range.from, range.to), usageTimezone);
     sourceLabels = Object.fromEntries(entries.map((entry) => [openRouterSourceId(entry.label), entry.label]));
