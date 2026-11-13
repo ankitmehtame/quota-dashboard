@@ -24,7 +24,7 @@ const toolColors = {};
 const usageSources = { codex: { enabled: true }, opencode: { enabled: true }, hermes: { enabled: true } };
 const window = (name, usedPercent, hours, elapsed) => ({ name, usedPercent, resetAt: at(hours), windowStart: at(-elapsed), windowEnd: at(hours), windowSeconds: (hours + elapsed) * 3600 });
 const quotas = {
-  claude: { windows: [window('5-hour', 24, 3, 2), window('weekly', 42, 70, 98)], planType: 'Max' },
+  claude: { windows: [window('5-hour', 24, 3, 2), window('weekly', 42, 70, 98), window('Fable (Weekly)', 18, 70, 98)], planType: 'Max' },
   codex: { windows: [window('5-hour', 67, 1, 4), window('weekly', 31, 102, 66)], planType: 'Plus', resetCredits: [{ id: 'demo-reset', title: 'Full reset', expiresAt: at(168) }] },
   'opencode-go': { windows: [window('weekly', 83, 30, 138), window('monthly', 56, 240, 480)] },
   ollama: { windows: [{ ...window('monthly', 36, 240, 480), valueLabel: '$7.20 used', limitValue: 20, unit: 'USD' }], creditBalance: { includedUsd: 12.8, purchasedUsd: 5 } },

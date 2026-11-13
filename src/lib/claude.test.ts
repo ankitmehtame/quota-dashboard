@@ -471,6 +471,19 @@ test("Claude windows preserve fractions, real zero, model order, durations, and 
   assert.equal(parseClaudeQuota({ seven_day: { utilization: 12, resets_at: "2026-10-20T00:00:00Z" } })[0].windowStart, "2026-10-13T00:00:00.000Z");
 });
 
+test("Claude model-scoped weekly limits come from limits[] without duplicating legacy windows", () => {
+  const scoped = (label: unknown, percent: unknown, kind = "weekly_scoped") =>
+    ({ kind, percent, resets_at: "2026-11-15T18:00:00+00:00", scope: { model: { id: null, display_name: label } } });
+  const windows = parseClaudeQuota({ seven_day: { utilization: 45 }, seven_day_sonnet: { utilization: 3 },
+    limits: [{ kind: "weekly_all", percent: 45 }, scoped("Fable", 0), scoped("Sonnet", 9), scoped("Fable", 5), scoped("", 1),
+      scoped(7, 1), scoped("Bad", 1, "session"), scoped("Odd", "x"), null, "x"] });
+  assert.deepEqual(windows.map((w) => [w.name, w.usedPercent]), [["Weekly", 45], ["Sonnet (Weekly)", 3], ["Fable (Weekly)", 0], ["Odd (Weekly)", null]]);
+  const fable = windows[2];
+  assert.equal(fable.windowSeconds, 604_800);
+  assert.equal(fable.resetAt, "2026-11-15T18:00:00.000Z");
+  assert.equal(fable.windowStart, "2026-11-08T18:00:00.000Z");
+});
+
 test("Claude null, absent, and malformed data never becomes zero", () => {
   for (const payload of [null, [], {}, { five_hour: null }, { five_hour: [] }, { limits: [] }]) assert.deepEqual(parseClaudeQuota(payload), []);
   for (const utilization of [null, undefined, "", "2", false, NaN, Infinity]) {
