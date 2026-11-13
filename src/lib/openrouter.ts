@@ -113,7 +113,23 @@ export function parseOpenRouterUsage(payload: unknown): Pick<OpenRouterKeyResult
   };
 }
 
-async function fetchKey(entry: KeyConfig): Promise<OpenRouterKeyResult> {
+async function fetchAccountBalance(key: string): Promise<number | undefined> {
+  try {
+    const response = await fetch("https://openrouter.ai/api/v1/credits", {
+      headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+      redirect: "error", signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) return undefined;
+    const credits = object(object(await response.json()).data);
+    const total = amount(credits.total_credits);
+    const used = amount(credits.total_usage);
+    return total !== null && used !== null ? Math.max(0, total - used) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function fetchKey(entry: KeyConfig, balance?: Promise<number | undefined>): Promise<OpenRouterKeyResult> {
   const base: OpenRouterKeyResult = { id: entry.id, label: entry.label, configured: !entry.error && Boolean(entry.key),
     status: "error", error: entry.error, fetchedAt: new Date().toISOString(), windows: [] };
   if (entry.error || !entry.key) return base;
@@ -128,21 +144,7 @@ async function fetchKey(entry: KeyConfig): Promise<OpenRouterKeyResult> {
     try { payload = await response.json(); } catch { return { ...base, error: "OpenRouter returned invalid JSON" }; }
     const usage = parseOpenRouterUsage(payload);
     if (!usage) return { ...base, error: "OpenRouter response did not include valid usage" };
-    let accountBalanceUsd: number | undefined;
-    try {
-      const creditsResponse = await fetch("https://openrouter.ai/api/v1/credits", {
-        headers: { Authorization: `Bearer ${entry.key}`, Accept: "application/json" },
-        redirect: "error", signal: AbortSignal.timeout(15_000),
-      });
-      if (creditsResponse.ok) {
-        const credits = object(object(await creditsResponse.json()).data);
-        const total = amount(credits.total_credits);
-        const used = amount(credits.total_usage);
-        if (total !== null && used !== null) accountBalanceUsd = Math.max(0, total - used);
-      }
-    } catch {
-      // Account credits are optional; a failure must not hide key usage.
-    }
+    const accountBalanceUsd = await balance;
     return { ...base, ...usage, ...(accountBalanceUsd !== undefined ? { accountBalanceUsd } : {}), status: "ok", error: null, fetchedAt: new Date().toISOString() };
   } catch {
     // Exceptions and upstream bodies can contain credentials. Return fixed messages only.
@@ -152,6 +154,7 @@ async function fetchKey(entry: KeyConfig): Promise<OpenRouterKeyResult> {
 
 export async function fetchOpenRouter(): Promise<ProviderResult> {
   let entries: KeyConfig[];
+  let creditIds = new Set<string>();
   let hasCredentials = false;
   try {
     const all = await resolveOpenRouterKeys();
@@ -160,10 +163,17 @@ export async function fetchOpenRouter(): Promise<ProviderResult> {
     const active = filterInactiveOpenRouterKeys(all, process.env.OPENROUTER_INACTIVE_KEYS);
     const activeIds = new Set(active.map((entry) => entry.id));
     entries = selected.filter((entry) => activeIds.has(entry.id));
+    // The management key may belong to a different account; association is opt-in.
+    if (process.env.OPENROUTER_CREDIT_KEYS?.trim()) {
+      try { creditIds = new Set(selectOpenRouterKeys(all, process.env.OPENROUTER_CREDIT_KEYS, "all").map((entry) => entry.id)); } catch { /* Omit ambiguous balances. */ }
+    }
   } catch {
     return { configured: false, status: "error", error: "Invalid OpenRouter quota or inactive key selector", fetchedAt: new Date().toISOString(), windows: [], openrouterKeys: [] };
   }
-  const openrouterKeys = await Promise.all(entries.map(fetchKey));
+  const managementKey = process.env.OPENROUTER_MANAGEMENT_API_KEY?.trim();
+  const balance = managementKey && entries.some((entry) => creditIds.has(entry.id) && !entry.error && entry.key)
+    ? fetchAccountBalance(managementKey) : undefined;
+  const openrouterKeys = await Promise.all(entries.map((entry) => fetchKey(entry, creditIds.has(entry.id) ? balance : undefined)));
   const successes = openrouterKeys.filter((entry) => entry.status === "ok").length;
   return {
     configured: openrouterKeys.some((entry) => entry.configured),

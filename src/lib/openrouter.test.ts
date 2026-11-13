@@ -123,6 +123,7 @@ test("isolates key failures, retrieves account balances, and never exposes raw e
   const saved = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.startsWith("OPENROUTER_") || name === "OPENCODE_AUTH_PATH"));
   for (const name of Object.keys(saved)) delete process.env[name];
   Object.assign(process.env, { OPENROUTER_API_KEY: "DEFAULT_SECRET", OPENCODE_AUTH_PATH: "/nonexistent/quota-test-auth.json",
+    OPENROUTER_MANAGEMENT_API_KEY: "MANAGEMENT_SECRET", OPENROUTER_CREDIT_KEYS: "default",
     OPENROUTER_KEY_1_LABEL: "Home Assistant", OPENROUTER_KEY_1: "VALID_SECRET",
     OPENROUTER_KEY_2_LABEL: "Unauthorized", OPENROUTER_KEY_2: "INVALID_SECRET",
     OPENROUTER_KEY_3_LABEL: "Network", OPENROUTER_KEY_3: "NETWORK_SECRET",
@@ -134,7 +135,8 @@ test("isolates key failures, retrieves account balances, and never exposes raw e
     assert.equal(init?.redirect, "error");
     assert.ok(init?.signal instanceof AbortSignal);
     const auth = new Headers(init?.headers).get("authorization")!;
-    if (String(url) === "https://openrouter.ai/api/v1/credits") return Response.json({ data: { total_credits: 20, total_usage: 12.5 } });
+    if (String(url) === "https://openrouter.ai/api/v1/credits") return auth === "Bearer MANAGEMENT_SECRET"
+      ? Response.json({ data: { total_credits: 20, total_usage: 12.5 } }) : new Response(null, { status: 403 });
     assert.equal(String(url), "https://openrouter.ai/api/v1/key");
     calls.push(auth);
     if (auth.includes("INVALID_SECRET")) return new Response("INVALID_SECRET RAW_BODY_SECRET", { status: 401 });
@@ -150,6 +152,7 @@ test("isolates key failures, retrieves account balances, and never exposes raw e
     assert.deepEqual(result.openrouterKeys?.map((entry) => entry.status), ["ok", "ok", "error", "error", "error", "error"]);
     assert.equal(result.openrouterKeys?.[1].windows[0].usedValue, 100);
     assert.equal(result.openrouterKeys?.[0].accountBalanceUsd, 7.5);
+    assert.equal(result.openrouterKeys?.[1].accountBalanceUsd, undefined);
     assert.match(result.openrouterKeys![2].error!, /authentication failed/);
     assert.deepEqual(result.windows, result.openrouterKeys![0].windows);
     assert.doesNotMatch(JSON.stringify(result), /SECRET|RAW_BODY|RAW_EXCEPTION|sk-or|authorization|PRIVATE_HASH/);
@@ -170,6 +173,60 @@ test("isolates key failures, retrieves account balances, and never exposes raw e
     process.env.OPENROUTER_KEY_1 = "INCOMPLETE_SECRET";
     assert.equal(await isProviderConfigured("openrouter"), false);
     assert.equal((await fetchOpenRouter()).openrouterKeys![0].configured, false);
+  } finally {
+    mock.restoreAll();
+    for (const name of Object.keys(process.env)) if (name.startsWith("OPENROUTER_") || name === "OPENCODE_AUTH_PATH") delete process.env[name];
+    Object.assign(process.env, saved);
+  }
+});
+
+test("account credits require explicit account association and failures never hide usage", async () => {
+  const saved = Object.fromEntries(Object.entries(process.env).filter(([name]) => name.startsWith("OPENROUTER_") || name === "OPENCODE_AUTH_PATH"));
+  for (const name of Object.keys(saved)) delete process.env[name];
+  Object.assign(process.env, { OPENROUTER_API_KEY: "INFERENCE", OPENROUTER_KEY_1: "OTHER_ACCOUNT", OPENROUTER_KEY_1_LABEL: "Other",
+    OPENROUTER_MANAGEMENT_API_KEY: "MANAGEMENT", OPENCODE_AUTH_PATH: "/nonexistent/quota-test-auth.json" });
+  let creditsCalls = 0;
+  let credits: () => Response = () => Response.json({ data: { total_credits: 10, total_usage: 3 } });
+  mock.method(globalThis, "fetch", async (url: string | URL | Request, init?: RequestInit) => {
+    const auth = new Headers(init?.headers).get("authorization");
+    if (String(url).endsWith("/credits")) {
+      creditsCalls++;
+      if (auth !== "Bearer MANAGEMENT") return new Response(null, { status: 403 });
+      return credits();
+    }
+    assert.ok(auth === "Bearer INFERENCE" || auth === "Bearer OTHER_ACCOUNT");
+    return Response.json(payload);
+  });
+  try {
+    for (const selector of ["", "none", "9", "default,invalid"]) {
+      process.env.OPENROUTER_CREDIT_KEYS = selector;
+      const result = await fetchOpenRouter();
+      assert.equal(result.status, "ok");
+      assert.ok(result.openrouterKeys!.every((entry) => entry.accountBalanceUsd === undefined));
+      assert.equal(creditsCalls, 0);
+    }
+    process.env.OPENROUTER_CREDIT_KEYS = "default";
+    const success = await fetchOpenRouter();
+    assert.equal(success.openrouterKeys![0].accountBalanceUsd, 7);
+    assert.equal(success.openrouterKeys![1].accountBalanceUsd, undefined);
+    assert.equal(creditsCalls, 1);
+    for (const response of [
+      () => new Response(null, { status: 403 }), () => new Response(null, { status: 500 }),
+      () => new Response("invalid JSON"), () => Response.json({ data: { total_credits: 10 } }),
+      () => { throw new Error("secret"); },
+    ]) {
+      credits = response;
+      const result = await fetchOpenRouter();
+      assert.equal(result.status, "ok");
+      assert.equal(result.openrouterKeys![0].accountBalanceUsd, undefined);
+      assert.equal(result.openrouterKeys![0].windows[0].usedValue, 100);
+    }
+    credits = () => Response.json({ data: { total_credits: 10, total_usage: 12 } });
+    assert.equal((await fetchOpenRouter()).openrouterKeys![0].accountBalanceUsd, 0);
+    delete process.env.OPENROUTER_MANAGEMENT_API_KEY;
+    const previousCalls = creditsCalls;
+    assert.equal((await fetchOpenRouter()).openrouterKeys![0].accountBalanceUsd, undefined);
+    assert.equal(creditsCalls, previousCalls);
   } finally {
     mock.restoreAll();
     for (const name of Object.keys(process.env)) if (name.startsWith("OPENROUTER_") || name === "OPENCODE_AUTH_PATH") delete process.env[name];
