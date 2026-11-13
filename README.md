@@ -132,6 +132,7 @@ No machine-specific absolute paths or identifiers are stored in the application.
 - `OPENROUTER_API_KEY`
 - `OPENROUTER_KEY_<number>_LABEL` and `OPENROUTER_KEY_<number>` (multiple labeled OpenRouter keys)
 - `OPENROUTER_MANAGEMENT_API_KEY`, `OPENROUTER_USAGE_KEYS`, `OPENROUTER_QUOTA_KEYS`, `OPENROUTER_INACTIVE_KEYS` (OpenRouter model and token usage; see below)
+- `OPENROUTER_CREDIT_KEYS` (explicit association of quota cards with the management key's account balance; see below)
 - `OLLAMA_API_KEY` (reserved for Ollama Cloud API requests)
 - `OPENCODE_GO_WORKSPACE_ID`
 - `OPENCODE_GO_AUTH_COOKIE`
@@ -229,6 +230,8 @@ keep it as private as the keys above.
 
 ```dotenv
 OPENROUTER_MANAGEMENT_API_KEY=sk-or-v1-replace-me
+# Optional: cards belonging to this management key's account.
+OPENROUTER_CREDIT_KEYS=1,2
 # Optional: usage selector, default is every numbered key.
 OPENROUTER_USAGE_KEYS=1,2
 # Optional: quota card selector, default is every key including the default.
@@ -244,6 +247,15 @@ only charted when listed; an unset or empty quota selector selects every key. Th
 selectors are independent. An unknown number or malformed value is a configuration
 error: nothing is queried or shown for that setting, and the dashboard reports a
 fixed message rather than the offending value.
+
+**Account balance.** OpenRouter's `/credits` endpoint requires a management key and
+reports that key's account balance, not a key-specific balance. Set
+`OPENROUTER_CREDIT_KEYS` to the entries you have verified belong to the management
+key's account (the same selector syntax applies). Unset, empty, `none`, malformed,
+or unknown selections show no balance; usage still works. Never select keys from a
+different account. Credits are fetched once per quota refresh and failures leave the
+balance unavailable without affecting usage. Management keys have broad administrative
+permissions; protect them accordingly.
 
 **Inactive keys.** `OPENROUTER_INACTIVE_KEYS` stops all requests for a key, including
 through any other entry that carries the same credential. A selected inactive key
