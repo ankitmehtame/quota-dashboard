@@ -32,7 +32,7 @@ function combine(records: UsageRecord[]): UsageRecord[] {
 /** All credentials, hashes and upstream error details remain server-side. */
 export class OpenRouterUsageCollector {
   private pending = new Map<string, Promise<OpenRouterRefreshResult>>();
-  // OpenRouter's key identifier by local storage hash. Only held in memory.
+  // Cache the locally derived analytics identifier by storage hash.
   private keyIds = new Map<string, string>();
 
   constructor(private readonly store: OpenRouterUsageStore, private readonly env: NodeJS.ProcessEnv = process.env,
