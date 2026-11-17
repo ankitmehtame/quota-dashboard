@@ -80,6 +80,7 @@ test("server shares icons by exact configured label, persists edits without fetc
     assert.deepEqual((await get()).icons, { [id]: "not-in-catalog" });
     assert.equal((await fetch(`${url}/api/v1/appearance/icons/preview`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug: "../bad" }) })).status, 400);
     assert.equal((await fetch(`${url}/api/v1/appearance/icons/preview`, { method: "POST", headers: { Origin: "https://evil.test", "Content-Type": "application/json" }, body: JSON.stringify({ slug: "home-assistant" }) })).status, 403);
+    assert.equal((await fetch(`${url}/api/v1/icons/refresh`, { method: "POST", headers: { Origin: "https://evil.test" } })).status, 403);
     assert.equal((await put({ [id]: null })).status, 200);
     assert.deepEqual((await get()).icons, {});
     await put({ [id]: "home-assistant" });
