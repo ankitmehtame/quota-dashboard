@@ -61,6 +61,10 @@ test("preserves the legacy OpenCode fallback and prefers the explicit default ke
     assert.equal((await resolveOpenRouterKeys({ OPENCODE_AUTH_PATH: path, OPENROUTER_API_KEY: "explicit" }))[0].key, "explicit");
     await writeFile(path, "invalid JSON");
     assert.deepEqual(await resolveOpenRouterKeys({ OPENCODE_AUTH_PATH: path }), []);
+    await assert.rejects(resolveOpenRouterKeys({ OPENCODE_AUTH_PATH: path }, true));
+    await writeFile(path, JSON.stringify({ openrouter: { key: 42 } }));
+    await assert.rejects(resolveOpenRouterKeys({ OPENCODE_AUTH_PATH: path }, true));
+    assert.deepEqual(await resolveOpenRouterKeys({ OPENCODE_AUTH_PATH: join(directory, "absent") }, true), []);
   } finally { await rm(directory, { recursive: true, force: true }); }
 });
 

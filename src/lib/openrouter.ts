@@ -9,15 +9,19 @@ const object = (value: unknown): JsonObject => value && typeof value === "object
 const amount = (value: unknown): number | null => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 
 // This type stays server-side. Never spread a KeyConfig into a response or log it.
-export async function resolveOpenRouterKeys(env: NodeJS.ProcessEnv = process.env): Promise<KeyConfig[]> {
+export async function resolveOpenRouterKeys(env: NodeJS.ProcessEnv = process.env, strictFallback = false): Promise<KeyConfig[]> {
   let defaultKey = env.OPENROUTER_API_KEY?.trim() || null;
   if (!defaultKey) {
     try {
-      const auth = object(JSON.parse(await readFile(env.OPENCODE_AUTH_PATH || join(homedir(), ".local", "share", "opencode", "auth.json"), "utf8")));
+      const parsed = JSON.parse(await readFile(env.OPENCODE_AUTH_PATH || join(homedir(), ".local", "share", "opencode", "auth.json"), "utf8"));
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("Invalid auth file");
+      const auth = object(parsed);
       const entry = auth.openrouter;
       const value = typeof entry === "string" ? entry : object(entry).key || object(entry).token || object(entry).apiKey;
+      if (strictFallback && entry !== undefined && (typeof value !== "string" || !value.trim())) throw new Error("Invalid OpenRouter auth entry");
       if (typeof value === "string") defaultKey = value.trim() || null;
-    } catch {
+    } catch (error) {
+      if (strictFallback && (error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       // Preserve the optional legacy OpenCode credential fallback.
     }
   }

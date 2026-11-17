@@ -187,12 +187,9 @@ async function loadConfig(): Promise<AppConfig> {
   for (const id of toolIds) config.usageSources[id] ??= { enabled: true };
   const labels = await openRouterUsageLabels();
   const configuredLabels = await configuredOpenRouterLabels();
-  let iconsPruned = false;
-  for (const [id, slug] of Object.entries(config.labelIcons)) {
-    if (configuredLabels.error === null && !Object.hasOwn(configuredLabels.labels, id)) { delete config.labelIcons[id]; iconsPruned = true; }
-    else iconCache.register(slug);
+  for (const id of Object.keys(config.labelIcons)) {
+    if (configuredLabels.error === null && !Object.hasOwn(configuredLabels.labels, id)) delete config.labelIcons[id];
   }
-  if (iconsPruned) await saveConfig(config);
   // Sources follow current labels: drop ones whose label no longer exists, unless the configuration is unreadable.
   if (labels.error === null) for (const id of Object.keys(config.usageSources)) if (/^openrouter-[a-f0-9]{24}$/.test(id) && !toolIds.has(id) && !Object.hasOwn(labels.labels, id)) delete config.usageSources[id];
   for (const id of Object.keys(labels.labels)) config.usageSources[id] ??= { enabled: true };
@@ -206,10 +203,10 @@ function openRouterSourceId(label: string): string {
 
 async function configuredOpenRouterLabels(): Promise<{ labels: Record<string, string>; error: string | null }> {
   try {
-    const entries = await resolveOpenRouterKeys();
+    const entries = await resolveOpenRouterKeys(process.env, true);
     // Invalid selectors or incomplete key pairs do not confirm that an old label was removed.
     resolveOpenRouterUsageSelection(entries, process.env.OPENROUTER_USAGE_KEYS, process.env.OPENROUTER_INACTIVE_KEYS);
-    return { labels: Object.fromEntries(entries.map((entry) => [openRouterSourceId(entry.label), entry.label])), error: entries.some((entry) => entry.error) ? "Incomplete key configuration" : null };
+    return { labels: Object.fromEntries(entries.filter((entry) => !entry.error).map((entry) => [openRouterSourceId(entry.label), entry.label])), error: entries.some((entry) => entry.error) ? "Incomplete key configuration" : null };
   } catch { return { labels: {}, error: "Invalid key configuration" }; }
 }
 
@@ -235,6 +232,15 @@ function saveAppearanceChange(change: (config: AppConfig) => void): Promise<void
     const current = await loadConfig();
     change(current);
     await saveConfig(current);
+  });
+  appearanceSaveQueue = pending.catch(() => {});
+  return pending;
+}
+
+function syncIconAssignments(): Promise<void> {
+  const pending = appearanceSaveQueue.then(async () => {
+    const current = await loadConfig();
+    await iconCache.setAssigned(Object.values(current.labelIcons));
   });
   appearanceSaveQueue = pending.catch(() => {});
   return pending;
@@ -752,7 +758,7 @@ function publishRemoteRefresh(category: "hot" | "cold", from: string, to: string
 
 async function handleApi(request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse, url: URL, httpId: string): Promise<void> {
   if (request.method === "POST" && url.pathname === "/api/v1/icons/refresh") {
-    await loadConfig();
+    await syncIconAssignments();
     let allowedOrigin = true;
     if (request.headers.origin) {
       try { allowedOrigin = new URL(request.headers.origin).host === request.headers.host; } catch { allowedOrigin = false; }
@@ -765,20 +771,26 @@ async function handleApi(request: import("node:http").IncomingMessage, response:
   }
   const config = await loadConfig();
   if (url.pathname === "/api/v1/appearance/icons") {
-    if (request.method === "GET") return json(response, 200, { icons: config.labelIcons, labels: (await configuredOpenRouterLabels()).labels, revisions: await iconCache.manifest() });
+    if (request.method === "GET") {
+      await syncIconAssignments();
+      const labels = await configuredOpenRouterLabels();
+      return json(response, 200, { icons: config.labelIcons, labels: labels.labels, labelsConfirmed: labels.error === null, revisions: await iconCache.manifest() });
+    }
     if (request.method === "PUT") {
       const input = await body(request);
       if (!input.icons || typeof input.icons !== "object" || Array.isArray(input.icons)) return json(response, 400, { error: "icons must be an object" });
       const labels = await configuredOpenRouterLabels();
       const entries = Object.entries(input.icons);
-      if (entries.some(([id, slug]) => !/^openrouter-[a-f0-9]{24}$/.test(id) || slug !== null && !isIconSlug(slug) || labels.error === null && slug !== null && !Object.hasOwn(labels.labels, id))) return json(response, 400, { error: "Invalid label or icon slug" });
+      if (entries.some(([id, slug]) => !/^openrouter-[a-f0-9]{24}$/.test(id) || slug !== null && !isIconSlug(slug))) return json(response, 400, { error: "Invalid label or icon slug" });
       await saveAppearanceChange((current) => {
         for (const [id, slug] of entries) {
+          if (labels.error === null && !Object.hasOwn(labels.labels, id)) continue;
           if (slug === null) delete current.labelIcons[id];
-          else { current.labelIcons[id] = slug as string; iconCache.register(slug as string); }
+          else current.labelIcons[id] = slug as string;
         }
         config.labelIcons = current.labelIcons;
       });
+      await syncIconAssignments();
       return json(response, 200, { icons: config.labelIcons });
     }
   }
@@ -859,8 +871,7 @@ async function handleApi(request: import("node:http").IncomingMessage, response:
     if (request.method === "PUT" && providerMatch[2] === "enabled") {
       const input = await body(request);
       if (typeof input.enabled !== "boolean") return json(response, 400, { error: "enabled must be boolean" });
-      config.providers[id].enabled = input.enabled;
-      await saveConfig(config);
+      await saveAppearanceChange((current) => { current.providers[id].enabled = input.enabled as boolean; config.providers[id] = current.providers[id]; });
       if (!input.enabled) quotaCache.invalidate(id);
       dashboardCache.clear();
       return json(response, 200, { provider: providerStatus({ id, config: config.providers[id] }) });
@@ -876,8 +887,7 @@ async function handleApi(request: import("node:http").IncomingMessage, response:
     if (!Array.isArray(input.order) || input.order.length !== PROVIDER_IDS.length || new Set(input.order).size !== PROVIDER_IDS.length || input.order.some((id) => typeof id !== "string" || !PROVIDER_IDS.includes(id as ProviderId))) {
       return json(response, 400, { error: "order must contain each provider exactly once" });
     }
-    config.providerOrder = normalizeProviderOrder(input.order);
-    await saveConfig(config);
+    await saveAppearanceChange((current) => { current.providerOrder = normalizeProviderOrder(input.order); config.providerOrder = current.providerOrder; });
     dashboardCache.clear();
     return json(response, 200, { providerOrder: config.providerOrder });
   }
@@ -910,8 +920,7 @@ async function handleApi(request: import("node:http").IncomingMessage, response:
     if (!isUsageSourceId(id)) return json(response, 400, { error: "Invalid usage source ID" });
     const input = await body(request);
     if (typeof input.enabled !== "boolean") return json(response, 400, { error: "enabled must be boolean" });
-    config.usageSources[id] = { enabled: input.enabled };
-    await saveConfig(config);
+    await saveAppearanceChange((current) => { current.usageSources[id] = { enabled: input.enabled as boolean }; });
     dashboardCache.clear();
     return json(response, 200, { source: id, enabled: input.enabled });
   }
@@ -956,8 +965,8 @@ const server = createServer(async (request, response) => {
     if (url.pathname.startsWith("/icons/")) {
       const match = url.pathname.match(/^\/icons\/([a-z0-9-]+)\.svg$/);
       if (!match || !isIconId(match[1]) && !(match[1].startsWith("selfhst-") && isIconSlug(match[1].slice(8)))) return json(response, 404, { error: "Unknown icon" });
-      if (!isIconId(match[1])) iconCache.register(match[1].slice(8));
       if (request.method !== "GET" && request.method !== "HEAD") return json(response, 405, { error: "Method not allowed" });
+      if (!iconCache.has(match[1])) return json(response, 404, { error: "Unknown icon" });
       const icon = await iconCache.get(match[1]);
       if (!icon.svg) return json(response, 404, { error: "Icon unavailable" });
       const etag = `"${icon.revision}"`;

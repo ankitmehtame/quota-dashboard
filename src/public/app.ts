@@ -1450,6 +1450,8 @@ function previewToolColor(id: string, color: string): void {
 let savedLabelIcons: Record<string, string> = {};
 const labelIconErrors = new Map<string, string>();
 const previewedLabelIcons = new Map<string, string>();
+const pendingLabelIcons = new Map<string, object>();
+const iconSaveError = "Icon assignment could not be saved. Reopen Settings to retry.";
 let iconSaveQueue: Promise<void> = Promise.resolve();
 let keepaliveIconSave: Promise<void> | null = null;
 const labelIconsPath = "/api/v1/appearance/icons";
@@ -1466,6 +1468,7 @@ async function fetchLabelIcons(): Promise<void> {
     for (const [id, slug] of Object.entries(data.icons || {})) if (/^openrouter-[a-f0-9]{24}$/.test(id) && typeof slug === "string" && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) && slug.length <= 100) next[id] = slug;
     const merged = { ...next };
     for (const id of new Set([...Object.keys(savedLabelIcons), ...Object.keys(labelIcons)])) {
+      if (data.labelsConfirmed && !Object.hasOwn(configuredLabelNames, id)) { labelIconErrors.delete(id); continue; }
       if ((savedLabelIcons[id] ?? null) === (labelIcons[id] ?? null)) continue;
       if (labelIcons[id]) merged[id] = labelIcons[id]; else delete merged[id];
     }
@@ -1485,9 +1488,17 @@ function saveLabelIcons(keepalive = false): Promise<void> {
     try {
       const response = await fetch(labelIconsPath, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ icons: changes }), ...(keepalive ? { keepalive: true } : {}) });
       if (!response.ok) throw new Error("Icon assignments could not be saved");
-      for (const [id, slug] of Object.entries(changes)) { if (slug) savedLabelIcons[id] = slug; else delete savedLabelIcons[id]; }
+      const result = await response.json();
+      for (const [id, slug] of Object.entries(changes)) {
+        const saved = result.icons?.[id];
+        if (saved) savedLabelIcons[id] = saved; else delete savedLabelIcons[id];
+        if ((labelIcons[id] ?? null) === slug && saved !== slug && !(saved === undefined && slug === null)) delete labelIcons[id];
+        if (labelIconErrors.get(id) === iconSaveError) labelIconErrors.delete(id);
+        updateLabelIconRow(id);
+      }
     } catch {
-      for (const id of Object.keys(changes)) { labelIconErrors.set(id, "Icon assignment could not be saved. Reopen Settings to retry."); updateLabelIconRow(id); }
+      for (const id of Object.keys(changes)) { labelIconErrors.set(id, iconSaveError); updateLabelIconRow(id); }
+      if (!keepalive) showToast("Icon assignments could not be saved. Reopen Settings to retry.");
     }
   };
   if (keepalive) {
@@ -1503,7 +1514,7 @@ function updateLabelIconRow(id: string): void {
   const row = Array.from(document.querySelectorAll<HTMLElement>("[data-tool-row]")).find((item) => item.dataset.toolRow === id);
   if (!row) return;
   const error = row.querySelector<HTMLElement>("[data-icon-error]");
-  if (error) { error.textContent = labelIconErrors.get(id) || (labelIcons[id] && !hasSourceIcon(id) ? "Icon unavailable. Edit the slug to retry." : ""); error.hidden = !error.textContent; }
+  if (error) { error.textContent = labelIconErrors.get(id) || (labelIcons[id] && !pendingLabelIcons.has(id) && !hasSourceIcon(id) ? "Icon unavailable. Edit the slug to retry." : ""); error.hidden = !error.textContent; }
   const name = row.querySelector<HTMLElement>(".provider-name");
   if (name) name.innerHTML = `${sourceIcon(id)}${escapeHtml(configuredLabelNames[id] || usageSourceName(id))}`;
 }
@@ -1521,6 +1532,8 @@ async function previewLabelIcon(input: HTMLInputElement): Promise<void> {
     return;
   }
   if (slug) labelIcons[id] = slug; else delete labelIcons[id];
+  const pending = {};
+  if (slug) pendingLabelIcons.set(id, pending); else pendingLabelIcons.delete(id);
   previewedLabelIcons.set(id, slug);
   labelIconErrors.delete(id);
   updateLabelIconRow(id);
@@ -1529,13 +1542,15 @@ async function previewLabelIcon(input: HTMLInputElement): Promise<void> {
   try {
     const response = await fetch(`${labelIconsPath}/preview`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug }) });
     const result = await response.json();
-    if (labelIcons[id] !== slug) return;
+    if (labelIcons[id] !== slug || pendingLabelIcons.get(id) !== pending) return;
     if (!response.ok || !/^[a-f0-9]{64}$/.test(result.revision || "")) throw new Error(result.error || "Icon unavailable. Edit the slug to retry.");
     iconRevisions[`selfhst-${slug}`] = result.revision;
-    labelIconErrors.delete(id);
+    if (labelIconErrors.get(id) !== iconSaveError) labelIconErrors.delete(id);
   } catch (error) {
-    if (labelIcons[id] !== slug) return;
-    labelIconErrors.set(id, error instanceof Error ? error.message : "Icon unavailable. Edit the slug to retry.");
+    if (labelIcons[id] !== slug || pendingLabelIcons.get(id) !== pending) return;
+    if (labelIconErrors.get(id) !== iconSaveError) labelIconErrors.set(id, error instanceof Error ? error.message : "Icon unavailable. Edit the slug to retry.");
+  } finally {
+    if (pendingLabelIcons.get(id) === pending) pendingLabelIcons.delete(id);
   }
   updateLabelIconRow(id);
   if (state.dashboard) renderUsage(state.dashboard.usage, "preserve");
@@ -1548,6 +1563,7 @@ function appearanceIconField(id: string, name: string): string {
 }
 
 function renderAppearanceSettings(data: ProvidersResponse, usageIds: string[]): void {
+  for (const [id, error] of labelIconErrors) if (error === "Use lowercase letters, numbers and hyphens, not a URL.") labelIconErrors.delete(id);
   const tools = new Map<string, string>();
   for (const id of data.providerOrder) { const tool = toolId(id); if (!tools.has(tool)) tools.set(tool, tool === id ? data.providers[id]?.name || usageSourceName(tool) : usageSourceName(tool)); }
   for (const id of usageIds) { const tool = toolId(id); if (!tools.has(tool)) tools.set(tool, usageSourceName(tool)); }
@@ -1651,6 +1667,7 @@ function bindSettingsDialog(): void {
   window.addEventListener("pageshow", (event) => {
     if (!event.persisted) return;
     void fetchToolColors().then(() => { applyToolColors(); document.querySelectorAll<HTMLElement>("[data-tool-row]").forEach((row) => updateColorRow(row.dataset.toolRow || "")); });
+    void fetchLabelIcons().then(() => { if (state.dashboard) renderUsage(state.dashboard.usage, "preserve"); document.querySelectorAll<HTMLElement>("[data-tool-row]").forEach((row) => updateLabelIconRow(row.dataset.toolRow || "")); });
   });
   openFromUrl(false);
 }

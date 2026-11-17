@@ -180,7 +180,7 @@ test("label edits preview once, save failed slugs on exit, reject unsafe slugs a
     state: {}, document: { querySelectorAll: () => [] },
     fetch: async (url: string, options?: { method?: string; body?: string }) => {
       requests.push({ url, body: options?.body ? JSON.parse(options.body) : null });
-      return { ok: true, json: async () => url.endsWith("preview") ? { revision: null, error: "Missing icon" } : { icons: {}, labels: {} } };
+      return { ok: true, json: async () => url.endsWith("preview") ? { revision: null, error: "Missing icon" } : options?.method === "PUT" ? { icons: Object.fromEntries(Object.entries(JSON.parse(options.body!).icons).filter(([, value]) => value !== null)) } : { icons: {}, labels: {} } };
     },
   });
   const input = { dataset: { labelIcon: id }, value: " missing-icon " };
@@ -226,6 +226,31 @@ test("successful previews render same-origin icons and stale preview responses c
   assert.equal(api.icons[id], "second");
   assert.match(api.icon(id), /src="\/icons\/selfhst-second.svg\?v=2{64}"/);
   assert.equal(api.revisions["selfhst-first"], undefined);
+});
+
+test("preview loading suppresses fetch errors and save failures clear on retry", async () => {
+  const id = `openrouter-${"c".repeat(24)}`;
+  const error = { textContent: "", hidden: true };
+  let finish!: (value: unknown) => void;
+  let failSave = true;
+  const toasts: string[] = [];
+  const api = runInNewContext(`${escape}\n${presentation}\n${colorState}\n({ preview: previewLabelIcon, save: saveLabelIcons, errors: labelIconErrors })`, {
+    state: {}, showToast: (value: string) => toasts.push(value),
+    document: { querySelectorAll: (selector: string) => selector === "[data-tool-row]" ? [{ dataset: { toolRow: id }, querySelector: (s: string) => s === "[data-icon-error]" ? error : null }] : [] },
+    fetch: (url: string) => url.endsWith("preview") ? new Promise((resolve) => { finish = resolve; }) : Promise.resolve({ ok: !failSave, json: async () => ({ icons: { [id]: "example" } }) }),
+  });
+  const preview = api.preview({ dataset: { labelIcon: id }, value: "example" });
+  assert.equal(error.textContent, "");
+  finish({ ok: true, json: async () => ({ revision: null, error: "Missing icon" }) });
+  await preview;
+  assert.equal(error.textContent, "Missing icon");
+  await api.save();
+  assert.match(error.textContent, /could not be saved/);
+  assert.equal(toasts.length, 1);
+  failSave = false;
+  await api.save();
+  assert.equal(api.errors.has(id), false);
+  assert.match(error.textContent, /Icon unavailable/);
 });
 
 test("appearance lists each tool once by canonical id with color controls and the per-device clock toggle", () => {
