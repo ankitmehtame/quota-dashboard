@@ -70,17 +70,14 @@ test("server shares icons by exact configured label, persists edits without fetc
   try {
     stop = await start();
     const cached = await fetch(`${url}/icons/selfhst-cached.svg`);
-    assert.equal(cached.status, 200);
-    assert.equal(cached.headers.get("Content-Type"), "image/svg+xml");
-    assert.equal(cached.headers.get("X-Content-Type-Options"), "nosniff");
-    assert.match(await cached.text(), /fill="#f0f5f1"/);
-    assert.equal((await fetch(`${url}/icons/selfhst-cached.svg`, { headers: { "If-None-Match": cached.headers.get("ETag")! } })).status, 304);
-    assert.equal(await (await fetch(`${url}/icons/selfhst-cached.svg`, { method: "HEAD" })).text(), "");
+    assert.equal(cached.status, 404, "unassigned cache files cannot register an icon");
     assert.deepEqual((await get()).labels, { [id]: "Home" }, "keys with equal trimmed labels share one assignment");
     assert.equal((await put({ [id]: "not-in-catalog" })).status, 200, "saving a slug never requires a fetch");
     assert.deepEqual((await get()).icons, { [id]: "not-in-catalog" });
     assert.equal((await fetch(`${url}/icons/selfhst-not-in-catalog.svg`)).status, 404);
-    for (const icons of [null, [], { codex: "openai" }, { [id]: "../bad" }, { [id]: "https://evil.test" }, { [sourceId("unknown")]: "home-assistant" }]) assert.equal((await put(icons)).status, 400);
+    for (const icons of [null, [], { codex: "openai" }, { [id]: "../bad" }, { [id]: "https://evil.test" }]) assert.equal((await put(icons)).status, 400);
+    assert.equal((await put({ [sourceId("unknown")]: "home-assistant", [id]: "not-in-catalog" })).status, 200);
+    assert.deepEqual((await get()).icons, { [id]: "not-in-catalog" });
     assert.equal((await fetch(`${url}/api/v1/appearance/icons/preview`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug: "../bad" }) })).status, 400);
     assert.equal((await fetch(`${url}/api/v1/appearance/icons/preview`, { method: "POST", headers: { Origin: "https://evil.test", "Content-Type": "application/json" }, body: JSON.stringify({ slug: "home-assistant" }) })).status, 403);
     assert.equal((await put({ [id]: null })).status, 200);
@@ -103,6 +100,7 @@ test("server shares icons by exact configured label, persists edits without fetc
     await stop();
     stop = await start({ OPENROUTER_KEY_1_LABEL: "Renamed", OPENROUTER_KEY_2_LABEL: "Renamed" });
     assert.deepEqual((await get()).icons, {}, "rename is a new label, with no inherited icon");
-    assert.deepEqual(JSON.parse(await readFile(configPath, "utf8")).labelIcons, {}, "confirmed removals are persisted");
+    await put({});
+    assert.deepEqual(JSON.parse(await readFile(configPath, "utf8")).labelIcons, {}, "confirmed removals are persisted with the next serialized mutation");
   } finally { await stop?.(); await rm(root, { recursive: true, force: true }); }
 });

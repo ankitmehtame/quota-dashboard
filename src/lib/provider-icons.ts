@@ -122,6 +122,9 @@ export function createIconCache(options: IconCacheOptions) {
   const states = new Map<string, Promise<IconState>>();
   const sources: Record<string, string> = { ...ICON_SOURCES };
   const updates = new Map<string, Promise<void>>();
+  let assigned = new Set<string>();
+  const previews = new Set<string>();
+  const MAX_PREVIEWS = 32;
   let refreshing: Promise<void> | undefined;
 
   async function state(id: string): Promise<IconState> {
@@ -148,6 +151,7 @@ export function createIconCache(options: IconCacheOptions) {
   }
 
   async function persist(id: string, value: IconState): Promise<void> {
+    if (!isIconId(id) && !assigned.has(id)) return;
     await mkdir(options.directory, { recursive: true, mode: 0o700 });
     const temporary = join(options.directory, `.${id}-${randomUUID()}.tmp`);
     try {
@@ -204,27 +208,57 @@ export function createIconCache(options: IconCacheOptions) {
 
   function update(id: string, force = false): Promise<void> {
     let pending = updates.get(id);
-    if (!pending) { pending = updateOnce(id, force).finally(() => { updates.delete(id); }); updates.set(id, pending); }
+    if (!pending) { pending = updateOnce(id, force).finally(() => {
+      updates.delete(id);
+      if (!isIconId(id) && !assigned.has(id) && !previews.has(id)) { delete sources[id]; states.delete(id); }
+    }); updates.set(id, pending); }
     return pending;
   }
 
   return {
     get: state,
+    has(id: string): boolean { return Object.hasOwn(sources, id); },
     register(slug: string): string {
       const id = customIconId(slug);
       sources[id] = `https://cdn.jsdelivr.net/gh/selfhst/icons@main/svg/${slug}.svg`;
       return id;
     },
     async preview(slug: string): Promise<IconState> {
+      const candidate = customIconId(slug);
+      if (!assigned.has(candidate) && !previews.has(candidate)) {
+        if (previews.size >= MAX_PREVIEWS) {
+          const oldest = [...previews].find((id) => !updates.has(id));
+          if (!oldest) throw new Error("Too many icon previews in progress");
+          previews.delete(oldest);
+          states.delete(oldest);
+          delete sources[oldest];
+        }
+        previews.add(candidate);
+      }
       const id = this.register(slug);
       await update(id, true);
       return state(id);
     },
+    async setAssigned(slugs: string[]): Promise<void> {
+      const next = new Set(slugs.map((slug) => this.register(slug)));
+      const previous = assigned;
+      assigned = next;
+      for (const id of previous) {
+        if (!next.has(id) && !previews.has(id) && !updates.has(id)) { delete sources[id]; states.delete(id); }
+      }
+      for (const id of next) {
+        previews.delete(id);
+        if (!previous.has(id) && states.has(id)) {
+          const value = await state(id);
+          if (value.svg) await persist(id, value);
+        }
+      }
+    },
     async manifest(): Promise<Record<string, string>> {
-      return Object.fromEntries((await Promise.all(Object.keys(sources).map(async (id) => [id, (await state(id)).revision]))).filter(([, revision]) => revision));
+      return Object.fromEntries((await Promise.all([...Object.keys(ICON_SOURCES), ...assigned].map(async (id) => [id, (await state(id)).revision]))).filter(([, revision]) => revision));
     },
     refresh(): Promise<void> {
-      if (!refreshing) refreshing = Promise.all(Object.keys(sources).map((id) => update(id))).then(() => {}).finally(() => { refreshing = undefined; });
+      if (!refreshing) refreshing = Promise.all([...Object.keys(ICON_SOURCES), ...assigned].map((id) => update(id))).then(() => {}).finally(() => { refreshing = undefined; });
       return refreshing;
     },
   };

@@ -37,6 +37,7 @@ test("custom icons preview locally, refresh daily, and keep the last valid SVG o
   const options = { directory, bundledDirectory, now: () => now, fetch: fetchMock };
   const cache = createIconCache(options);
   const id = cache.register("home-assistant");
+  await cache.setAssigned(["home-assistant"]);
   assert.equal((await cache.get(id)).svg, "");
   await cache.refresh();
   assert.equal(calls, 0, "unfetched assignments never retry in the background");
@@ -52,10 +53,30 @@ test("custom icons preview locally, refresh daily, and keep the last valid SVG o
   assert.equal(calls, 2);
   assert.equal((await cache.get(id)).revision, first.revision);
   const restarted = createIconCache(options);
-  restarted.register("home-assistant");
+  await restarted.setAssigned(["home-assistant"]);
   assert.equal((await restarted.get(id)).revision, first.revision);
   await restarted.refresh();
   assert.equal(calls, 2, "daily attempts are persisted even when they fail");
+});
+
+test("unassigned previews are bounded, not persisted or refreshed", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "quota-icon-previews-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let calls = 0;
+  let now = 1000;
+  const cache = createIconCache({ directory, bundledDirectory, now: () => now, fetch: async () => { calls++; return response(); } });
+  for (let i = 0; i < 40; i++) await cache.preview(`example-${i}`);
+  assert.equal(cache.has("selfhst-example-0"), false);
+  assert.equal(cache.has("selfhst-example-39"), true);
+  assert.equal((await readdir(directory).catch(() => [])).filter((name) => name.startsWith("selfhst-")).length, 0);
+  now += ICON_REFRESH_MS;
+  const before = calls;
+  await cache.refresh();
+  assert.equal(calls - before, iconCount);
+  await cache.setAssigned(["example-39"]);
+  assert.ok((await readFile(join(directory, "selfhst-example-39.json"), "utf8")).includes("example-39"));
+  await cache.setAssigned([]);
+  assert.equal(cache.has("selfhst-example-39"), false);
 });
 
 test("failed custom previews remain color-only and do not retry across restarts until edited", async (t) => {
