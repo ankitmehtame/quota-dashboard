@@ -206,6 +206,35 @@ test("label edits preview once, save failed slugs on exit, reject unsafe slugs a
   assert.deepEqual(requests.at(-1)?.body.icons, { [id]: null });
 });
 
+test("restored icon fields adopt remote changes unless their raw input was edited", async () => {
+  const id = `openrouter-${"a".repeat(24)}`;
+  const input = { dataset: { labelIcon: id }, value: "first" };
+  let remote = "first";
+  const puts: unknown[] = [];
+  const api = runInNewContext(`${escape}\n${presentation}\n${colorState}\n({ fetch: fetchLabelIcons, save: saveLabelIcons, baselines: labelIconInputBaselines, get icons() { return labelIcons; } })`, {
+    state: {}, document: { querySelectorAll: (selector: string) => selector === "[data-label-icon]" ? [input] : [] },
+    fetch: async (url: string, options?: { method?: string; body?: string }) => {
+      if (options?.method === "PUT") { puts.push(JSON.parse(options.body!)); return { ok: true, json: async () => ({ icons: { [id]: remote } }) }; }
+      if (url.endsWith("preview")) return { ok: true, json: async () => ({ revision: null }) };
+      return { ok: true, json: async () => ({ icons: { [id]: remote }, labels: { [id]: "Home" }, labelsConfirmed: true }) };
+    },
+  });
+  api.baselines.set(input, input.value);
+  await api.fetch();
+  remote = "second";
+  await api.fetch();
+  assert.equal(input.value, "second");
+  await api.save();
+  assert.equal(puts.length, 0, "closing an untouched restored field does not overwrite the server");
+  input.value = "unblurred";
+  remote = "third";
+  await api.fetch();
+  assert.equal(input.value, "unblurred");
+  assert.equal(api.icons[id], "third");
+  await api.save();
+  assert.equal((puts[0] as any).icons[id], "unblurred");
+});
+
 test("successful previews render same-origin icons and stale preview responses cannot replace newer edits", async () => {
   const id = `openrouter-${"b".repeat(24)}`;
   const completions = new Map<string, (value: unknown) => void>();

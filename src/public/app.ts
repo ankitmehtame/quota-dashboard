@@ -1451,6 +1451,8 @@ let savedLabelIcons: Record<string, string> = {};
 const labelIconErrors = new Map<string, string>();
 const previewedLabelIcons = new Map<string, string>();
 const pendingLabelIcons = new Map<string, object>();
+// The raw value last rendered or captured for each input, including unblurred edits.
+const labelIconInputBaselines = new WeakMap<HTMLInputElement, string>();
 const iconSaveError = "Icon assignment could not be saved. Reopen Settings to retry.";
 let iconSaveQueue: Promise<void> = Promise.resolve();
 let keepaliveIconSave: Promise<void> | null = null;
@@ -1474,6 +1476,15 @@ async function fetchLabelIcons(): Promise<void> {
     }
     labelIcons = merged;
     savedLabelIcons = next;
+    document.querySelectorAll<HTMLInputElement>("[data-label-icon]").forEach((input) => {
+      const id = input.dataset.labelIcon!;
+      const baseline = labelIconInputBaselines.get(input);
+      if (baseline === undefined || input.value !== baseline) return;
+      const value = labelIcons[id] || "";
+      input.value = value;
+      labelIconInputBaselines.set(input, value);
+      previewedLabelIcons.set(id, value);
+    });
     for (const [id, revision] of Object.entries(data.revisions || {})) if (/^[a-f0-9]{64}$/.test(String(revision))) iconRevisions[id] = revision as string;
   } catch { /* Keep the last assignments while offline. */ }
 }
@@ -1526,6 +1537,7 @@ async function previewLabelIcon(input: HTMLInputElement): Promise<void> {
   if (slug && (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) || slug.length > 100)) {
     labelIconErrors.set(id, "Use lowercase letters, numbers and hyphens, not a URL."); updateLabelIconRow(id); return;
   }
+  labelIconInputBaselines.set(input, slug);
   // Fetch only after an edit, never when reopening Settings or blurring an unchanged field.
   if ((labelIcons[id] || "") === slug && (!previewedLabelIcons.has(id) || previewedLabelIcons.get(id) === slug)) {
     if (labelIconErrors.get(id) === "Use lowercase letters, numbers and hyphens, not a URL.") { labelIconErrors.delete(id); updateLabelIconRow(id); }
@@ -1574,6 +1586,7 @@ function renderAppearanceSettings(data: ProvidersResponse, usageIds: string[]): 
   const rows = [...tools].map(([id, name]) => `<div class="setting-row color-row" data-tool-row="${escapeHtml(id)}"><div class="setting-copy"><div class="provider-name">${sourceIcon(id)}${escapeHtml(name)}</div>${appearanceIconField(id, name)}</div><div class="color-actions"><button class="text-button color-action" type="button" data-color-undo="${escapeHtml(id)}" aria-label="Undo ${escapeHtml(name)} color change" hidden>Undo</button><button class="text-button color-action" type="button" data-color-reset="${escapeHtml(id)}" aria-label="Reset ${escapeHtml(name)} color to default" hidden>Reset</button><input class="color-input" type="color" data-tool-color="${escapeHtml(id)}" value="${toolColorHex(id)}" aria-label="${escapeHtml(name)} color" /></div></div>`).join("");
   const container = $("#appearance-settings") as HTMLElement;
   container.innerHTML = `<p class="settings-group">Display</p><label class="setting-row"><div class="setting-copy"><div class="provider-name">12-hour times</div><div class="provider-sub">Show times with AM and PM. Saved on this device.</div></div><input class="switch" type="checkbox" data-kind="time-format" ${state.hour12 ? "checked" : ""} aria-label="Use 12-hour clock" /></label><p class="settings-group">Colors</p><div class="color-list">${rows}</div>`;
+  document.querySelectorAll<HTMLInputElement>("[data-label-icon]").forEach((input) => labelIconInputBaselines.set(input, input.value));
   tools.forEach((_, id) => updateColorRow(id));
   tools.forEach((_, id) => { if (/^openrouter-[a-f0-9]{24}$/.test(id)) updateLabelIconRow(id); });
   container.oninput = (event) => { const target = element(event.target) as HTMLInputElement; if (target.dataset.toolColor) previewToolColor(target.dataset.toolColor, target.value); };
