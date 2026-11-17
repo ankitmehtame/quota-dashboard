@@ -1543,12 +1543,15 @@ async function previewLabelIcon(input: HTMLInputElement): Promise<void> {
     const response = await fetch(`${labelIconsPath}/preview`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug }) });
     const result = await response.json();
     if (labelIcons[id] !== slug || pendingLabelIcons.get(id) !== pending) return;
-    if (!response.ok || !/^[a-f0-9]{64}$/.test(result.revision || "")) throw new Error(result.error || "Icon unavailable. Edit the slug to retry.");
-    iconRevisions[`selfhst-${slug}`] = result.revision;
-    if (labelIconErrors.get(id) !== iconSaveError) labelIconErrors.delete(id);
-  } catch (error) {
+    if (!response.ok || !/^[a-f0-9]{64}$/.test(result.revision || "")) {
+      if (labelIconErrors.get(id) !== iconSaveError) labelIconErrors.set(id, typeof result.error === "string" ? result.error : "Icon unavailable. Edit the slug to retry.");
+    } else {
+      iconRevisions[`selfhst-${slug}`] = result.revision;
+      if (labelIconErrors.get(id) !== iconSaveError) labelIconErrors.delete(id);
+    }
+  } catch {
     if (labelIcons[id] !== slug || pendingLabelIcons.get(id) !== pending) return;
-    if (labelIconErrors.get(id) !== iconSaveError) labelIconErrors.set(id, error instanceof Error ? error.message : "Icon unavailable. Edit the slug to retry.");
+    if (labelIconErrors.get(id) !== iconSaveError) labelIconErrors.set(id, "Icon unavailable. Edit the slug to retry.");
   } finally {
     if (pendingLabelIcons.get(id) === pending) pendingLabelIcons.delete(id);
   }

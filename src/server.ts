@@ -237,12 +237,13 @@ function saveAppearanceChange(change: (config: AppConfig) => void): Promise<void
   return pending;
 }
 
-function syncIconAssignments(): Promise<void> {
+function syncIconAssignments(): Promise<{ config: AppConfig; revisions: Record<string, string> }> {
   const pending = appearanceSaveQueue.then(async () => {
     const current = await loadConfig();
     await iconCache.setAssigned(Object.values(current.labelIcons));
+    return { config: current, revisions: await iconCache.manifest() };
   });
-  appearanceSaveQueue = pending.catch(() => {});
+  appearanceSaveQueue = pending.then(() => {}, () => {});
   return pending;
 }
 
@@ -758,12 +759,12 @@ function publishRemoteRefresh(category: "hot" | "cold", from: string, to: string
 
 async function handleApi(request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse, url: URL, httpId: string): Promise<void> {
   if (request.method === "POST" && url.pathname === "/api/v1/icons/refresh") {
-    await syncIconAssignments();
     let allowedOrigin = true;
     if (request.headers.origin) {
       try { allowedOrigin = new URL(request.headers.origin).host === request.headers.host; } catch { allowedOrigin = false; }
     }
     if (request.headers["sec-fetch-site"] === "cross-site" || !allowedOrigin) return json(response, 403, { error: "Forbidden" });
+    await syncIconAssignments();
     // Snapshot before starting the refresh: background changes appear on a later opening.
     const icons = await iconCache.manifest();
     void iconCache.refresh();
@@ -772,9 +773,9 @@ async function handleApi(request: import("node:http").IncomingMessage, response:
   const config = await loadConfig();
   if (url.pathname === "/api/v1/appearance/icons") {
     if (request.method === "GET") {
-      await syncIconAssignments();
+      const current = await syncIconAssignments();
       const labels = await configuredOpenRouterLabels();
-      return json(response, 200, { icons: config.labelIcons, labels: labels.labels, labelsConfirmed: labels.error === null, revisions: await iconCache.manifest() });
+      return json(response, 200, { icons: current.config.labelIcons, labels: labels.labels, labelsConfirmed: labels.error === null, revisions: current.revisions });
     }
     if (request.method === "PUT") {
       const input = await body(request);

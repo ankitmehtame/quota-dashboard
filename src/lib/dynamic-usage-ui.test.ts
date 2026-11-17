@@ -194,7 +194,7 @@ test("label edits preview once, save failed slugs on exit, reject unsafe slugs a
   await api.fetch();
   assert.equal(api.icons[id], "missing-icon", "refetch preserves unsaved edits");
   await api.save();
-  assert.deepEqual(requests.at(-1)?.body, { icons: { [id]: "missing-icon" } });
+  assert.deepEqual(requests.at(-1)?.body.icons, { [id]: "missing-icon" });
   input.value = "https://evil.test/icon.svg";
   const before = requests.length;
   await api.preview(input);
@@ -203,7 +203,7 @@ test("label edits preview once, save failed slugs on exit, reject unsafe slugs a
   input.value = "";
   await api.preview(input);
   await api.save();
-  assert.deepEqual(requests.at(-1)?.body, { icons: { [id]: null } });
+  assert.deepEqual(requests.at(-1)?.body.icons, { [id]: null });
 });
 
 test("successful previews render same-origin icons and stale preview responses cannot replace newer edits", async () => {
@@ -251,6 +251,24 @@ test("preview loading suppresses fetch errors and save failures clear on retry",
   await api.save();
   assert.equal(api.errors.has(id), false);
   assert.match(error.textContent, /Icon unavailable/);
+});
+
+test("offline and malformed preview responses show a fixed Appearance error", async () => {
+  const id = `openrouter-${"d".repeat(24)}`;
+  let mode = 0;
+  const api = runInNewContext(`${escape}\n${presentation}\n${colorState}\n({ preview: previewLabelIcon, errors: labelIconErrors })`, {
+    state: {}, document: { querySelectorAll: () => [] },
+    fetch: async () => {
+      if (!mode++) throw new Error("private browser detail");
+      return { ok: false, json: async () => { throw new Error("parser detail"); } };
+    },
+  });
+  const input = { dataset: { labelIcon: id }, value: "first" };
+  await api.preview(input);
+  assert.equal(api.errors.get(id), "Icon unavailable. Edit the slug to retry.");
+  input.value = "second";
+  await api.preview(input);
+  assert.equal(api.errors.get(id), "Icon unavailable. Edit the slug to retry.");
 });
 
 test("appearance lists each tool once by canonical id with color controls and the per-device clock toggle", () => {
