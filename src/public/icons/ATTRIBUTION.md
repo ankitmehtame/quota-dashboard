@@ -38,4 +38,6 @@ All bundled and runtime-downloaded SVGs pass through the same static-SVG validat
 
 The Gemini asset's root `role="img"` attribute is omitted to match the static-SVG allowlist. The enclosing dashboard markup already handles accessibility.
 
+The selfh.st root `data-selfhst` metadata attribute is discarded without changing artwork. The Home Assistant asset from https://cdn.jsdelivr.net/gh/selfhst/icons@main/svg/home-assistant.svg is also included unchanged as a regression fixture in `src/lib/provider-icons.test.ts` under the collection's CC BY 4.0 license.
+
 The server refreshes only these listed sources, at most daily when the dashboard opens. The same modifications apply to accepted updates. Browser clients never contact the source collections directly.

@@ -68,6 +68,8 @@ export function validateIconSvg(input: string): string {
       }
       if (attr.name === "xml:space" && ["preserve", "default"].includes(attr.value)) continue;
       if (tag.local === "svg" && attr.name === "role" && attr.value === "img") continue;
+      // selfh.st's root metadata does not affect artwork and must not be serialized.
+      if (tag.local === "svg" && !attr.uri && attr.name === "data-selfhst") continue;
       let name = attr.local;
       let value = attr.value;
       if (name === "href" && (!attr.uri || attr.uri === "http://www.w3.org/1999/xlink")) {

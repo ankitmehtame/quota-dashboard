@@ -10,6 +10,31 @@ const bundledDirectory = fileURLToPath(new URL("../public/icons/", import.meta.u
 const iconCount = Object.keys(ICON_SOURCES).length;
 const svg = (color = "#abc") => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path fill="${color}" d="M0 0h10v10H0z"/></svg>`;
 const response = (body = svg(), headers: Record<string, string> = {}) => new Response(body, { headers: { "content-type": "image/svg+xml", ...headers } });
+// Upstream fixture: https://cdn.jsdelivr.net/gh/selfhst/icons@main/svg/home-assistant.svg
+// selfh.st/icons, CC BY 4.0. See public/icons/ATTRIBUTION.md.
+const homeAssistantSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" data-selfhst="home-assistant"><path d="m512 473.3c0 17.6-14.4 32-32 32H32c-17.6 0-32-14.4-32-32v-192c0-17.6 10.2-42.2 22.6-54.6L233.4 16c12.4-12.4 32.8-12.4 45.2 0l210.8 210.8c12.4 12.4 22.6 37 22.6 54.6z" fill="#f2f4f9"/><path d="m489.4 226.7L278.6 16c-12.4-12.4-32.8-12.4-45.2 0L22.6 226.7C10.2 239.1 0 263.7 0 281.3v192c0 17.6 14.4 32 32 32h196.8l-86.7-86.7c-4.5 1.5-9.2 2.4-14.2 2.4-24.1 0-43.7-19.6-43.7-43.7s19.6-43.7 43.7-43.7 43.7 19.6 43.7 43.7c0 5-.9 9.7-2.4 14.2l67.5 67.5V211.8c-14.5-7.1-24.5-22-24.5-39.2 0-24.1 19.6-43.7 43.7-43.7s43.7 19.6 43.7 43.7c0 17.2-10 32.1-24.5 39.2v173.4l67.1-67.1c-1.3-4.2-2-8.6-2-13.2 0-24.1 19.6-43.7 43.7-43.7s43.7 19.6 43.7 43.7-19.6 43.7-43.7 43.7c-5.3 0-10.4-1-15.1-2.8l-93.7 93.7v65.9H480c17.6 0 32-14.4 32-32v-192c0-17.6-10.2-42.2-22.6-54.7" fill="#18bcf2"/></svg>';
+
+test("Home Assistant metadata is discarded without changing the artwork", () => {
+  const sanitized = validateIconSvg(homeAssistantSvg);
+  assert.doesNotMatch(sanitized, /data-selfhst/);
+  assert.match(sanitized, /viewBox="0 0 512 512"/);
+  assert.deepEqual(sanitized.match(/\b(?:d|fill)="[^"]*"/g), homeAssistantSvg.match(/\b(?:d|fill)="[^"]*"/g));
+  assert.equal(sanitized, validateIconSvg(homeAssistantSvg.replace(' data-selfhst="home-assistant"', "")));
+  assert.equal(validateIconSvg(sanitized), sanitized);
+});
+
+test("discarding selfh.st metadata does not relax SVG validation", () => {
+  const metadata = 'data-selfhst="home-assistant"';
+  assert.equal(validateIconSvg(svg().replace("<svg ", '<svg data-selfhst="&quot;&lt;script&gt;https://evil.test" ')), validateIconSvg(svg()));
+  for (const input of [
+    homeAssistantSvg.replace(metadata, `${metadata} onload="alert(1)"`),
+    homeAssistantSvg.replace(metadata, `${metadata} data-other="home-assistant"`),
+    homeAssistantSvg.replace(metadata, 'xmlns:xlink="http://www.w3.org/1999/xlink" xlink:data-selfhst="home-assistant"'),
+    homeAssistantSvg.replace("<path ", `<path ${metadata} `),
+    homeAssistantSvg.replace("</svg>", '<script>alert(1)</script></svg>'),
+    homeAssistantSvg.replace("</svg>", '<use href="https://evil.test/a#b"/></svg>'),
+  ]) assert.throws(() => validateIconSvg(input));
+});
 
 test("custom slugs construct only approved selfh.st URLs and reject paths and URLs", () => {
   for (const slug of ["home-assistant", "openai-light", "3d", "a".repeat(100)]) assert.equal(isIconSlug(slug), true);
@@ -30,7 +55,7 @@ test("custom icons preview locally, refresh daily, and keep the last valid SVG o
       calls++;
       assert.equal(String(url), "https://cdn.jsdelivr.net/gh/selfhst/icons@main/svg/home-assistant.svg");
       assert.equal(init?.redirect, "error");
-      return fail ? response('<svg xmlns="http://www.w3.org/2000/svg"><script/></svg>') : response(svg(), { etag: '"custom-v1"' });
+      return fail ? response('<svg xmlns="http://www.w3.org/2000/svg"><script/></svg>') : response(homeAssistantSvg, { etag: '"custom-v1"' });
     }
     return response();
   };
@@ -43,6 +68,9 @@ test("custom icons preview locally, refresh daily, and keep the last valid SVG o
   assert.equal(calls, 0, "unfetched assignments never retry in the background");
   const [first, second] = await Promise.all([cache.preview("home-assistant"), cache.preview("home-assistant")]);
   assert.equal(calls, 1);
+  assert.equal(first.svg, validateIconSvg(homeAssistantSvg));
+  assert.match(first.revision, /^[a-f0-9]{64}$/);
+  assert.doesNotMatch(first.svg, /data-selfhst/);
   assert.equal(first.revision, second.revision);
   assert.equal((await cache.manifest())[id], first.revision);
   await cache.refresh();
@@ -55,6 +83,7 @@ test("custom icons preview locally, refresh daily, and keep the last valid SVG o
   const restarted = createIconCache(options);
   await restarted.setAssigned(["home-assistant"]);
   assert.equal((await restarted.get(id)).revision, first.revision);
+  assert.equal((await restarted.get(id)).svg, first.svg);
   await restarted.refresh();
   assert.equal(calls, 2, "daily attempts are persisted even when they fail");
 });
