@@ -7,6 +7,30 @@ const app = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const presentation = app.slice(app.indexOf("const usageSourceNames ="), app.indexOf("const HOT_USAGE_POLL_INTERVAL_MS"));
 const escape = app.slice(app.indexOf("const escapeHtml ="), app.indexOf("const usageSourceNames ="));
 
+test("service worker keeps custom label icons available offline across revision URLs", async () => {
+  const listeners = new Map<string, (event: unknown) => void>();
+  const stored = new Map<string, Response>();
+  let offline = false;
+  runInNewContext(readFileSync(new URL("../public/sw.js", import.meta.url), "utf8"), {
+    URL, Request, Response,
+    self: { location: { origin: "https://dashboard.test" }, addEventListener: (type: string, listener: (event: unknown) => void) => listeners.set(type, listener) },
+    caches: { open: async () => ({ put: async (key: Request, response: Response) => { stored.set(key.url, response); }, match: async (key: Request) => stored.get(key.url)?.clone() }) },
+    fetch: async () => { if (offline) throw new Error("Offline"); return new Response("<svg/>", { headers: { "content-type": "image/svg+xml" } }); },
+  });
+  const request = async (revision: string) => {
+    let response!: Promise<Response>;
+    const pending: Promise<unknown>[] = [];
+    listeners.get("fetch")!({ request: new Request(`https://dashboard.test/icons/selfhst-home-assistant.svg?v=${revision}`), respondWith: (value: Promise<Response>) => { response = value; }, waitUntil: (value: Promise<unknown>) => pending.push(value) });
+    const result = await response;
+    await Promise.all(pending);
+    return result;
+  };
+  assert.equal(await (await request("first")).text(), "<svg/>");
+  offline = true;
+  assert.equal(await (await request("second")).text(), "<svg/>");
+  assert.deepEqual([...stored.keys()], ["https://dashboard.test/icons/selfhst-home-assistant.svg"]);
+});
+
 test("usage date stays inline without an arbitrary width cap and cannot wrap internally", () => {
   const html = readFileSync(new URL("../public/index.html", import.meta.url), "utf8");
   const styles = readFileSync(new URL("../public/styles.css", import.meta.url), "utf8");
@@ -93,7 +117,7 @@ test("settings list dynamic sources, honor saved toggles, and escape labels and 
   const elements = new Map<string, { innerHTML: string }>();
   await runInNewContext(`${escape}\n${presentation}\n${settings}\nloadSettings();`, {
     fetch: async () => ({ json: async () => ({ providerOrder: [], providers: {}, usageSources: { "new-tool": { enabled: true }, "another-agent": { enabled: false }, 'odd-"<tool>': { enabled: true } } }) }),
-    state: { hour12: false }, renderColdUsageSettings() {}, renderAppearanceSettings() {},
+    state: { hour12: false }, fetchLabelIcons() {}, renderColdUsageSettings() {}, renderAppearanceSettings() {},
     document: { querySelectorAll: () => [] },
     $: (selector: string) => {
       if (!elements.has(selector)) elements.set(selector, { innerHTML: "" });
@@ -115,7 +139,7 @@ test("settings show icons in both provider sections without changing controls", 
   const usageSources = Object.fromEntries(["codex", "opencode", "hermes", "antigravity", "custom-agent"].map((id) => [id, { enabled: true }]));
   await runInNewContext(`${escape}\n${presentation}\n${settings}\nloadSettings();`, {
     fetch: async () => ({ json: async () => ({ providerOrder, providers: Object.fromEntries(providerOrder.map((id) => [id, { name: id, description: "Example", enabled: true }])), usageSources }) }),
-    state: { hour12: false }, renderColdUsageSettings() {}, renderAppearanceSettings() {}, document: { querySelectorAll: () => [] },
+    state: { hour12: false }, fetchLabelIcons() {}, renderColdUsageSettings() {}, renderAppearanceSettings() {}, document: { querySelectorAll: () => [] },
     $: (selector: string) => { if (!elements.has(selector)) elements.set(selector, { innerHTML: "" }); return elements.get(selector); },
   });
   const html = elements.get("#provider-settings")!.innerHTML;
@@ -132,6 +156,77 @@ test("settings show icons in both provider sections without changing controls", 
 
 const appearance = app.slice(app.indexOf("function renderAppearanceSettings("), app.indexOf("function settingsHashSection("));
 const colorState = app.slice(app.indexOf("const settingsSections ="), app.indexOf("function renderAppearanceSettings("));
+
+test("Appearance keeps icon fields inline with label colors and shows actual built-in sources read-only", () => {
+  const id = `openrouter-${"a".repeat(24)}`;
+  let html = "";
+  runInNewContext(`${escape}\n${presentation}\n${colorState}\n${appearance}\nconfiguredLabelNames = { [id]: 'Home <lab>' }; renderAppearanceSettings(data, []);`, {
+    id, data: { providerOrder: ["codex", "hermes"], providers: {} }, state: { hour12: false },
+    document: { querySelectorAll: () => [] }, $: () => ({ set innerHTML(value: string) { html = value; } }),
+  });
+  assert.match(html, /selfh.st: openai-light/);
+  assert.match(html, /theSVG: nousresearch-hermes\/default/);
+  assert.equal((html.match(/data-label-icon=/g) || []).length, 1);
+  assert.match(html, /Home &lt;lab&gt;/);
+  assert.match(html, new RegExp(`data-tool-color="${id}"`));
+  assert.match(html, /href="https:\/\/selfh.st\/icons\/"[^>]*rel="noopener noreferrer"/);
+  assert.doesNotMatch(html, /src="https:/);
+});
+
+test("label edits preview once, save failed slugs on exit, reject unsafe slugs and clear assignments", async () => {
+  const id = `openrouter-${"a".repeat(24)}`;
+  const requests: Array<{ url: string; body: any }> = [];
+  const api = runInNewContext(`${escape}\n${presentation}\n${colorState}\n({ preview: previewLabelIcon, save: saveLabelIcons, fetch: fetchLabelIcons, icon: sourceIcon, get icons() { return labelIcons; }, errors: labelIconErrors })`, {
+    state: {}, document: { querySelectorAll: () => [] },
+    fetch: async (url: string, options?: { method?: string; body?: string }) => {
+      requests.push({ url, body: options?.body ? JSON.parse(options.body) : null });
+      return { ok: true, json: async () => url.endsWith("preview") ? { revision: null, error: "Missing icon" } : { icons: {}, labels: {} } };
+    },
+  });
+  const input = { dataset: { labelIcon: id }, value: " missing-icon " };
+  await api.preview(input);
+  assert.equal(input.value, "missing-icon");
+  assert.equal(api.icons[id], "missing-icon");
+  assert.equal(api.errors.get(id), "Missing icon");
+  assert.doesNotMatch(api.icon(id), /<img/);
+  await api.preview(input);
+  assert.equal(requests.length, 1, "unchanged blur and Enter do not retry failed fetches");
+  await api.fetch();
+  assert.equal(api.icons[id], "missing-icon", "refetch preserves unsaved edits");
+  await api.save();
+  assert.deepEqual(requests.at(-1)?.body, { icons: { [id]: "missing-icon" } });
+  input.value = "https://evil.test/icon.svg";
+  const before = requests.length;
+  await api.preview(input);
+  assert.equal(requests.length, before);
+  assert.equal(api.icons[id], "missing-icon");
+  input.value = "";
+  await api.preview(input);
+  await api.save();
+  assert.deepEqual(requests.at(-1)?.body, { icons: { [id]: null } });
+});
+
+test("successful previews render same-origin icons and stale preview responses cannot replace newer edits", async () => {
+  const id = `openrouter-${"b".repeat(24)}`;
+  const completions = new Map<string, (value: unknown) => void>();
+  const api = runInNewContext(`${escape}\n${presentation}\n${colorState}\n({ preview: previewLabelIcon, icon: sourceIcon, get icons() { return labelIcons; }, get revisions() { return iconRevisions; } })`, {
+    state: {}, document: { querySelectorAll: () => [] },
+    fetch: (_: string, options: { body: string }) => new Promise((resolve) => completions.set(JSON.parse(options.body).slug, (value) => resolve({ ok: true, json: async () => value }))),
+  });
+  const input = { dataset: { labelIcon: id }, value: "first" };
+  const first = api.preview(input);
+  await Promise.resolve();
+  input.value = "second";
+  const second = api.preview(input);
+  await Promise.resolve();
+  completions.get("second")!({ revision: "2".repeat(64) });
+  await second;
+  completions.get("first")!({ revision: "1".repeat(64) });
+  await first;
+  assert.equal(api.icons[id], "second");
+  assert.match(api.icon(id), /src="\/icons\/selfhst-second.svg\?v=2{64}"/);
+  assert.equal(api.revisions["selfhst-first"], undefined);
+});
 
 test("appearance lists each tool once by canonical id with color controls and the per-device clock toggle", () => {
   const elements = new Map<string, { innerHTML: string }>();
@@ -297,7 +392,7 @@ test("settings sections use hash URLs, replaceState for switching, and keep the 
   const context = {
     location, localStorage: { getItem: (key: string) => storage.get(key) ?? null, setItem: (key: string, value: string) => storage.set(key, value) },
     history: { replaceState: (_: unknown, __: string, url: string) => { history.push(url); location.hash = url; } },
-    document: { querySelectorAll: () => [] }, saveToolColors: () => { history.push("save"); return Promise.resolve(); }, settingsSections: ["appearance", "sources", "usage"], settingsSectionStorageKey: "k",
+    document: { querySelectorAll: () => [] }, saveLabelIcons: () => Promise.resolve(), saveToolColors: () => { history.push("save"); return Promise.resolve(); }, settingsSections: ["appearance", "sources", "usage"], settingsSectionStorageKey: "k",
   };
   const api = runInNewContext(`let activeSettingsSection = null;\n${navigation}\n({ hash: settingsHashSection, stored: storedSettingsSection, show: showSettingsSection })`, context) as { hash(): string | null; stored(): string; show(section: string, update?: boolean): void };
   assert.equal(api.hash(), "usage");
@@ -310,7 +405,7 @@ test("settings sections use hash URLs, replaceState for switching, and keep the 
   api.show("sources");
   assert.deepEqual(history, ["#settings/appearance", "save", "#settings/sources"]);
   assert.match(bind, /dialog\.addEventListener\("close"/);
-  assert.match(bind, /window\.addEventListener\("pagehide", \(\) => void saveToolColors\(true\)\)/);
+  assert.match(bind, /window\.addEventListener\("pagehide", \(\) => \{ void saveToolColors\(true\); void saveLabelIcons\(true\); \}\)/);
   assert.match(bind, /window\.addEventListener\("pageshow", \(event\) => \{\s*if \(!event\.persisted\)\s*return;\s*void fetchToolColors\(\)/);
   assert.match(bind, /history\.back\(\)/);
 });

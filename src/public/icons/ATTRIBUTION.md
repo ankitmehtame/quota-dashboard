@@ -6,6 +6,10 @@ These icons identify their respective providers and tools. Their inclusion does 
 
 Source collection: https://selfh.st/icons/
 
+Operator-selected OpenRouter label icons use this same collection and license.
+Their source is `https://cdn.jsdelivr.net/gh/selfhst/icons@main/svg/<slug>.svg`.
+The server validates and caches them using the same modifications described below.
+
 Collection license: [Creative Commons Attribution 4.0 International](https://creativecommons.org/licenses/by/4.0/), as published in the [selfh.st/icons license](https://github.com/selfhst/icons/blob/main/LICENSE). Individual marks remain the property of their respective owners. See https://selfh.st/icons-about/ for the collection's usage notice.
 
 | Local file | Owner / mark | Download source |

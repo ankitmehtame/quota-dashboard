@@ -61,6 +61,7 @@ export type AppConfig = {
   providerOrder: ProviderId[];
   usageSources: Record<UsageSourceId, UsageSourceConfig>;
   toolColors: Record<string, string>;
+  labelIcons: Record<string, string>;
 };
 
 export type DateRange = { from: string; to: string; timeZone: string };
@@ -70,6 +71,7 @@ type ConfigInput = {
   providerOrder?: unknown;
   usageSources?: Partial<Record<UsageSourceId, Partial<UsageSourceConfig>>>;
   toolColors?: unknown;
+  labelIcons?: unknown;
 };
 
 export const PROVIDER_DEFINITIONS: Record<ProviderId, {
@@ -166,6 +168,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     antigravity: { enabled: true },
   },
   toolColors: {},
+  labelIcons: {},
 };
 
 const TOOL_COLOR_KEY = /^[a-z0-9][a-z0-9._~-]{0,63}$/i;
@@ -265,6 +268,11 @@ export function normalizeConfig(raw: unknown): AppConfig {
     }
   }
   config.toolColors = normalizeToolColors(input.toolColors);
+  if (input.labelIcons && typeof input.labelIcons === "object" && !Array.isArray(input.labelIcons)) {
+    for (const [id, slug] of Object.entries(input.labelIcons)) {
+      if (/^openrouter-[a-f0-9]{24}$/.test(id) && typeof slug === "string" && slug.length <= 100 && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)) config.labelIcons[id] = slug;
+    }
+  }
   return config;
 }
 

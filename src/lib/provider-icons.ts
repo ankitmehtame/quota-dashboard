@@ -16,6 +16,13 @@ export const ICON_SOURCES = {
   opencode: "https://thesvg.org/icons/opencode/default.svg",
 } as const;
 export type IconId = keyof typeof ICON_SOURCES;
+export function isIconSlug(value: unknown): value is string {
+  return typeof value === "string" && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value) && value.length <= 100;
+}
+export function customIconId(slug: string): string {
+  if (!isIconSlug(slug)) throw new Error("Invalid icon slug");
+  return `selfhst-${slug}`;
+}
 export const ICON_REFRESH_MS = 24 * 60 * 60 * 1000;
 export const ICON_TIMEOUT_MS = 10_000;
 export const MAX_ICON_BYTES = 128 * 1024;
@@ -112,20 +119,24 @@ type IconCacheOptions = { directory: string; bundledDirectory: string; fetch?: t
 export function createIconCache(options: IconCacheOptions) {
   const fetchIcon = options.fetch || fetch;
   const now = options.now || Date.now;
-  const states = new Map<IconId, Promise<IconState>>();
+  const states = new Map<string, Promise<IconState>>();
+  const sources: Record<string, string> = { ...ICON_SOURCES };
+  const updates = new Map<string, Promise<void>>();
   let refreshing: Promise<void> | undefined;
 
-  async function state(id: IconId): Promise<IconState> {
+  async function state(id: string): Promise<IconState> {
+    if (!Object.hasOwn(sources, id)) throw new Error("Unknown icon");
     let pending = states.get(id);
     if (!pending) {
       pending = (async () => {
         try {
           const cached = JSON.parse(await readFile(join(options.directory, `${id}.json`), "utf8"));
-          if (cached.source !== ICON_SOURCES[id]) throw new Error("Icon source changed");
+          if (cached.source !== sources[id]) throw new Error("Icon source changed");
           const svg = validateIconSvg(cached.svg);
           return { svg, revision: iconRevision(svg), attemptedAt: typeof cached.attemptedAt === "number" && cached.attemptedAt <= now() ? cached.attemptedAt : undefined,
             etag: typeof cached.etag === "string" ? cached.etag : undefined, modified: typeof cached.modified === "string" ? cached.modified : undefined };
         } catch {
+          if (!isIconId(id)) return { svg: "", revision: "" };
           const svg = validateIconSvg(await readFile(join(options.bundledDirectory, `${id}.svg`), "utf8"));
           return { svg, revision: iconRevision(svg) };
         }
@@ -136,28 +147,28 @@ export function createIconCache(options: IconCacheOptions) {
     return pending;
   }
 
-  async function persist(id: IconId, value: IconState): Promise<void> {
+  async function persist(id: string, value: IconState): Promise<void> {
     await mkdir(options.directory, { recursive: true, mode: 0o700 });
     const temporary = join(options.directory, `.${id}-${randomUUID()}.tmp`);
     try {
-      await writeFile(temporary, JSON.stringify({ ...value, source: ICON_SOURCES[id] }), { mode: 0o600 });
+      await writeFile(temporary, JSON.stringify({ ...value, source: sources[id] }), { mode: 0o600 });
       await rename(temporary, join(options.directory, `${id}.json`));
     } finally {
       await unlink(temporary).catch(() => {});
     }
   }
 
-  async function update(id: IconId): Promise<void> {
+  async function updateOnce(id: string, force = false): Promise<void> {
     try {
       const current = await state(id);
-      if (current.attemptedAt !== undefined && now() - current.attemptedAt < ICON_REFRESH_MS) return;
+      if (!force && (!current.svg && !isIconId(id) || current.attemptedAt !== undefined && now() - current.attemptedAt < ICON_REFRESH_MS)) return;
       current.attemptedAt = now();
       // Persist the attempt before networking, including failures, to bound retries across restarts.
       await persist(id, current);
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), ICON_TIMEOUT_MS);
       try {
-        const response = await fetchIcon(ICON_SOURCES[id], { redirect: "error", signal: controller.signal, headers: {
+        const response = await fetchIcon(sources[id], { redirect: "error", signal: controller.signal, headers: {
           Accept: "image/svg+xml", ...(current.etag ? { "If-None-Match": current.etag } : {}), ...(current.modified ? { "If-Modified-Since": current.modified } : {}),
         } });
         if (response.status === 304) return;
@@ -191,13 +202,29 @@ export function createIconCache(options: IconCacheOptions) {
     }
   }
 
+  function update(id: string, force = false): Promise<void> {
+    let pending = updates.get(id);
+    if (!pending) { pending = updateOnce(id, force).finally(() => { updates.delete(id); }); updates.set(id, pending); }
+    return pending;
+  }
+
   return {
     get: state,
+    register(slug: string): string {
+      const id = customIconId(slug);
+      sources[id] = `https://cdn.jsdelivr.net/gh/selfhst/icons@main/svg/${slug}.svg`;
+      return id;
+    },
+    async preview(slug: string): Promise<IconState> {
+      const id = this.register(slug);
+      await update(id, true);
+      return state(id);
+    },
     async manifest(): Promise<Record<string, string>> {
-      return Object.fromEntries(await Promise.all((Object.keys(ICON_SOURCES) as IconId[]).map(async (id) => [id, (await state(id)).revision])));
+      return Object.fromEntries((await Promise.all(Object.keys(sources).map(async (id) => [id, (await state(id)).revision]))).filter(([, revision]) => revision));
     },
     refresh(): Promise<void> {
-      if (!refreshing) refreshing = Promise.all((Object.keys(ICON_SOURCES) as IconId[]).map(update)).then(() => {}).finally(() => { refreshing = undefined; });
+      if (!refreshing) refreshing = Promise.all(Object.keys(sources).map((id) => update(id))).then(() => {}).finally(() => { refreshing = undefined; });
       return refreshing;
     },
   };

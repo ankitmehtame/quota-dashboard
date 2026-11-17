@@ -11,7 +11,7 @@ worker.addEventListener("activate", (event: ExtendableEvent) => event.waitUntil(
 worker.addEventListener("fetch", (event: FetchEvent) => {
   const url = new URL(event.request.url);
   if (url.origin !== worker.location.origin || event.request.method !== "GET" || url.pathname.startsWith("/api/")) return;
-  if (ICON_NAMES.some((id) => url.pathname === `/icons/${id}.svg`)) {
+  if (ICON_NAMES.some((id) => url.pathname === `/icons/${id}.svg`) || /^\/icons\/selfhst-[a-z0-9]+(?:-[a-z0-9]+)*\.svg$/.test(url.pathname)) {
     // One entry per icon, regardless of opening/version query, preserves the latest offline copy.
     const key = new Request(`${url.origin}${url.pathname}`);
     const network = fetch(event.request).then(async (response) => {
