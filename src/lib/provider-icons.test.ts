@@ -4,12 +4,77 @@ import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createIconCache, ICON_REFRESH_MS, ICON_SOURCES, ICON_TIMEOUT_MS, MAX_ICON_BYTES, validateIconSvg } from "./provider-icons.js";
+import { createIconCache, customIconId, isIconSlug, ICON_REFRESH_MS, ICON_SOURCES, ICON_TIMEOUT_MS, MAX_ICON_BYTES, validateIconSvg } from "./provider-icons.js";
 
 const bundledDirectory = fileURLToPath(new URL("../public/icons/", import.meta.url));
 const iconCount = Object.keys(ICON_SOURCES).length;
 const svg = (color = "#abc") => `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path fill="${color}" d="M0 0h10v10H0z"/></svg>`;
 const response = (body = svg(), headers: Record<string, string> = {}) => new Response(body, { headers: { "content-type": "image/svg+xml", ...headers } });
+
+test("custom slugs construct only approved selfh.st URLs and reject paths and URLs", () => {
+  for (const slug of ["home-assistant", "openai-light", "3d", "a".repeat(100)]) assert.equal(isIconSlug(slug), true);
+  for (const slug of ["", "A", "a_b", "../icon", "a/b", "a.svg", "https://evil.test", "a?x", "a%2fb", "-a", "a--b", "a".repeat(101), null]) {
+    assert.equal(isIconSlug(slug), false);
+    assert.throws(() => customIconId(slug as string));
+  }
+});
+
+test("custom icons preview locally, refresh daily, and keep the last valid SVG on failure", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "quota-custom-icons-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let now = 1_000_000;
+  let calls = 0;
+  let fail = false;
+  const fetchMock: typeof fetch = async (url, init) => {
+    if (String(url).endsWith("/home-assistant.svg")) {
+      calls++;
+      assert.equal(String(url), "https://cdn.jsdelivr.net/gh/selfhst/icons@main/svg/home-assistant.svg");
+      assert.equal(init?.redirect, "error");
+      return fail ? response('<svg xmlns="http://www.w3.org/2000/svg"><script/></svg>') : response(svg(), { etag: '"custom-v1"' });
+    }
+    return response();
+  };
+  const options = { directory, bundledDirectory, now: () => now, fetch: fetchMock };
+  const cache = createIconCache(options);
+  const id = cache.register("home-assistant");
+  assert.equal((await cache.get(id)).svg, "");
+  await cache.refresh();
+  assert.equal(calls, 0, "unfetched assignments never retry in the background");
+  const [first, second] = await Promise.all([cache.preview("home-assistant"), cache.preview("home-assistant")]);
+  assert.equal(calls, 1);
+  assert.equal(first.revision, second.revision);
+  assert.equal((await cache.manifest())[id], first.revision);
+  await cache.refresh();
+  assert.equal(calls, 1);
+  now += ICON_REFRESH_MS;
+  fail = true;
+  await cache.refresh();
+  assert.equal(calls, 2);
+  assert.equal((await cache.get(id)).revision, first.revision);
+  const restarted = createIconCache(options);
+  restarted.register("home-assistant");
+  assert.equal((await restarted.get(id)).revision, first.revision);
+  await restarted.refresh();
+  assert.equal(calls, 2, "daily attempts are persisted even when they fail");
+});
+
+test("failed custom previews remain color-only and do not retry across restarts until edited", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "quota-custom-failed-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  let calls = 0;
+  const options = { directory, bundledDirectory, fetch: (async (url) => { if (String(url).endsWith("/missing.svg")) calls++; return new Response("missing", { status: 404 }); }) as typeof fetch };
+  const cache = createIconCache(options);
+  const id = cache.register("missing");
+  assert.equal((await cache.preview("missing")).revision, "");
+  await cache.refresh();
+  const restarted = createIconCache(options);
+  restarted.register("missing");
+  await restarted.refresh();
+  assert.equal(calls, 1);
+  assert.equal((await restarted.manifest())[id], undefined);
+  await restarted.preview("missing");
+  assert.equal(calls, 2);
+});
 
 test("bundled icons validate, retain artwork, and are copied with attribution", async () => {
   for (const id of Object.keys(ICON_SOURCES)) {

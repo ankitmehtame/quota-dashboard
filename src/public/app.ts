@@ -59,14 +59,20 @@ function applyToolColors(ids?: Iterable<string>): void {
 // Brand assets from https://selfh.st/icons/ and https://thesvg.org/.
 // Sources, licenses, and modifications are recorded in icons/ATTRIBUTION.md.
 const sourceIcons: Record<string, string> = { claude: "claude", codex: "openai", openrouter: "openrouter", ollama: "ollama", hermes: "hermes", antigravity: "antigravity", gemini: "gemini", "gemini-cli": "gemini", opencode: "opencode", "opencode-go": "opencode" };
+let labelIcons: Record<string, string> = {};
+let configuredLabelNames: Record<string, string> = {};
+const builtInIconSources: Record<string, string> = { claude: "selfh.st: claude", openai: "selfh.st: openai-light", openrouter: "selfh.st: openrouter-light", ollama: "selfh.st: ollama", hermes: "theSVG: nousresearch-hermes/default", antigravity: "theSVG: google-antigravity/default", gemini: "theSVG: google-gemini/default", opencode: "theSVG: opencode/default" };
 let iconRevisions: Record<string, string> = {};
+function hasSourceIcon(id: string): boolean {
+  return Object.hasOwn(sourceIcons, id) || Boolean(labelIcons[id] && iconRevisions[`selfhst-${labelIcons[id]}`]);
+}
 function sourceIconUrl(icon: string): string {
   return `/icons/${icon}.svg${iconRevisions[icon] ? `?v=${iconRevisions[icon]}` : ""}`;
 }
 function sourceIcon(id: string, size = 14, tooltip = false): string {
   const tool = `data-tool="${escapeHtml(toolId(id))}" style="--tool-color:${toolColorValue(id)}"`;
   const swatch = tooltip ? `<i class="tooltip-harness-dot" ${tool}></i>` : `<span class="legend-key" ${tool}></span>`;
-  const icon = Object.hasOwn(sourceIcons, id) ? sourceIcons[id] : undefined;
+  const icon = Object.hasOwn(sourceIcons, id) ? sourceIcons[id] : labelIcons[id] && iconRevisions[`selfhst-${labelIcons[id]}`] ? `selfhst-${labelIcons[id]}` : undefined;
   if (!icon) return swatch;
   return `<span class="source-icon${size === 20 ? " source-icon-large" : ""}" aria-hidden="true"><span class="icon-fallback">${swatch}</span><img data-icon="${icon}" src="${sourceIconUrl(icon)}" width="${size}" height="${size}" alt="" /></span>`;
 }
@@ -826,7 +832,7 @@ function sourceUsageTooltip(usage: Usage, provider: string, selectedHostIds: Set
   const periodKnown = emptySelection || Boolean(usage.records && (records.length || healthy));
   const todayKnown = emptySelection || Boolean(usage.records && usage.to && (currentRecords.length || healthy));
   const partial = hosts.some((host) => !hostHealthy(host));
-  return `<span class="agent-tooltip-heading">${Object.hasOwn(sourceIcons, provider) ? sourceIcon(provider) : ""}<strong>${escapeHtml(usageSourceName(provider))}</strong></span>${state.range === "today" ? "" : row(usagePresetLabel(state.range), records, periodKnown)}${row("Today so far", currentRecords, todayKnown)}${partial ? '<span class="agent-tooltip-note">Selected machines have incomplete usage.</span>' : ""}${records.some((record) => record.missingPricing) ? '<span class="agent-tooltip-note">+ Pricing unavailable for some usage.</span>' : ""}`;
+  return `<span class="agent-tooltip-heading">${hasSourceIcon(provider) ? sourceIcon(provider) : ""}<strong>${escapeHtml(usageSourceName(provider))}</strong></span>${state.range === "today" ? "" : row(usagePresetLabel(state.range), records, periodKnown)}${row("Today so far", currentRecords, todayKnown)}${partial ? '<span class="agent-tooltip-note">Selected machines have incomplete usage.</span>' : ""}${records.some((record) => record.missingPricing) ? '<span class="agent-tooltip-note">+ Pricing unavailable for some usage.</span>' : ""}`;
 }
 
 function sourceUsageIsZero(usage: Usage, provider: string, selectedHostIds: Set<string>): boolean {
@@ -873,7 +879,7 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
   renderSpendMetrics(sourceUsage, hosts, usableHosts, selectedUsage, selectedHostIds);
   updateRepresentationControls();
   const sourceNames = usageSourceName;
-  $(".chart-legend").innerHTML = [...enabledSources].map((provider) => `<button class="chart-legend-item" type="button" data-usage-source="${escapeHtml(provider)}" data-tool="${escapeHtml(toolId(provider))}" style="--tool-color:${toolColorValue(provider)}" aria-pressed="${state.sourceSelections.get(provider) !== false}">${Object.hasOwn(sourceIcons, provider) ? sourceIcon(provider) : ""}${escapeHtml(sourceNames(provider))}</button>`).join("") || "No local usage sources enabled";
+  $(".chart-legend").innerHTML = [...enabledSources].map((provider) => `<button class="chart-legend-item" type="button" data-usage-source="${escapeHtml(provider)}" data-tool="${escapeHtml(toolId(provider))}" style="--tool-color:${toolColorValue(provider)}" aria-pressed="${state.sourceSelections.get(provider) !== false}">${hasSourceIcon(provider) ? sourceIcon(provider) : ""}${escapeHtml(sourceNames(provider))}</button>`).join("") || "No local usage sources enabled";
   document.querySelectorAll<HTMLButtonElement>("[data-usage-source]").forEach((button) => button.addEventListener("click", () => {
     const provider = button.dataset.usageSource!;
     state.sourceSelections.set(provider, state.sourceSelections.get(provider) === false);
@@ -1243,7 +1249,7 @@ async function loadDashboard(refresh = false): Promise<void> {
   $("#usage-chart").innerHTML = `<div class="chart-empty">Loading usage data…</div>`;
   $("#models-list").innerHTML = `<div class="chart-empty">Loading model data…</div>`;
   try {
-    const [response] = await Promise.all([fetch(`/api/v1/dashboard?${usageQuery()}${refresh ? "&refresh=1" : ""}`), fetchToolColors()]);
+    const [response] = await Promise.all([fetch(`/api/v1/dashboard?${usageQuery()}${refresh ? "&refresh=1" : ""}`), fetchToolColors(), fetchLabelIcons()]);
     if (!response.ok) throw new Error("Dashboard request failed");
     state.dashboard = await response.json();
     sampleServerClock(state.dashboard?.serverNow);
@@ -1312,6 +1318,7 @@ function renderColdUsageSettings(usage: Usage | undefined): void {
 async function loadSettings(): Promise<void> {
   const response = await fetch("/api/v1/providers");
   const data = await response.json() as ProvidersResponse;
+  await fetchLabelIcons();
   settingsUsageSourceLabels = data.usageSourceLabels || {};
   providerOrder = data.providerOrder;
   const quotaSettings = providerOrder.map((id, index) => { const provider = data.providers[id]; return `<div class="setting-row" data-provider-row="${id}"><div class="setting-copy"><div class="provider-name">${sourceIcon(id)}${provider.name}</div><div class="provider-sub">${provider.description}${provider.configured ? " · configured" : " · credentials not detected"}</div></div><div class="order-actions"><button class="order-button" type="button" data-order-direction="up" data-provider="${id}" aria-label="Move ${provider.name} up" ${index === 0 ? "disabled" : ""}>↑</button><button class="order-button" type="button" data-order-direction="down" data-provider="${id}" aria-label="Move ${provider.name} down" ${index === providerOrder.length - 1 ? "disabled" : ""}>↓</button><input class="switch" type="checkbox" data-kind="provider" data-provider="${id}" ${provider.enabled ? "checked" : ""} aria-label="Enable ${provider.name}" /></div></div>`; }).join("");
@@ -1440,14 +1447,116 @@ function previewToolColor(id: string, color: string): void {
   updateColorRow(id);
 }
 
+let savedLabelIcons: Record<string, string> = {};
+const labelIconErrors = new Map<string, string>();
+const previewedLabelIcons = new Map<string, string>();
+let iconSaveQueue: Promise<void> = Promise.resolve();
+let keepaliveIconSave: Promise<void> | null = null;
+const labelIconsPath = "/api/v1/appearance/icons";
+
+async function fetchLabelIcons(): Promise<void> {
+  try {
+    while (keepaliveIconSave) await keepaliveIconSave;
+    const response = await fetch(labelIconsPath);
+    if (!response.ok) return;
+    const data = await response.json();
+    const next: Record<string, string> = {};
+    configuredLabelNames = {};
+    for (const [id, label] of Object.entries(data.labels || {})) if (/^openrouter-[a-f0-9]{24}$/.test(id) && typeof label === "string") configuredLabelNames[id] = label;
+    for (const [id, slug] of Object.entries(data.icons || {})) if (/^openrouter-[a-f0-9]{24}$/.test(id) && typeof slug === "string" && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) && slug.length <= 100) next[id] = slug;
+    const merged = { ...next };
+    for (const id of new Set([...Object.keys(savedLabelIcons), ...Object.keys(labelIcons)])) {
+      if ((savedLabelIcons[id] ?? null) === (labelIcons[id] ?? null)) continue;
+      if (labelIcons[id]) merged[id] = labelIcons[id]; else delete merged[id];
+    }
+    labelIcons = merged;
+    savedLabelIcons = next;
+    for (const [id, revision] of Object.entries(data.revisions || {})) if (/^[a-f0-9]{64}$/.test(String(revision))) iconRevisions[id] = revision as string;
+  } catch { /* Keep the last assignments while offline. */ }
+}
+
+function saveLabelIcons(keepalive = false): Promise<void> {
+  // A dialog close need not move focus, so capture the active field here too.
+  document.querySelectorAll<HTMLInputElement>("[data-label-icon]").forEach((input) => { void previewLabelIcon(input); });
+  const save = async () => {
+    const changes: Record<string, string | null> = {};
+    for (const id of new Set([...Object.keys(savedLabelIcons), ...Object.keys(labelIcons)])) if ((labelIcons[id] ?? null) !== (savedLabelIcons[id] ?? null)) changes[id] = labelIcons[id] ?? null;
+    if (!Object.keys(changes).length) return;
+    try {
+      const response = await fetch(labelIconsPath, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ icons: changes }), ...(keepalive ? { keepalive: true } : {}) });
+      if (!response.ok) throw new Error("Icon assignments could not be saved");
+      for (const [id, slug] of Object.entries(changes)) { if (slug) savedLabelIcons[id] = slug; else delete savedLabelIcons[id]; }
+    } catch {
+      for (const id of Object.keys(changes)) { labelIconErrors.set(id, "Icon assignment could not be saved. Reopen Settings to retry."); updateLabelIconRow(id); }
+    }
+  };
+  if (keepalive) {
+    const pending = save().finally(() => { if (keepaliveIconSave === pending) keepaliveIconSave = null; });
+    keepaliveIconSave = pending;
+    return pending;
+  }
+  iconSaveQueue = iconSaveQueue.then(save);
+  return iconSaveQueue;
+}
+
+function updateLabelIconRow(id: string): void {
+  const row = Array.from(document.querySelectorAll<HTMLElement>("[data-tool-row]")).find((item) => item.dataset.toolRow === id);
+  if (!row) return;
+  const error = row.querySelector<HTMLElement>("[data-icon-error]");
+  if (error) { error.textContent = labelIconErrors.get(id) || (labelIcons[id] && !hasSourceIcon(id) ? "Icon unavailable. Edit the slug to retry." : ""); error.hidden = !error.textContent; }
+  const name = row.querySelector<HTMLElement>(".provider-name");
+  if (name) name.innerHTML = `${sourceIcon(id)}${escapeHtml(configuredLabelNames[id] || usageSourceName(id))}`;
+}
+
+async function previewLabelIcon(input: HTMLInputElement): Promise<void> {
+  const id = input.dataset.labelIcon!;
+  const slug = input.value.trim();
+  input.value = slug;
+  if (slug && (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) || slug.length > 100)) {
+    labelIconErrors.set(id, "Use lowercase letters, numbers and hyphens, not a URL."); updateLabelIconRow(id); return;
+  }
+  // Fetch only after an edit, never when reopening Settings or blurring an unchanged field.
+  if ((labelIcons[id] || "") === slug && (!previewedLabelIcons.has(id) || previewedLabelIcons.get(id) === slug)) {
+    if (labelIconErrors.get(id) === "Use lowercase letters, numbers and hyphens, not a URL.") { labelIconErrors.delete(id); updateLabelIconRow(id); }
+    return;
+  }
+  if (slug) labelIcons[id] = slug; else delete labelIcons[id];
+  previewedLabelIcons.set(id, slug);
+  labelIconErrors.delete(id);
+  updateLabelIconRow(id);
+  if (state.dashboard) renderUsage(state.dashboard.usage, "preserve");
+  if (!slug) return;
+  try {
+    const response = await fetch(`${labelIconsPath}/preview`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ slug }) });
+    const result = await response.json();
+    if (labelIcons[id] !== slug) return;
+    if (!response.ok || !/^[a-f0-9]{64}$/.test(result.revision || "")) throw new Error(result.error || "Icon unavailable. Edit the slug to retry.");
+    iconRevisions[`selfhst-${slug}`] = result.revision;
+    labelIconErrors.delete(id);
+  } catch (error) {
+    if (labelIcons[id] !== slug) return;
+    labelIconErrors.set(id, error instanceof Error ? error.message : "Icon unavailable. Edit the slug to retry.");
+  }
+  updateLabelIconRow(id);
+  if (state.dashboard) renderUsage(state.dashboard.usage, "preserve");
+}
+
+function appearanceIconField(id: string, name: string): string {
+  if (/^openrouter-[a-f0-9]{24}$/.test(id)) return `<div class="label-icon-field"><input type="text" class="icon-slug-input" data-label-icon="${escapeHtml(id)}" value="${escapeHtml(labelIcons[id] || "")}" placeholder="Icon slug" maxlength="100" spellcheck="false" autocapitalize="none" aria-label="${escapeHtml(name)} selfh.st icon slug" /><a href="https://selfh.st/icons/" target="_blank" rel="noopener noreferrer">selfh.st catalog</a></div><div class="provider-sub icon-error" data-icon-error role="status" hidden></div>`;
+  const icon = sourceIcons[id];
+  return icon ? `<div class="provider-sub icon-source">${escapeHtml(builtInIconSources[icon])}</div>` : "";
+}
+
 function renderAppearanceSettings(data: ProvidersResponse, usageIds: string[]): void {
   const tools = new Map<string, string>();
   for (const id of data.providerOrder) { const tool = toolId(id); if (!tools.has(tool)) tools.set(tool, tool === id ? data.providers[id]?.name || usageSourceName(tool) : usageSourceName(tool)); }
   for (const id of usageIds) { const tool = toolId(id); if (!tools.has(tool)) tools.set(tool, usageSourceName(tool)); }
-  const rows = [...tools].map(([id, name]) => `<div class="setting-row color-row" data-tool-row="${escapeHtml(id)}"><div class="setting-copy"><div class="provider-name">${sourceIcon(id)}${escapeHtml(name)}</div></div><div class="color-actions"><button class="text-button color-action" type="button" data-color-undo="${escapeHtml(id)}" aria-label="Undo ${escapeHtml(name)} color change" hidden>Undo</button><button class="text-button color-action" type="button" data-color-reset="${escapeHtml(id)}" aria-label="Reset ${escapeHtml(name)} color to default" hidden>Reset</button><input class="color-input" type="color" data-tool-color="${escapeHtml(id)}" value="${toolColorHex(id)}" aria-label="${escapeHtml(name)} color" /></div></div>`).join("");
+  for (const [id, name] of Object.entries(configuredLabelNames)) tools.set(id, name);
+  const rows = [...tools].map(([id, name]) => `<div class="setting-row color-row" data-tool-row="${escapeHtml(id)}"><div class="setting-copy"><div class="provider-name">${sourceIcon(id)}${escapeHtml(name)}</div>${appearanceIconField(id, name)}</div><div class="color-actions"><button class="text-button color-action" type="button" data-color-undo="${escapeHtml(id)}" aria-label="Undo ${escapeHtml(name)} color change" hidden>Undo</button><button class="text-button color-action" type="button" data-color-reset="${escapeHtml(id)}" aria-label="Reset ${escapeHtml(name)} color to default" hidden>Reset</button><input class="color-input" type="color" data-tool-color="${escapeHtml(id)}" value="${toolColorHex(id)}" aria-label="${escapeHtml(name)} color" /></div></div>`).join("");
   const container = $("#appearance-settings") as HTMLElement;
   container.innerHTML = `<p class="settings-group">Display</p><label class="setting-row"><div class="setting-copy"><div class="provider-name">12-hour times</div><div class="provider-sub">Show times with AM and PM. Saved on this device.</div></div><input class="switch" type="checkbox" data-kind="time-format" ${state.hour12 ? "checked" : ""} aria-label="Use 12-hour clock" /></label><p class="settings-group">Colors</p><div class="color-list">${rows}</div>`;
   tools.forEach((_, id) => updateColorRow(id));
+  tools.forEach((_, id) => { if (/^openrouter-[a-f0-9]{24}$/.test(id)) updateLabelIconRow(id); });
   container.oninput = (event) => { const target = element(event.target) as HTMLInputElement; if (target.dataset.toolColor) previewToolColor(target.dataset.toolColor, target.value); };
   container.onchange = (event) => {
     const target = element(event.target) as HTMLInputElement;
@@ -1486,7 +1595,7 @@ function storedSettingsSection(): SettingsSection {
 }
 
 function showSettingsSection(section: SettingsSection, updateUrl = true): void {
-  if (activeSettingsSection === "appearance" && section !== "appearance") void saveToolColors();
+  if (activeSettingsSection === "appearance" && section !== "appearance") { void saveToolColors(); void saveLabelIcons(); }
   activeSettingsSection = section;
   localStorage.setItem(settingsSectionStorageKey, section);
   document.querySelectorAll<HTMLElement>("[data-settings-section]").forEach((tab) => {
@@ -1513,7 +1622,8 @@ function bindSettingsDialog(): void {
   const dialog = $("#settings-dialog") as HTMLDialogElement;
   $("#settings-button").addEventListener("click", () => void openSettings(null));
   $("#close-settings").addEventListener("click", () => dialog.close());
-  $("#appearance-settings").addEventListener("focusout", (event: Event) => { const id = element(event.target).dataset.toolColor; if (id) colorEditStart.delete(id); });
+  $("#appearance-settings").addEventListener("focusout", (event: Event) => { const input = element(event.target) as HTMLInputElement; if (input.dataset.toolColor) colorEditStart.delete(input.dataset.toolColor); if (input.dataset.labelIcon) void previewLabelIcon(input); });
+  $("#appearance-settings").addEventListener("keydown", (event: KeyboardEvent) => { const input = element(event.target) as HTMLInputElement; if (event.key === "Enter" && input.dataset.labelIcon) { event.preventDefault(); void previewLabelIcon(input); } });
   const tabs = Array.from(document.querySelectorAll<HTMLButtonElement>("[data-settings-section]"));
   tabs.forEach((tab, index) => {
     tab.addEventListener("click", () => showSettingsSection(tab.dataset.settingsSection as SettingsSection));
@@ -1526,7 +1636,7 @@ function bindSettingsDialog(): void {
     });
   });
   dialog.addEventListener("close", () => {
-    if (activeSettingsSection === "appearance") void saveToolColors();
+    if (activeSettingsSection === "appearance") { void saveToolColors(); void saveLabelIcons(); }
     activeSettingsSection = null;
     if (settingsHashSection()) { if (settingsHistoryPushed) history.back(); else history.replaceState(null, "", location.pathname + location.search); }
     settingsHistoryPushed = false;
@@ -1537,7 +1647,7 @@ function bindSettingsDialog(): void {
     if (section) openSettings(section, fromHistory).catch((error) => showToast(error instanceof Error ? error.message : "Settings could not be loaded"));
   };
   window.addEventListener("popstate", () => openFromUrl(true));
-  window.addEventListener("pagehide", () => void saveToolColors(true));
+  window.addEventListener("pagehide", () => { void saveToolColors(true); void saveLabelIcons(true); });
   window.addEventListener("pageshow", (event) => {
     if (!event.persisted) return;
     void fetchToolColors().then(() => { applyToolColors(); document.querySelectorAll<HTMLElement>("[data-tool-row]").forEach((row) => updateColorRow(row.dataset.toolRow || "")); });
@@ -1683,6 +1793,15 @@ document.addEventListener("focusin", (event) => {
 });
 function markFailedIcon(image: HTMLImageElement): void {
   image.closest(".source-icon")?.classList.add("icon-failed");
+  if (image.dataset.icon?.startsWith("selfhst-")) for (const [id, slug] of Object.entries(labelIcons)) if (`selfhst-${slug}` === image.dataset.icon) { labelIconErrors.set(id, "Icon unavailable. Edit the slug to retry."); updateLabelIconError(id); }
+}
+
+function updateLabelIconError(id: string): void {
+  document.querySelectorAll<HTMLElement>("[data-tool-row]").forEach((row) => {
+    if (row.dataset.toolRow !== id) return;
+    const error = row.querySelector<HTMLElement>("[data-icon-error]");
+    if (error) { error.textContent = labelIconErrors.get(id) || ""; error.hidden = !error.textContent; }
+  });
 }
 
 async function checkProviderIcons(): Promise<void> {
@@ -1694,12 +1813,13 @@ async function checkProviderIcons(): Promise<void> {
     for (const icon of Object.values(sourceIcons)) {
       if (typeof data.icons?.[icon] === "string" && /^[a-f0-9]{64}$/.test(data.icons[icon])) next[icon] = data.icons[icon];
     }
-    iconRevisions = next;
+    for (const [icon, revision] of Object.entries(data.icons || {})) if (/^selfhst-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(icon) && typeof revision === "string" && /^[a-f0-9]{64}$/.test(revision)) next[icon] = revision;
+    iconRevisions = { ...iconRevisions, ...next };
     document.querySelectorAll<HTMLImageElement>("img[data-icon]").forEach((image) => {
       const icon = image.dataset.icon!;
-      if (!Object.values(sourceIcons).includes(icon)) return;
+      if (!Object.hasOwn(iconRevisions, icon)) return;
       const url = sourceIconUrl(icon);
-      if (image.getAttribute("src") !== url || image.closest(".source-icon")?.classList.contains("icon-failed")) {
+      if (image.getAttribute("src") !== url || !icon.startsWith("selfhst-") && image.closest(".source-icon")?.classList.contains("icon-failed")) {
         image.closest(".source-icon")?.classList.remove("icon-failed");
         image.src = url;
       }

@@ -105,6 +105,20 @@ server to check for updates, at most once per 24 hours across all clients. The s
 contacts only the approved selfh.st and theSVG asset URLs; browsers never contact those
 sites directly. Updates run in the background and appear on a subsequent opening.
 
+In Settings, Appearance, each configured OpenRouter label has a selfh.st icon slug
+field beside its color controls. Use the catalog link to find a slug, such as
+`home-assistant`. Leaving the field or pressing Enter fetches a preview through the
+server. Leaving Appearance or closing Settings saves assignments, even if the icon
+could not be fetched. Clear the field to remove an assignment. Failed previews use
+the label's color and show an error only on that Appearance row. Edit the slug to
+retry. Successfully fetched icons receive the same daily background updates as
+built-in icons. Built-in rows show their actual source identifier read-only.
+
+Assignments follow the exact configured label after trimming, not a key. Keys with
+the same label share an icon. Renaming a label starts without an icon. Assignments
+for removed labels are deleted only when the key configuration can be confirmed;
+an invalid or incomplete configuration preserves them.
+
 Validated icons are stored in an `icons` directory beside `USAGE_DATA_DIR`, by default
 `~/.local/share/quota-dashboard/icons`. Keep this directory writable and persistent
 alongside usage storage when deploying the dashboard. Failed or unsafe updates retain
