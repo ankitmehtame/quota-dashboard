@@ -173,6 +173,33 @@ test("keeps the pricing warning through an explicit offline hot run and a reconn
   await publisher.stop();
 });
 
+test("an explicit offline hot run on a restarted publisher marks its ok status keepWarning instead of looking like a pricing recovery", async () => {
+  let failAll = true;
+  const { publisher, client } = startPublisher({
+    runCcusage: (async () => {
+      if (failAll) throw Object.assign(new Error("exit 1"), { code: 1 });
+      return { document: { daily: [] }, stdout: "{}", stderr: "" };
+    }) as never,
+  });
+  const starting = publisher.start();
+  client.emit("connect");
+  await starting.catch(() => {});
+  await flush();
+  failAll = false;
+  assert.equal(publisher.processCommand("quota-dashboard/v1/hosts/workstation/command", JSON.stringify({ schemaVersion: 2, requestId: "hot-offline", category: "hot", from: "2026-09-12", to: "2026-09-13", mode: "offline" })), true);
+  await flush();
+  const offlineRun = statusMessages(client).at(-1);
+  assert.equal(offlineRun.status, "ok");
+  assert.equal(offlineRun.warning, undefined, "the restarted publisher never learned the stored warning");
+  assert.equal(offlineRun.keepWarning, true, "so the status must not count as an online recovery");
+
+  await publisher.publishHot(true);
+  const online = statusMessages(client).at(-1);
+  assert.equal(online.status, "ok");
+  assert.equal(online.keepWarning, undefined, "an online success is a real recovery");
+  await publisher.stop();
+});
+
 test("a failed hot job keeps the pricing warning while the reconnect Last Will and graceful offline status leave it to the store without putting it in lifecycle offline statuses", async () => {
   let failAll = false;
   const { publisher, client } = startPublisher({

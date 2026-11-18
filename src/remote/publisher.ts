@@ -527,7 +527,8 @@ export class RemoteMqttPublisher {
         // Only a successful online run clears the warning; an explicit offline run says nothing about pricing reachability.
         if (job.mode !== "offline") this.pricingWarning = result.fallback?.warning ?? null;
         const statusMetadata = this.nextMetadata(job.range.to, job.category, job.runId);
-        await this.send(this.client, this.topics.status, makeStatusMessage(statusMetadata, "ok", null, this.pricingWarning));
+        const okStatus = makeStatusMessage(statusMetadata, "ok", null, this.pricingWarning);
+        await this.send(this.client, this.topics.status, job.mode === "offline" ? { ...okStatus, keepWarning: true } : okStatus);
         await this.send(this.client, this.topics.error, makeErrorMessage(statusMetadata, null));
       }
     } catch (error) {

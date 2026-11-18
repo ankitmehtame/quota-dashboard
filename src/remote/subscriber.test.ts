@@ -93,6 +93,20 @@ test("offline and error statuses keep the pricing warning; only ok or online sta
   assert.equal(store.getSnapshot().hosts.workstation.status?.warning, undefined);
 });
 
+test("an ok status with keepWarning keeps the stored pricing warning; a plain ok clears it", () => {
+  const store = new RemoteMqttStore({ mqttUrl: "mqtt://broker" });
+  const statusTopic = "quota-dashboard/v1/hosts/workstation/status";
+  const warning = "Pricing fetch failed; using cached pricing";
+  const send = (sequence: number, extra: Record<string, unknown>) => store.processMessage(statusTopic, JSON.stringify({ ...metadata, sequence, status: "ok", ...extra }));
+  assert.equal(send(1, { warning }), true);
+  assert.equal(send(2, { keepWarning: true }), true);
+  assert.equal(store.getSnapshot().hosts.workstation.status?.warning, warning, "an explicit offline run is not an online recovery");
+  assert.equal("keepWarning" in (store.getSnapshot().hosts.workstation.status ?? {}), false);
+  assert.equal(send(3, { keepWarning: "yes" }), false, "a malformed flag is rejected");
+  assert.equal(send(4, {}), true);
+  assert.equal(store.getSnapshot().hosts.workstation.status?.warning, undefined, "an online success clears it");
+});
+
 test("a Last Will built before an online recovery does not resurrect the cleared warning or lower the sequence", () => {
   const store = new RemoteMqttStore({ mqttUrl: "mqtt://broker" });
   const statusTopic = "quota-dashboard/v1/hosts/workstation/status";

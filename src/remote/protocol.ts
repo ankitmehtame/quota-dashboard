@@ -39,6 +39,8 @@ export type StatusMessage = MqttMetadata & {
   error?: string | null;
   /** Non-fatal note on a successful run, such as hot usage priced from the offline cache. */
   warning?: string | null;
+  /** On an ok status: this run says nothing about pricing reachability (explicit offline run), so the receiver keeps any warning it already has. */
+  keepWarning?: boolean;
 };
 
 export type ErrorMessage = MqttMetadata & {

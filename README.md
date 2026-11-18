@@ -409,8 +409,10 @@ out or exits non-zero, the job reruns with `--offline` (cached pricing) using th
 hot timeout and normal retries. A missing binary, invalid JSON, or an output-size overflow
 fails the job without a fallback, since offline would fail the same way. A fallback run
 publishes `ok` status with a non-fatal `warning` ("Pricing fetch failed; using cached
-pricing"), which the dashboard shows as a usage warning, not an error. The next successful
-online run clears it. Cold jobs use a 30-minute timeout and default to `--offline`. The
+pricing"), which the dashboard shows as a usage warning, not an error. Only a successful
+online run clears it; an explicit offline run leaves it in place. If the dashboard restarts
+while the publisher is offline, the retained Last Will cannot carry the warning, so it is
+not shown until the publisher's next status.  Cold jobs use a 30-minute timeout and default to `--offline`. The
 original parsed ccusage document remains unchanged under the envelope's `data` field:
 
 ```json
