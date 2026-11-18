@@ -173,7 +173,7 @@ test("keeps the pricing warning through an explicit offline hot run and a reconn
   await publisher.stop();
 });
 
-test("an explicit offline hot run on a restarted publisher marks its ok status keepWarning instead of looking like a pricing recovery", async () => {
+test("an explicit offline hot run on a restarted publisher marks its ok status keepWarning instead of looking like a pricing recovery", async (t) => {
   let failAll = true;
   const { publisher, client } = startPublisher({
     runCcusage: (async () => {
@@ -181,6 +181,8 @@ test("an explicit offline hot run on a restarted publisher marks its ok status k
       return { document: { daily: [] }, stdout: "{}", stderr: "" };
     }) as never,
   });
+  // A failed assertion must not leave the publisher's intervals running; stop() is idempotent.
+  t.after(() => publisher.stop());
   const starting = publisher.start();
   client.emit("connect");
   await starting.catch(() => {});

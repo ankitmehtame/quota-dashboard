@@ -410,9 +410,12 @@ hot timeout and normal retries. A missing binary, invalid JSON, or an output-siz
 fails the job without a fallback, since offline would fail the same way. A fallback run
 publishes `ok` status with a non-fatal `warning` ("Pricing fetch failed; using cached
 pricing"), which the dashboard shows as a usage warning, not an error. Only a successful
-online run clears it; an explicit offline run leaves it in place. If the dashboard restarts
-while the publisher is offline, the retained Last Will cannot carry the warning, so it is
-not shown until the publisher's next status.  Cold jobs use a 30-minute timeout and default to `--offline`. The
+online run clears it; an explicit offline run leaves it in place. The dashboard keeps the
+warning in memory only, so a freshly started dashboard can restore it only from a status
+that includes it. The Last Will and the graceful shutdown status never carry the warning, and
+a restarted publisher's `online` status and a failed hot run may omit it, so after a
+dashboard restart the warning can stay hidden until the next successful fallback run
+publishes it again. Cold jobs use a 30-minute timeout and default to `--offline`. The
 original parsed ccusage document remains unchanged under the envelope's `data` field:
 
 ```json
