@@ -414,7 +414,9 @@ export class RemoteMqttStore {
     } else if (parsed.topic.kind === "status") {
       const message = parsed.message as StatusMessage;
       if (!shouldReplace(state.status, message, message.status === "offline")) { this.info(`message ignored reason=stale kind=status host=${parsed.topic.hostId}`); return false; }
-      state.status = copyAndFreeze(message);
+      // A lifecycle offline (including the MQTT Last Will, fixed at connect time) or a failed hot job says nothing about pricing; only ok/online statuses set or clear the warning.
+      const inheritWarning = (message.status === "offline" || message.status === "error") && !message.warning && state.status?.warning;
+      state.status = copyAndFreeze(inheritWarning ? { ...message, warning: state.status!.warning } : message);
     } else {
       const message = parsed.message as ErrorMessage;
       if (!shouldReplace(state.error, message)) { this.info(`message ignored reason=stale kind=error host=${parsed.topic.hostId}`); return false; }

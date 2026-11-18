@@ -75,6 +75,24 @@ test("stores a status warning and clears it on the next status", () => {
   assert.equal(store.getSnapshot().hosts.workstation.status?.warning, undefined);
 });
 
+test("offline and error statuses keep the pricing warning; only ok or online statuses change it", () => {
+  const store = new RemoteMqttStore({ mqttUrl: "mqtt://broker" });
+  const statusTopic = "quota-dashboard/v1/hosts/workstation/status";
+  const warning = "Pricing fetch failed; using cached pricing";
+  const send = (sequence: number, status: string, extra: Record<string, unknown> = {}) => store.processMessage(statusTopic, JSON.stringify({ ...metadata, sequence, status, ...extra }));
+  assert.equal(send(1, "ok", { warning }), true);
+  assert.equal(send(2, "offline"), true);
+  assert.equal(store.getSnapshot().hosts.workstation.status?.status, "offline");
+  assert.equal(store.getSnapshot().hosts.workstation.status?.warning, warning, "a Last Will without a warning does not erase it");
+  assert.equal(send(3, "error", { error: "exit 1" }), true);
+  assert.equal(store.getSnapshot().hosts.workstation.status?.status, "error");
+  assert.equal(store.getSnapshot().hosts.workstation.status?.warning, warning, "a failed hot job does not clear it");
+  assert.equal(send(4, "ok"), true);
+  assert.equal(store.getSnapshot().hosts.workstation.status?.warning, undefined, "a successful online run clears it");
+  assert.equal(send(5, "offline"), true);
+  assert.equal(store.getSnapshot().hosts.workstation.status?.warning, undefined);
+});
+
 test("keeps timezone and exact data untouched", () => {
   const data = { daily: [{ date: "2026-09-13", nullValue: null, nested: { keep: true } }], extra: [1, false] };
   const parsed = parseRemoteMqttMessage("quota-dashboard/v1/hosts/workstation/usage/2026-09-13", usage({}, data));

@@ -536,7 +536,7 @@ export class RemoteMqttPublisher {
       this.log(`hot job failure run=${job.runId} duration=${Date.now() - startedAt}ms error=${safeError(error)}`);
       const errorMetadata = this.nextMetadata(currentDate, job.category, job.runId);
       try {
-        await this.send(this.client, this.topics.status, makeStatusMessage(errorMetadata, "error", message));
+        await this.send(this.client, this.topics.status, makeStatusMessage(errorMetadata, "error", message, this.pricingWarning));
         await this.send(this.client, this.topics.error, makeErrorMessage(errorMetadata, message));
       } catch (publishError) {
         this.log(`[hot] [${job.runId}] error status publication failed: ${safeError(publishError)}`);
@@ -621,7 +621,7 @@ export class RemoteMqttPublisher {
     if (wasConnected) {
       try {
         const date = rollingDateRange(this.config.timezone, this.dependencies.now(), 1).to;
-        await this.send(client, this.topics.status, makeStatusMessage(this.nextMetadata(date, "hot", "lifecycle"), "offline"));
+        await this.send(client, this.topics.status, makeStatusMessage(this.nextMetadata(date, "hot", "lifecycle"), "offline", null, this.pricingWarning));
       } catch (error) {
         this.log(`MQTT offline status failed: ${safeError(error)}`);
       }
@@ -696,7 +696,7 @@ export class RemoteMqttPublisher {
     const date = rollingDateRange(this.config.timezone, this.dependencies.now(), 1).to;
     this.client.options.will = {
       topic: this.topics.status,
-      payload: JSON.stringify(makeStatusMessage(this.nextMetadata(date, "hot", "lifecycle"), "offline")),
+      payload: JSON.stringify(makeStatusMessage(this.nextMetadata(date, "hot", "lifecycle"), "offline", null, this.pricingWarning)),
       qos: 1,
       retain: true,
     };

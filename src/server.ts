@@ -412,7 +412,6 @@ function queueLocalHot(scheduled = false, correlation: { httpId?: string; reques
     })
     .catch((error) => {
       localUsageHealth.hotError = ccusageErrorMessage(error, localCcusageBinary);
-      localUsageHealth.hotWarning = null;
       dashboardCache.clear();
       logHotLocal(jobId, `job complete status=failure duration=${elapsedSeconds(startedAt)} error=${safeCcusageLogSummary(error)}${context}`, scheduled, true);
       console.error(`Local hot usage refresh failed: ${safeCcusageLogSummary(error)}`);
@@ -652,7 +651,10 @@ async function buildUsage(url: URL, config: AppConfig) {
   const hosts = [...hostIds].map((hostId) => {
     const state = remoteState.hosts[hostId];
     const latest = latestByHost.get(hostId) || null;
-    const generatedAt = latest?.generatedAt ?? state?.usage?.generatedAt ?? (hostId === localHostId ? localUsageHealth.hotSucceededAt : null);
+    const storedGeneratedAt = latest?.generatedAt ?? state?.usage?.generatedAt ?? null;
+    // A fresh successful local hot run is newer than older stored usage, since readLatest() skips empty days.
+    const hotSucceededAt = hostId === localHostId ? localUsageHealth.hotSucceededAt : null;
+    const generatedAt = hotSucceededAt && (!storedGeneratedAt || Date.parse(hotSucceededAt) > Date.parse(storedGeneratedAt)) ? hotSucceededAt : storedGeneratedAt;
     const generatedTime = generatedAt ? Date.parse(generatedAt) : NaN;
     const hostRecords = records.filter((record) => record.hostId === hostId);
     const isLocal = hostId === localHostId;
@@ -664,11 +666,11 @@ async function buildUsage(url: URL, config: AppConfig) {
     const missingDates = dateList(range.from, range.to).filter((date) => !coveredDates.has(date));
     const complete = missingDates.length === 0;
     const stale = !Number.isFinite(generatedTime) || generatedTime > Date.now() + 60_000 || Date.now() - generatedTime > (isLocal ? 10 * 60 * 1000 : staleAfterMs);
-    const status = error ? "error" : state?.status?.status || (hostRecords.length || (isLocal && localUsageHealth.hotWarning) ? "ok" : "unknown");
+    const status = error ? "error" : state?.status?.status || (hostRecords.length || (isLocal && localUsageHealth.hotSucceededAt) ? "ok" : "unknown");
     const included = !error && (latest?.timezone ?? state?.usage?.timezone ?? usageTimezone) === usageTimezone;
     const healthy = ["ok", "online"].includes(status) && !error && !stale && included && (isLocal || complete);
     const warning = offlineUsageWarning({ local: isLocal, brokerConnected: remoteState.configured && remoteState.connection === "connected", publisherStatus: state?.status?.status, error, included, generatedAt, missingDates, today });
-    const pricingWarning = error ? null : (isLocal ? localUsageHealth.hotWarning : state?.status?.warning) || null;
+    const pricingWarning = (isLocal ? localUsageHealth.hotWarning : state?.status?.warning) || null;
     const severity: UsageSeverity = warning || (healthy && pricingWarning) ? "warning" : healthy ? null : "error";
     return {
       hostId,

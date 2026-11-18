@@ -173,6 +173,41 @@ test("keeps the pricing warning through an explicit offline hot run and a reconn
   await publisher.stop();
 });
 
+test("a failed hot job, the reconnect Last Will and a graceful offline status keep the pricing warning", async () => {
+  let failAll = false;
+  const { publisher, client } = startPublisher({
+    runCcusage: (async ({ offline }: any) => {
+      if (failAll || !offline) throw Object.assign(new Error("exit 1"), { code: 1 });
+      return { document: { daily: [] }, stdout: "{}", stderr: "" };
+    }) as never,
+  });
+  const warning = "Pricing fetch failed; using cached pricing";
+  const starting = publisher.start();
+  client.emit("connect");
+  await starting;
+  await flush();
+  assert.equal(statusMessages(client).at(-1).warning, warning);
+  assert.equal(JSON.parse(client.options.will.payload).warning, undefined, "no warning existed when first connected");
+
+  failAll = true;
+  await publisher.publishHot(true).catch(() => {});
+  const failed = statusMessages(client).at(-1);
+  assert.equal(failed.status, "error");
+  assert.equal(failed.warning, warning, "a failed hot job does not confirm pricing recovered");
+
+  client.emit("reconnect");
+  const will = JSON.parse(client.options.will.payload);
+  assert.equal(will.status, "offline");
+  assert.equal(will.warning, warning, "the Last Will set on reconnect carries the warning");
+
+  client.emit("connect");
+  await flush();
+  client.publications.length = 0;
+  await publisher.stop();
+  const offline = statusMessages(client).find((status) => status.status === "offline");
+  assert.equal(offline?.warning, warning);
+});
+
 test("does not fall back to cached pricing when offline would fail the same way", async () => {
   const calls: boolean[] = [];
   const { publisher, client } = startPublisher({

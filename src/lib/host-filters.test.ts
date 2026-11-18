@@ -65,5 +65,6 @@ test("a healthy host with a pricing warning shows the warning in an alert popove
 test("a pricing warning stays visible next to a separate coverage error", () => {
   const html = render([{ hostId: "workstation", status: "ok", severity: "error", complete: false, warning: pricingWarning }], ["workstation"]);
   assert.match(html, /Range incomplete/);
+  assert.doesNotMatch(html, /usage-host-pill [^"]*\bwarning\b/, "the coverage error keeps its error styling");
   assert.match(html, /<span>Pricing fetch failed; using cached pricing<\/span>/);
 });
