@@ -7,14 +7,14 @@ const app = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const renderer = app.slice(app.indexOf('$("#usage-hosts").innerHTML ='), app.indexOf('document.querySelectorAll("#usage-hosts .usage-host-alert")'));
 const escape = app.slice(app.indexOf("const escapeHtml ="), app.indexOf("const usageSourceNames ="));
 
-function render(hosts: Array<{ hostId: string; severity?: string; status?: string; usable?: boolean }>, selected: string[]) {
+function render(hosts: Array<{ hostId: string; severity?: string; status?: string; usable?: boolean; warning?: string | null; complete?: boolean; error?: string | null; disabledReason?: string | null }>, selected: string[], hasRecords = true) {
   const target = { innerHTML: "" };
   runInNewContext(`${escape}\n${renderer}`, {
     hosts, usage: {}, selectedHostIds: new Set(selected),
     $: () => target,
     hostUsable: (_usage: unknown, host: { usable?: boolean }) => host.usable !== false,
-    hostHasRecords: () => true,
-    hostHealthy: (host: { status?: string }) => host.status !== "offline",
+    hostHasRecords: () => hasRecords,
+    hostHealthy: (host: { status?: string; complete?: boolean }) => host.status !== "offline" && host.complete !== false,
     missingUsageDetails: () => "",
   });
   return target.innerHTML;
@@ -42,4 +42,39 @@ test("unavailable machines keep a separate status control and names stay escaped
   assert.match(html, /class="usage-host-alert"/);
   assert.doesNotMatch(html, /<host>/);
   assert.equal(render([], []), '<span class="usage-hosts-empty">No usage hosts</span>');
+});
+
+const hostHealthySource = app.slice(app.indexOf("function hostHealthy("), app.indexOf("function enabledUsageProviders("));
+const pricingWarning = "Pricing fetch failed; using cached pricing";
+
+test("a pricing warning does not affect host health or completeness", () => {
+  const healthy = runInNewContext(`${hostHealthySource}\nhostHealthy`) as (host: unknown) => boolean;
+  assert.equal(healthy({ status: "ok", warning: pricingWarning, severity: "warning", complete: true }), true);
+  assert.equal(healthy({ status: "ok", warning: pricingWarning, complete: false }), false);
+});
+
+test("a healthy host with a pricing warning shows the warning in an alert popover with warning styling", () => {
+  const html = render([{ hostId: "workstation", status: "ok", severity: "warning", warning: pricingWarning }], ["workstation"]);
+  assert.match(html, /class="usage-host-pill selected healthy warning /);
+  assert.match(html, /class="usage-host-alert"/);
+  assert.match(html, /<strong>workstation<\/strong><span>Pricing fetch failed; using cached pricing<\/span>/);
+  assert.doesNotMatch(html, /informational/);
+  assert.match(html, /aria-label="workstation: selected, healthy, Pricing fetch failed/);
+});
+
+test("a pricing warning stays visible next to a separate coverage error", () => {
+  const html = render([{ hostId: "workstation", status: "ok", severity: "error", complete: false, warning: pricingWarning }], ["workstation"]);
+  assert.match(html, /Range incomplete/);
+  assert.doesNotMatch(html, /usage-host-pill [^"]*\bwarning\b/, "the coverage error keeps its error styling");
+  assert.match(html, /<span>Pricing fetch failed; using cached pricing<\/span>/);
+});
+
+test("a healthy usable host with no records shows a known zero, not unavailable data", () => {
+  const html = render([{ hostId: "workstation", status: "ok", disabledReason: "No usable usage data reported by workstation" }], ["workstation"], false);
+  assert.doesNotMatch(html, /No usable usage data/);
+  assert.match(html, /aria-label="workstation: selected, healthy, No usage in this period"/);
+  assert.match(html, /<span>No usage in this period<\/span>/);
+  assert.match(html, /informational/);
+  const unhealthy = render([{ hostId: "workstation", status: "ok", complete: false, disabledReason: "No usable usage data reported by workstation" }], ["workstation"], false);
+  assert.match(unhealthy, /No usable usage data reported by workstation/);
 });

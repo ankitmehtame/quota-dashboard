@@ -24,8 +24,10 @@ import {
   DEFAULT_COLD_CCUSAGE_TIMEOUT_MS,
   DEFAULT_CCUSAGE_MAX_BUFFER,
   DEFAULT_HOT_CCUSAGE_TIMEOUT_MS,
+  DEFAULT_HOT_ONLINE_CCUSAGE_TIMEOUT_MS,
   rollingDateRange,
   runCcusage,
+  runHotCcusage,
   sliceCcusageDocument,
   type ExecFileRunner,
 } from "./ccusage.js";
@@ -49,6 +51,8 @@ export type RemotePublisherConfig = {
   /** Kept as an optional compatibility input. New callers should use hotTimeoutMs. */
   ccusageTimeoutMs?: number;
   hotTimeoutMs?: number;
+  /** Timeout for the online hot attempt before falling back to cached pricing. */
+  hotOnlineTimeoutMs?: number;
   coldTimeoutMs?: number;
   coldIntervalMs?: number;
   ccusageMaxBuffer: number;
@@ -58,8 +62,9 @@ export type RemotePublisherConfig = {
   ccusageVersion?: string;
 };
 
-type NormalizedPublisherConfig = Omit<RemotePublisherConfig, "hotTimeoutMs" | "coldTimeoutMs" | "coldIntervalMs" | "coldMode"> & {
+type NormalizedPublisherConfig = Omit<RemotePublisherConfig, "hotTimeoutMs" | "hotOnlineTimeoutMs" | "coldTimeoutMs" | "coldIntervalMs" | "coldMode"> & {
   hotTimeoutMs: number;
+  hotOnlineTimeoutMs: number;
   coldTimeoutMs: number;
   coldIntervalMs: number;
   coldMode: MqttCommandMode;
@@ -127,6 +132,7 @@ export function readRemotePublisherConfig(env: NodeJS.ProcessEnv = process.env):
     publishIntervalMs: positiveNumber(env.MQTT_INTERVAL_MS || env.MQTT_PUBLISH_INTERVAL_MS, DEFAULT_PUBLISH_INTERVAL_MS),
     reconnectTimeoutMs: positiveNumber(env.MQTT_RECONNECT_TIMEOUT_MS, DEFAULT_MQTT_RECONNECT_TIMEOUT_MS),
     hotTimeoutMs: positiveNumber(env.CCUSAGE_HOT_TIMEOUT_MS, legacyTimeout),
+    hotOnlineTimeoutMs: positiveNumber(env.CCUSAGE_HOT_ONLINE_TIMEOUT_MS, DEFAULT_HOT_ONLINE_CCUSAGE_TIMEOUT_MS),
     coldTimeoutMs: positiveNumber(env.CCUSAGE_COLD_TIMEOUT_MS, DEFAULT_COLD_CCUSAGE_TIMEOUT_MS),
     coldIntervalMs: positiveNumber(env.CCUSAGE_COLD_INTERVAL_MS, DEFAULT_COLD_INTERVAL_MS),
     ccusageMaxBuffer: positiveNumber(env.CCUSAGE_MAX_BUFFER, DEFAULT_CCUSAGE_MAX_BUFFER),
@@ -254,6 +260,8 @@ export class RemoteMqttPublisher {
   private readonly commandRequestIds = new Set<string>();
   private readonly scheduledColdDates = new Set<string>();
   private stopped = false;
+  /** Cached-pricing warning carried in status messages until an online hot run succeeds. */
+  private pricingWarning: string | null = null;
   private stopPromise: Promise<void> | null = null;
   private connected = false;
   private hotFailed = false;
@@ -264,6 +272,7 @@ export class RemoteMqttPublisher {
       ...config,
       hostId: sanitizeHostId(config.hostId),
       hotTimeoutMs: config.hotTimeoutMs ?? config.ccusageTimeoutMs ?? DEFAULT_HOT_CCUSAGE_TIMEOUT_MS,
+      hotOnlineTimeoutMs: config.hotOnlineTimeoutMs ?? DEFAULT_HOT_ONLINE_CCUSAGE_TIMEOUT_MS,
       coldTimeoutMs: config.coldTimeoutMs ?? DEFAULT_COLD_CCUSAGE_TIMEOUT_MS,
       coldIntervalMs: config.coldIntervalMs ?? DEFAULT_COLD_INTERVAL_MS,
       coldMode: config.coldMode ?? "offline",
@@ -496,13 +505,16 @@ export class RemoteMqttPublisher {
     try {
       const dates = dateList(job.range);
       const range = { from: job.range.from, to: job.range.to, timezone: this.config.timezone };
-      const result = await this.dependencies.runCcusage({
+      const result = await runHotCcusage({
+        run: this.dependencies.runCcusage,
         binary: this.config.ccusageBinary,
         range,
         timeoutMs,
+        onlineTimeoutMs: this.config.hotOnlineTimeoutMs,
         maxBuffer: this.config.ccusageMaxBuffer,
         offline: job.mode === "offline",
         runner: this.dependencies.execFileRunner,
+        onFallback: (fallbackError) => this.log(`[hot] [${job.runId}] mode=online->offline reason=${safeError(fallbackError)}`, quiet),
       });
       const documents = new Map(dates.map((date) => [date, sliceCcusageDocument(result.document, date)]));
       for (const date of dates) {
@@ -512,8 +524,11 @@ export class RemoteMqttPublisher {
         await this.send(this.client, makeUsageTopic(this.config.mqttPrefix, this.config.hostId, date), message);
       }
       if (!this.stopped && this.client && job.category === "hot") {
+        // Only a successful online run clears the warning; an explicit offline run says nothing about pricing reachability.
+        if (job.mode !== "offline") this.pricingWarning = result.fallback?.warning ?? null;
         const statusMetadata = this.nextMetadata(job.range.to, job.category, job.runId);
-        await this.send(this.client, this.topics.status, makeStatusMessage(statusMetadata, "ok"));
+        const okStatus = makeStatusMessage(statusMetadata, "ok", null, this.pricingWarning);
+        await this.send(this.client, this.topics.status, job.mode === "offline" ? { ...okStatus, keepWarning: true } : okStatus);
         await this.send(this.client, this.topics.error, makeErrorMessage(statusMetadata, null));
       }
     } catch (error) {
@@ -522,7 +537,7 @@ export class RemoteMqttPublisher {
       this.log(`hot job failure run=${job.runId} duration=${Date.now() - startedAt}ms error=${safeError(error)}`);
       const errorMetadata = this.nextMetadata(currentDate, job.category, job.runId);
       try {
-        await this.send(this.client, this.topics.status, makeStatusMessage(errorMetadata, "error", message));
+        await this.send(this.client, this.topics.status, makeStatusMessage(errorMetadata, "error", message, this.pricingWarning));
         await this.send(this.client, this.topics.error, makeErrorMessage(errorMetadata, message));
       } catch (publishError) {
         this.log(`[hot] [${job.runId}] error status publication failed: ${safeError(publishError)}`);
@@ -607,7 +622,7 @@ export class RemoteMqttPublisher {
     if (wasConnected) {
       try {
         const date = rollingDateRange(this.config.timezone, this.dependencies.now(), 1).to;
-        await this.send(client, this.topics.status, makeStatusMessage(this.nextMetadata(date, "hot", "lifecycle"), "offline"));
+        await this.send(client, this.topics.status, makeStatusMessage(this.nextMetadata(date, "hot", "lifecycle"), "offline", null));
       } catch (error) {
         this.log(`MQTT offline status failed: ${safeError(error)}`);
       }
@@ -628,7 +643,7 @@ export class RemoteMqttPublisher {
     if (!this.timer) this.timer = setInterval(() => void this.publishHot(false), this.config.publishIntervalMs);
     if (!this.coldTimer) this.coldTimer = setInterval(() => this.scheduleColdHistory(), this.config.coldIntervalMs);
     void subscribe(client, makeCommandTopic(this.config.mqttPrefix, this.config.hostId))
-      .then(() => this.send(client, this.topics.status, makeStatusMessage(this.nextMetadata(rollingDateRange(this.config.timezone, this.dependencies.now(), 1).to, "hot", "lifecycle"), "online")))
+      .then(() => this.send(client, this.topics.status, makeStatusMessage(this.nextMetadata(rollingDateRange(this.config.timezone, this.dependencies.now(), 1).to, "hot", "lifecycle"), "online", null, this.pricingWarning)))
       .then(async () => {
         await this.publishHot();
         if (!this.stopped && this.connected) this.scheduleColdHistory();
@@ -682,7 +697,7 @@ export class RemoteMqttPublisher {
     const date = rollingDateRange(this.config.timezone, this.dependencies.now(), 1).to;
     this.client.options.will = {
       topic: this.topics.status,
-      payload: JSON.stringify(makeStatusMessage(this.nextMetadata(date, "hot", "lifecycle"), "offline")),
+      payload: JSON.stringify(makeStatusMessage(this.nextMetadata(date, "hot", "lifecycle"), "offline", null)),
       qos: 1,
       retain: true,
     };
