@@ -299,3 +299,29 @@ printf '{"daily":[{"date":"%s","modelBreakdowns":[{"modelName":"m","cost":1,"inp
     await server.stop();
   }
 });
+
+test("an empty local cached-pricing fallback is a usable host with a warning, not an error", { timeout: 30_000 }, async () => {
+  const server = await startServer({
+    enabled: true,
+    hotIntervalMs: 600,
+    stub: `#!/bin/sh
+case " $* " in
+  *" --no-offline "*) echo "network down" >&2; exit 1 ;;
+esac
+printf '{"daily":[]}\\n'
+`,
+  });
+  try {
+    await waitFor(async () => (await readLog(server.logs)).includes("job complete status=degraded"), 12_000, "degraded hot run");
+    const body = await (await fetch(`http://127.0.0.1:${server.port}/api/v1/usage?days=1`)).json() as { usage: { severity: string | null; hosts: Array<{ local: boolean; severity: string | null; warning: string | null; error: string | null; status: string; usable: boolean }> } };
+    const host = body.usage.hosts.find((entry) => entry.local)!;
+    assert.equal(host.warning, "Pricing fetch failed; using cached pricing");
+    assert.equal(host.status, "ok");
+    assert.equal(host.severity, "warning");
+    assert.equal(host.error, null);
+    assert.equal(host.usable, true);
+    assert.equal(body.usage.severity, "warning");
+  } finally {
+    await server.stop();
+  }
+});

@@ -139,6 +139,40 @@ test("a later successful online hot run clears the pricing warning", async () =>
   await publisher.stop();
 });
 
+test("keeps the pricing warning through an explicit offline hot run and a reconnect until an online run succeeds", async () => {
+  let online = false;
+  const { publisher, client } = startPublisher({
+    runCcusage: (async ({ offline }: any) => {
+      if (!offline && !online) throw Object.assign(new Error("exit 1"), { code: 1 });
+      return { document: { daily: [] }, stdout: "{}", stderr: "" };
+    }) as never,
+  });
+  const warning = "Pricing fetch failed; using cached pricing";
+  const starting = publisher.start();
+  client.emit("connect");
+  await starting;
+  await flush();
+  assert.equal(statusMessages(client).at(-1).warning, warning);
+
+  assert.equal(publisher.processCommand("quota-dashboard/v1/hosts/workstation/command", JSON.stringify({ schemaVersion: 2, requestId: "hot-offline", category: "hot", from: "2026-09-12", to: "2026-09-13", mode: "offline" })), true);
+  await flush();
+  const afterOffline = statusMessages(client).at(-1);
+  assert.equal(afterOffline.status, "ok");
+  assert.equal(afterOffline.warning, warning, "an offline run does not confirm pricing is reachable");
+
+  client.publications.length = 0;
+  client.emit("close");
+  client.emit("connect");
+  await flush();
+  const lifecycle = statusMessages(client).find((status) => status.status === "online");
+  assert.equal(lifecycle?.warning, warning, "the reconnect status does not clear the warning");
+
+  online = true;
+  await publisher.publishHot(true);
+  assert.equal(statusMessages(client).at(-1).warning, undefined);
+  await publisher.stop();
+});
+
 test("does not fall back to cached pricing when offline would fail the same way", async () => {
   const calls: boolean[] = [];
   const { publisher, client } = startPublisher({

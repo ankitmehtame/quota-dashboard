@@ -113,7 +113,7 @@ let localHotSchedulePromise: Promise<void> | null = null;
 let localColdSchedulePromise: Promise<void> | null = null;
 let localHotTimer: NodeJS.Timeout | null = null;
 let localColdTimer: NodeJS.Timeout | null = null;
-const localUsageHealth = { hotError: null as string | null, hotWarning: null as string | null, coldError: null as string | null };
+const localUsageHealth = { hotError: null as string | null, hotWarning: null as string | null, hotSucceededAt: null as string | null, coldError: null as string | null };
 const localColdQueue: LocalColdJob[] = [];
 const localColdQueued = new Set<string>();
 const localColdQueuedJobIds = new Map<string, string>();
@@ -405,6 +405,7 @@ function queueLocalHot(scheduled = false, correlation: { httpId?: string; reques
       const warningChanged = localUsageHealth.hotWarning !== warning;
       localUsageHealth.hotError = null;
       localUsageHealth.hotWarning = warning;
+      localUsageHealth.hotSucceededAt = new Date().toISOString();
       if (warningChanged) dashboardCache.clear();
       logHotLocal(jobId, `job complete status=${warning ? "degraded" : "success"} duration=${elapsedSeconds(startedAt)}${context}`, scheduled);
       if (recovered) logHotLocal(jobId, `health recovered${context}`, false);
@@ -651,7 +652,7 @@ async function buildUsage(url: URL, config: AppConfig) {
   const hosts = [...hostIds].map((hostId) => {
     const state = remoteState.hosts[hostId];
     const latest = latestByHost.get(hostId) || null;
-    const generatedAt = latest?.generatedAt ?? state?.usage?.generatedAt ?? null;
+    const generatedAt = latest?.generatedAt ?? state?.usage?.generatedAt ?? (hostId === localHostId ? localUsageHealth.hotSucceededAt : null);
     const generatedTime = generatedAt ? Date.parse(generatedAt) : NaN;
     const hostRecords = records.filter((record) => record.hostId === hostId);
     const isLocal = hostId === localHostId;
@@ -663,7 +664,7 @@ async function buildUsage(url: URL, config: AppConfig) {
     const missingDates = dateList(range.from, range.to).filter((date) => !coveredDates.has(date));
     const complete = missingDates.length === 0;
     const stale = !Number.isFinite(generatedTime) || generatedTime > Date.now() + 60_000 || Date.now() - generatedTime > (isLocal ? 10 * 60 * 1000 : staleAfterMs);
-    const status = error ? "error" : state?.status?.status || (hostRecords.length ? "ok" : "unknown");
+    const status = error ? "error" : state?.status?.status || (hostRecords.length || (isLocal && localUsageHealth.hotWarning) ? "ok" : "unknown");
     const included = !error && (latest?.timezone ?? state?.usage?.timezone ?? usageTimezone) === usageTimezone;
     const healthy = ["ok", "online"].includes(status) && !error && !stale && included && (isLocal || complete);
     const warning = offlineUsageWarning({ local: isLocal, brokerConnected: remoteState.configured && remoteState.connection === "connected", publisherStatus: state?.status?.status, error, included, generatedAt, missingDates, today });
@@ -697,7 +698,7 @@ async function buildUsage(url: URL, config: AppConfig) {
   });
   const hostProblem = problemHosts.length > 0;
   const degradedHosts = hosts.filter((host) => activeHostIds.has(host.hostId) && Boolean(host.warning) && !problemHosts.includes(host));
-  const severity = aggregateUsageSeverity([...problemHosts.map((host) => host.severity), ...degradedHosts.map((host) => host.severity), ...(openRouterUsageError ? ["error" as const] : []), ...(remoteState.configured && remoteState.connection !== "connected" ? ["error" as const] : [])]);
+  const severity = aggregateUsageSeverity([...problemHosts.map((host) => host.severity), ...degradedHosts.map(() => "warning" as const), ...(openRouterUsageError ? ["error" as const] : []), ...(remoteState.configured && remoteState.connection !== "connected" ? ["error" as const] : [])]);
   const usageStatus = usageSources.length === 0 ? "disabled" : hostProblem || openRouterUsageError ? (records.length ? "partial" : "error") : "ok";
   const usageResult = usageSources.length ? {
     status: usageStatus,

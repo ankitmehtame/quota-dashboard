@@ -56,6 +56,25 @@ test("accepts a null status error", () => {
   assert.ok(parseRemoteMqttMessage(topic, JSON.stringify(message)));
 });
 
+test("validates the optional status warning", () => {
+  const topic = "quota-dashboard/v1/hosts/workstation/status";
+  const status = (warning: unknown) => parseRemoteMqttMessage(topic, JSON.stringify({ ...JSON.parse(usage()), status: "ok", warning }));
+  assert.equal((status("Pricing fetch failed; using cached pricing")?.message as { warning?: string }).warning, "Pricing fetch failed; using cached pricing");
+  assert.ok(status(null));
+  assert.equal(status(42), null);
+  assert.equal(status({ text: "x" }), null);
+  assert.equal(status("x".repeat(16_385)), null);
+});
+
+test("stores a status warning and clears it on the next status", () => {
+  const store = new RemoteMqttStore({ mqttUrl: "mqtt://broker" });
+  const statusTopic = "quota-dashboard/v1/hosts/workstation/status";
+  assert.equal(store.processMessage(statusTopic, JSON.stringify({ ...metadata, status: "ok", warning: "Pricing fetch failed; using cached pricing" })), true);
+  assert.equal(store.getSnapshot().hosts.workstation.status?.warning, "Pricing fetch failed; using cached pricing");
+  assert.equal(store.processMessage(statusTopic, JSON.stringify({ ...metadata, sequence: 2, status: "ok" })), true);
+  assert.equal(store.getSnapshot().hosts.workstation.status?.warning, undefined);
+});
+
 test("keeps timezone and exact data untouched", () => {
   const data = { daily: [{ date: "2026-09-13", nullValue: null, nested: { keep: true } }], extra: [1, false] };
   const parsed = parseRemoteMqttMessage("quota-dashboard/v1/hosts/workstation/usage/2026-09-13", usage({}, data));

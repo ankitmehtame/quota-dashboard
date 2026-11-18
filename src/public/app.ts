@@ -526,7 +526,7 @@ function recordTokens(record: UsageRecord): number {
 }
 
 function hostHealthy(host: UsageHost): boolean {
-  return ["ok", "online"].includes(host.status) && !host.error && !host.warning && !host.stale && host.included !== false && host.complete !== false;
+  return ["ok", "online"].includes(host.status) && !host.error && !host.stale && host.included !== false && host.complete !== false;
 }
 
 function enabledUsageProviders(usage: Usage): Set<string> | null {
@@ -893,20 +893,21 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
     const selected = usable && selectedHostIds.has(host.hostId);
     const healthy = hostHealthy(host);
     const warning = host.severity === "warning";
-    const detail = warning && host.warning ? host.warning : warning ? `Publisher offline${host.complete === false ? "; usage missing through today" : ""}${!hasRecords ? "; no usable usage data in this period" : ""}` : host.disabledReason || host.error || (host.included === false ? "Timezone mismatch" : host.complete === false ? "Range incomplete" : host.stale ? "Stale usage data" : host.status) || "Status unavailable";
+    const pricingWarning = host.warning || null;
+    const detail = warning && host.status === "offline" ? `Publisher offline${host.complete === false ? "; usage missing through today" : ""}${!hasRecords ? "; no usable usage data in this period" : ""}` : healthy && pricingWarning ? pricingWarning : host.disabledReason || host.error || (host.included === false ? "Timezone mismatch" : host.complete === false ? "Range incomplete" : host.stale ? "Stale usage data" : host.status) || "Status unavailable";
     const stateLabel = !usable ? "unavailable" : selected ? healthy ? "selected, healthy" : "selected, unhealthy" : "unselected";
     const hostClass = `usage-host ${!usable ? "disabled" : selected ? healthy ? "selected healthy" : "selected unhealthy" : "unselected"}`;
     const hostLabel = `<span class="host-check" aria-hidden="true">✓</span><span class="host-name">${escapeHtml(host.hostId)}</span>`;
-    const needsStatusAlert = !healthy || !usable || !hasRecords;
+    const needsStatusAlert = !healthy || !usable || !hasRecords || Boolean(pricingWarning);
     if (!needsStatusAlert) return `<button class="${hostClass}" type="button" data-host-id="${escapeHtml(host.hostId)}" aria-label="${escapeHtml(host.hostId)}: ${stateLabel}" aria-pressed="${selected}">${hostLabel}</button>`;
     const statusId = `usage-host-status-${index}`;
-    const informational = healthy && usable && !hasRecords;
+    const informational = healthy && usable && !hasRecords && !pricingWarning;
     const mark = informational
       ? `<path d="M12 11v5"/><circle cx="12" cy="8" r=".75" fill="currentColor" stroke="none"/>`
       : `<path d="M12 8v5"/><circle cx="12" cy="16" r=".75" fill="currentColor" stroke="none"/>`;
     const icon = `<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/>${mark}</svg>`;
-    const pillClass = `${!usable ? "disabled" : selected ? `selected ${healthy ? "healthy" : "unhealthy"}` : "unselected"}${warning ? " warning" : ""}`;
-    return `<span class="usage-host-pill ${pillClass} ${informational ? "informational" : ""}"><button class="${hostClass}" type="button" data-host-id="${escapeHtml(host.hostId)}" aria-label="${escapeHtml(host.hostId)}: ${stateLabel}, ${escapeHtml(detail)}" aria-pressed="${selected}" ${!usable ? "disabled" : ""}>${hostLabel}</button><button class="usage-host-alert" type="button" data-status-target="${statusId}" aria-label="Show status for ${escapeHtml(host.hostId)}: ${escapeHtml(detail)}" aria-controls="${statusId}" aria-expanded="false">${icon}</button><span class="usage-host-status-popover" id="${statusId}" role="status" aria-live="polite" hidden><strong>${escapeHtml(host.hostId)}</strong><span>${escapeHtml(detail)}</span>${missingUsageDetails(host)}</span></span>`;
+    const pillClass = `${!usable ? "disabled" : selected ? `selected ${healthy ? "healthy" : "unhealthy"}` : "unselected"}${warning || pricingWarning ? " warning" : ""}`;
+    return `<span class="usage-host-pill ${pillClass} ${informational ? "informational" : ""}"><button class="${hostClass}" type="button" data-host-id="${escapeHtml(host.hostId)}" aria-label="${escapeHtml(host.hostId)}: ${stateLabel}, ${escapeHtml(detail)}" aria-pressed="${selected}" ${!usable ? "disabled" : ""}>${hostLabel}</button><button class="usage-host-alert" type="button" data-status-target="${statusId}" aria-label="Show status for ${escapeHtml(host.hostId)}: ${escapeHtml(detail)}" aria-controls="${statusId}" aria-expanded="false">${icon}</button><span class="usage-host-status-popover" id="${statusId}" role="status" aria-live="polite" hidden><strong>${escapeHtml(host.hostId)}</strong><span>${escapeHtml(detail)}</span>${pricingWarning && detail !== pricingWarning ? `<span>${escapeHtml(pricingWarning)}</span>` : ""}${missingUsageDetails(host)}</span></span>`;
   }).join("") || `<span class="usage-hosts-empty">No usage hosts</span>`;
   document.querySelectorAll<HTMLButtonElement>("#usage-hosts .usage-host-alert").forEach((button) => button.addEventListener("click", () => toggleHostStatusPopover(button)));
   document.querySelectorAll<HTMLButtonElement>("#usage-hosts .usage-host:not(:disabled)").forEach((button) => button.addEventListener("click", () => {

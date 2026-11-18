@@ -260,6 +260,8 @@ export class RemoteMqttPublisher {
   private readonly commandRequestIds = new Set<string>();
   private readonly scheduledColdDates = new Set<string>();
   private stopped = false;
+  /** Cached-pricing warning carried in status messages until an online hot run succeeds. */
+  private pricingWarning: string | null = null;
   private stopPromise: Promise<void> | null = null;
   private connected = false;
   private hotFailed = false;
@@ -522,8 +524,10 @@ export class RemoteMqttPublisher {
         await this.send(this.client, makeUsageTopic(this.config.mqttPrefix, this.config.hostId, date), message);
       }
       if (!this.stopped && this.client && job.category === "hot") {
+        // Only a successful online run clears the warning; an explicit offline run says nothing about pricing reachability.
+        if (job.mode !== "offline") this.pricingWarning = result.fallback?.warning ?? null;
         const statusMetadata = this.nextMetadata(job.range.to, job.category, job.runId);
-        await this.send(this.client, this.topics.status, makeStatusMessage(statusMetadata, "ok", null, result.fallback?.warning));
+        await this.send(this.client, this.topics.status, makeStatusMessage(statusMetadata, "ok", null, this.pricingWarning));
         await this.send(this.client, this.topics.error, makeErrorMessage(statusMetadata, null));
       }
     } catch (error) {
@@ -638,7 +642,7 @@ export class RemoteMqttPublisher {
     if (!this.timer) this.timer = setInterval(() => void this.publishHot(false), this.config.publishIntervalMs);
     if (!this.coldTimer) this.coldTimer = setInterval(() => this.scheduleColdHistory(), this.config.coldIntervalMs);
     void subscribe(client, makeCommandTopic(this.config.mqttPrefix, this.config.hostId))
-      .then(() => this.send(client, this.topics.status, makeStatusMessage(this.nextMetadata(rollingDateRange(this.config.timezone, this.dependencies.now(), 1).to, "hot", "lifecycle"), "online")))
+      .then(() => this.send(client, this.topics.status, makeStatusMessage(this.nextMetadata(rollingDateRange(this.config.timezone, this.dependencies.now(), 1).to, "hot", "lifecycle"), "online", null, this.pricingWarning)))
       .then(async () => {
         await this.publishHot();
         if (!this.stopped && this.connected) this.scheduleColdHistory();
