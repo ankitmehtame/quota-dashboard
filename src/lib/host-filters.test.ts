@@ -7,13 +7,13 @@ const app = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
 const renderer = app.slice(app.indexOf('$("#usage-hosts").innerHTML ='), app.indexOf('document.querySelectorAll("#usage-hosts .usage-host-alert")'));
 const escape = app.slice(app.indexOf("const escapeHtml ="), app.indexOf("const usageSourceNames ="));
 
-function render(hosts: Array<{ hostId: string; severity?: string; status?: string; usable?: boolean; warning?: string | null; complete?: boolean; error?: string | null }>, selected: string[]) {
+function render(hosts: Array<{ hostId: string; severity?: string; status?: string; usable?: boolean; warning?: string | null; complete?: boolean; error?: string | null; disabledReason?: string | null }>, selected: string[], hasRecords = true) {
   const target = { innerHTML: "" };
   runInNewContext(`${escape}\n${renderer}`, {
     hosts, usage: {}, selectedHostIds: new Set(selected),
     $: () => target,
     hostUsable: (_usage: unknown, host: { usable?: boolean }) => host.usable !== false,
-    hostHasRecords: () => true,
+    hostHasRecords: () => hasRecords,
     hostHealthy: (host: { status?: string; complete?: boolean }) => host.status !== "offline" && host.complete !== false,
     missingUsageDetails: () => "",
   });
@@ -67,4 +67,14 @@ test("a pricing warning stays visible next to a separate coverage error", () => 
   assert.match(html, /Range incomplete/);
   assert.doesNotMatch(html, /usage-host-pill [^"]*\bwarning\b/, "the coverage error keeps its error styling");
   assert.match(html, /<span>Pricing fetch failed; using cached pricing<\/span>/);
+});
+
+test("a healthy usable host with no records shows a known zero, not unavailable data", () => {
+  const html = render([{ hostId: "workstation", status: "ok", disabledReason: "No usable usage data reported by workstation" }], ["workstation"], false);
+  assert.doesNotMatch(html, /No usable usage data/);
+  assert.match(html, /aria-label="workstation: selected, healthy, No usage in this period"/);
+  assert.match(html, /<span>No usage in this period<\/span>/);
+  assert.match(html, /informational/);
+  const unhealthy = render([{ hostId: "workstation", status: "ok", complete: false, disabledReason: "No usable usage data reported by workstation" }], ["workstation"], false);
+  assert.match(unhealthy, /No usable usage data reported by workstation/);
 });

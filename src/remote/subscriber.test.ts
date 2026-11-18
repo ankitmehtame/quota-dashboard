@@ -93,6 +93,42 @@ test("offline and error statuses keep the pricing warning; only ok or online sta
   assert.equal(store.getSnapshot().hosts.workstation.status?.warning, undefined);
 });
 
+test("a Last Will built before an online recovery does not resurrect the cleared warning or lower the sequence", () => {
+  const store = new RemoteMqttStore({ mqttUrl: "mqtt://broker" });
+  const statusTopic = "quota-dashboard/v1/hosts/workstation/status";
+  const warning = "Pricing fetch failed; using cached pricing";
+  const send = (sequence: number, status: string, extra: Record<string, unknown> = {}) => store.processMessage(statusTopic, JSON.stringify({ ...metadata, sequence, status, ...extra }));
+  assert.equal(send(5, "ok", { warning }), true);
+  assert.equal(send(6, "ok"), true);
+  assert.equal(send(4, "offline", { warning }), true, "the same-connection Will is still applied");
+  const status = store.getSnapshot().hosts.workstation.status;
+  assert.equal(status?.status, "offline");
+  assert.equal(status?.warning, undefined);
+  assert.equal(status?.sequence, 6, "the sequence high-water mark is preserved");
+  assert.equal(send(5, "ok", { warning }), false, "a duplicate pre-recovery status stays stale");
+  assert.equal(store.getSnapshot().hosts.workstation.status?.status, "offline");
+});
+
+test("a retained Last Will alone never shows a pricing warning, and a publisher restart keeps the stored warning until an ok status", () => {
+  const warning = "Pricing fetch failed; using cached pricing";
+  const statusTopic = "quota-dashboard/v1/hosts/workstation/status";
+  const fresh = new RemoteMqttStore({ mqttUrl: "mqtt://broker" });
+  fresh.processMessage(statusTopic, JSON.stringify({ ...metadata, status: "offline", warning }));
+  assert.equal(fresh.getSnapshot().hosts.workstation.status?.warning, undefined);
+
+  const store = new RemoteMqttStore({ mqttUrl: "mqtt://broker" });
+  const restarted = { ...metadata, publisherId: "restarted-publisher", connectionId: "restarted-connection" };
+  const generatedAt = (offset: number) => new Date(Date.parse(metadata.generatedAt) + offset).toISOString();
+  store.processMessage(statusTopic, JSON.stringify({ ...metadata, status: "ok", warning }));
+  store.processMessage(statusTopic, JSON.stringify({ ...metadata, sequence: 2, status: "offline" }));
+  store.processMessage(statusTopic, JSON.stringify({ ...restarted, generatedAt: generatedAt(1000), sequence: 1, status: "online" }));
+  assert.equal(store.getSnapshot().hosts.workstation.status?.warning, warning, "the startup online status does not clear it");
+  store.processMessage(statusTopic, JSON.stringify({ ...restarted, generatedAt: generatedAt(2000), sequence: 2, status: "error", error: "exit 1" }));
+  assert.equal(store.getSnapshot().hosts.workstation.status?.warning, warning, "failed startup hot runs do not clear it");
+  store.processMessage(statusTopic, JSON.stringify({ ...restarted, generatedAt: generatedAt(3000), sequence: 3, status: "ok" }));
+  assert.equal(store.getSnapshot().hosts.workstation.status?.warning, undefined, "a successful online run clears it");
+});
+
 test("keeps timezone and exact data untouched", () => {
   const data = { daily: [{ date: "2026-09-13", nullValue: null, nested: { keep: true } }], extra: [1, false] };
   const parsed = parseRemoteMqttMessage("quota-dashboard/v1/hosts/workstation/usage/2026-09-13", usage({}, data));

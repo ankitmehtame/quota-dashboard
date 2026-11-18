@@ -654,7 +654,8 @@ async function buildUsage(url: URL, config: AppConfig) {
     const storedGeneratedAt = latest?.generatedAt ?? state?.usage?.generatedAt ?? null;
     // A fresh successful local hot run is newer than older stored usage, since readLatest() skips empty days.
     const hotSucceededAt = hostId === localHostId ? localUsageHealth.hotSucceededAt : null;
-    const generatedAt = hotSucceededAt && (!storedGeneratedAt || Date.parse(hotSucceededAt) > Date.parse(storedGeneratedAt)) ? hotSucceededAt : storedGeneratedAt;
+    const useHotSucceededAt = Boolean(hotSucceededAt && (!storedGeneratedAt || Date.parse(hotSucceededAt) > Date.parse(storedGeneratedAt)));
+    const generatedAt = useHotSucceededAt ? hotSucceededAt : storedGeneratedAt;
     const generatedTime = generatedAt ? Date.parse(generatedAt) : NaN;
     const hostRecords = records.filter((record) => record.hostId === hostId);
     const isLocal = hostId === localHostId;
@@ -676,7 +677,7 @@ async function buildUsage(url: URL, config: AppConfig) {
       hostId,
       generatedAt,
       timezone: latest?.timezone ?? state?.usage?.timezone ?? state?.status?.timezone ?? usageTimezone,
-      category: latest?.category ?? state?.usage?.category ?? state?.status?.category ?? null,
+      category: useHotSucceededAt ? "hot" : latest?.category ?? state?.usage?.category ?? state?.status?.category ?? null,
       range: latest?.range ?? state?.usage?.range ?? { from: range.from, to: range.to },
       status,
       severity,
@@ -689,7 +690,7 @@ async function buildUsage(url: URL, config: AppConfig) {
       complete,
       missingDates,
       usable: hostRecords.length > 0 || healthy,
-      disabledReason: error || (hostRecords.length ? null : `No usable usage data reported by ${hostId}`),
+      disabledReason: error || (hostRecords.length || healthy ? null : `No usable usage data reported by ${hostId}`),
     };
   });
   const problemHosts = hosts.filter((host) => {

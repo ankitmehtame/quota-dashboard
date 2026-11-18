@@ -173,7 +173,7 @@ test("keeps the pricing warning through an explicit offline hot run and a reconn
   await publisher.stop();
 });
 
-test("a failed hot job, the reconnect Last Will and a graceful offline status keep the pricing warning", async () => {
+test("a failed hot job keeps the pricing warning while the reconnect Last Will and graceful offline status leave it to the store without putting it in lifecycle offline statuses", async () => {
   let failAll = false;
   const { publisher, client } = startPublisher({
     runCcusage: (async ({ offline }: any) => {
@@ -198,14 +198,14 @@ test("a failed hot job, the reconnect Last Will and a graceful offline status ke
   client.emit("reconnect");
   const will = JSON.parse(client.options.will.payload);
   assert.equal(will.status, "offline");
-  assert.equal(will.warning, warning, "the Last Will set on reconnect carries the warning");
+  assert.equal(will.warning, undefined, "the Last Will is fixed at connect time, so it never carries the warning");
 
   client.emit("connect");
   await flush();
   client.publications.length = 0;
   await publisher.stop();
   const offline = statusMessages(client).find((status) => status.status === "offline");
-  assert.equal(offline?.warning, warning);
+  assert.equal(offline?.warning, undefined, "the store keeps the warning across offline statuses");
 });
 
 test("does not fall back to cached pricing when offline would fail the same way", async () => {

@@ -414,9 +414,13 @@ export class RemoteMqttStore {
     } else if (parsed.topic.kind === "status") {
       const message = parsed.message as StatusMessage;
       if (!shouldReplace(state.status, message, message.status === "offline")) { this.info(`message ignored reason=stale kind=status host=${parsed.topic.hostId}`); return false; }
-      // A lifecycle offline (including the MQTT Last Will, fixed at connect time) or a failed hot job says nothing about pricing; only ok/online statuses set or clear the warning.
-      const inheritWarning = (message.status === "offline" || message.status === "error") && !message.warning && state.status?.warning;
-      state.status = copyAndFreeze(inheritWarning ? { ...message, warning: state.status!.warning } : message);
+      // The store alone decides warning retention: only ok statuses set or clear it. A lifecycle offline (including the MQTT Last Will, fixed at connect time) never carries it, and online/error statuses only add one.
+      const previous = state.status;
+      const warning = message.status === "ok" ? message.warning : message.status === "offline" ? previous?.warning : message.warning || previous?.warning;
+      // A same-connection Last Will carries an older sequence; keep the high-water mark so duplicates of earlier statuses stay stale.
+      const sequence = previous && previous.publisherId === message.publisherId ? Math.max(previous.sequence, message.sequence) : message.sequence;
+      const { warning: _warning, ...rest } = message;
+      state.status = copyAndFreeze({ ...rest, sequence, ...(warning ? { warning } : {}) } as StatusMessage);
     } else {
       const message = parsed.message as ErrorMessage;
       if (!shouldReplace(state.error, message)) { this.info(`message ignored reason=stale kind=error host=${parsed.topic.hostId}`); return false; }

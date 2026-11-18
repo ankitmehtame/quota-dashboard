@@ -326,7 +326,7 @@ printf '{"daily":[]}\\n'
   }
 });
 
-type LocalHostBody = { usage: { severity: string | null; hosts: Array<{ hostId: string; local: boolean; severity: string | null; warning: string | null; error: string | null; status: string; usable: boolean; stale: boolean }> } };
+type LocalHostBody = { usage: { severity: string | null; hosts: Array<{ hostId: string; local: boolean; severity: string | null; warning: string | null; error: string | null; status: string; usable: boolean; stale: boolean; disabledReason: string | null; category: string | null }> } };
 const localUsage = async (port: number): Promise<{ body: LocalHostBody; host: LocalHostBody["usage"]["hosts"][number] }> => {
   const body = await (await fetch(`http://127.0.0.1:${port}/api/v1/usage?days=1`)).json() as LocalHostBody;
   return { body, host: body.usage.hosts.find((entry) => entry.local)! };
@@ -343,6 +343,8 @@ test("an empty clean online hot run is a known zero: ok, usable and fresh", { ti
     assert.equal(host.error, null);
     assert.equal(host.stale, false);
     assert.equal(host.usable, true);
+    assert.equal(host.disabledReason, null, "a known zero is not reported as unavailable data");
+    assert.equal(host.category, "hot", "an empty hot run counts as fresh hot usage for Refresh polling");
     assert.equal(body.usage.severity, null);
   } finally {
     await server.stop();

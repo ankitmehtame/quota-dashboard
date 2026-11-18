@@ -894,7 +894,7 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
     const healthy = hostHealthy(host);
     const warning = host.severity === "warning";
     const pricingWarning = host.warning || null;
-    const detail = warning && host.status === "offline" ? `Publisher offline${host.complete === false ? "; usage missing through today" : ""}${!hasRecords ? "; no usable usage data in this period" : ""}` : healthy && pricingWarning ? pricingWarning : host.disabledReason || host.error || (host.included === false ? "Timezone mismatch" : host.complete === false ? "Range incomplete" : host.stale ? "Stale usage data" : host.status) || "Status unavailable";
+    const detail = warning && host.status === "offline" ? `Publisher offline${host.complete === false ? "; usage missing through today" : ""}${!hasRecords ? "; no usable usage data in this period" : ""}` : healthy && pricingWarning ? pricingWarning : healthy && usable && !hasRecords ? "No usage in this period" : host.disabledReason || host.error || (host.included === false ? "Timezone mismatch" : host.complete === false ? "Range incomplete" : host.stale ? "Stale usage data" : host.status) || "Status unavailable";
     const stateLabel = !usable ? "unavailable" : selected ? healthy ? "selected, healthy" : "selected, unhealthy" : "unselected";
     const hostClass = `usage-host ${!usable ? "disabled" : selected ? healthy ? "selected healthy" : "selected unhealthy" : "unselected"}`;
     const hostLabel = `<span class="host-check" aria-hidden="true">✓</span><span class="host-name">${escapeHtml(host.hostId)}</span>`;
