@@ -10,7 +10,7 @@ type ChartRepresentation = "auto" | "day" | "week" | "month";
 type ConcreteRepresentation = Exclude<ChartRepresentation, "auto">;
 type UsageBucket = UsageDay & { from: string; to: string; days: UsageDay[] };
 type UsageRecord = PricingStatus & { hostId?: string; date: string; provider: string; model: string; inputTokens: number; cachedInputTokens: number; cacheCreationTokens: number; outputTokens: number; reasoningTokens: number; costUsd: number };
-type UsageHost = { hostId: string; generatedAt?: string | null; category?: string | null; status: string; severity?: "warning" | "error" | null; error?: string | null; stale?: boolean; local?: boolean; active?: boolean; included?: boolean; complete?: boolean; missingDates?: string[]; usable?: boolean; disabledReason?: string | null };
+type UsageHost = { hostId: string; generatedAt?: string | null; category?: string | null; status: string; severity?: "warning" | "error" | null; error?: string | null; warning?: string | null; stale?: boolean; local?: boolean; active?: boolean; included?: boolean; complete?: boolean; missingDates?: string[]; usable?: boolean; disabledReason?: string | null };
 type Usage = PricingStatus & { totalCostUsd: number; totalTokens?: number; from?: string; to?: string; providers?: string[]; sourceLabels?: Record<string, string>; analyticsRefreshing?: boolean; daily?: UsageDay[]; byModel?: UsageModel[]; byProvider?: Array<PricingStatus & { provider: string; costUsd: number; totalTokens: number }>; records?: UsageRecord[]; error?: string | null; hosts?: UsageHost[]; mqtt?: { configured: boolean; connection: string } };
 type Dashboard = { version: string; providerOrder: string[]; providers: Record<string, Provider>; quotas: Record<string, { windows?: QuotaWindow[]; openrouterKeys?: OpenRouterKeyResult[]; byokWindows?: QuotaWindow[]; effectiveBudget?: OpenRouterKeyResult["effectiveBudget"]; spendingLimit?: OpenRouterKeyResult["spendingLimit"]; creditBalance?: { includedUsd: number; purchasedUsd: number | null }; planType?: string; subscriptionActiveUntil?: string | null; resetCredits?: Array<{ id: string; title: string; description?: string | null; expiresAt?: string | null }>; fetchedAt?: string; error?: string | null; errorKind?: string; cooldownUntil?: number; stale?: boolean; cached?: boolean }>; usage: Usage; serverNow: string; cache?: { fetchedAt?: string } };
 type UsageResponse = { version: string; apiVersion: number; serverNow: string; timezone: string; from: string; to: string; usage: Usage };
@@ -526,7 +526,7 @@ function recordTokens(record: UsageRecord): number {
 }
 
 function hostHealthy(host: UsageHost): boolean {
-  return ["ok", "online"].includes(host.status) && !host.error && !host.stale && host.included !== false && host.complete !== false;
+  return ["ok", "online"].includes(host.status) && !host.error && !host.warning && !host.stale && host.included !== false && host.complete !== false;
 }
 
 function enabledUsageProviders(usage: Usage): Set<string> | null {
@@ -893,7 +893,7 @@ function renderUsage(usage: Usage, scrollMode: "newest" | "preserve" = "preserve
     const selected = usable && selectedHostIds.has(host.hostId);
     const healthy = hostHealthy(host);
     const warning = host.severity === "warning";
-    const detail = warning ? `Publisher offline${host.complete === false ? "; usage missing through today" : ""}${!hasRecords ? "; no usable usage data in this period" : ""}` : host.disabledReason || host.error || (host.included === false ? "Timezone mismatch" : host.complete === false ? "Range incomplete" : host.stale ? "Stale usage data" : host.status) || "Status unavailable";
+    const detail = warning && host.warning ? host.warning : warning ? `Publisher offline${host.complete === false ? "; usage missing through today" : ""}${!hasRecords ? "; no usable usage data in this period" : ""}` : host.disabledReason || host.error || (host.included === false ? "Timezone mismatch" : host.complete === false ? "Range incomplete" : host.stale ? "Stale usage data" : host.status) || "Status unavailable";
     const stateLabel = !usable ? "unavailable" : selected ? healthy ? "selected, healthy" : "selected, unhealthy" : "unselected";
     const hostClass = `usage-host ${!usable ? "disabled" : selected ? healthy ? "selected healthy" : "selected unhealthy" : "unselected"}`;
     const hostLabel = `<span class="host-check" aria-hidden="true">✓</span><span class="host-name">${escapeHtml(host.hostId)}</span>`;

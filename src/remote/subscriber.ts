@@ -221,6 +221,8 @@ export function parseRemoteMqttMessage(
     if (!STATUS_VALUES.includes((value as Record<string, unknown>).status as PublisherStatus)) return null;
     const error = (value as Record<string, unknown>).error;
     if (error !== undefined && error !== null && (typeof error !== "string" || error.length > MAX_ERROR_LENGTH)) return null;
+    const warning = (value as Record<string, unknown>).warning;
+    if (warning !== undefined && warning !== null && (typeof warning !== "string" || warning.length > MAX_ERROR_LENGTH)) return null;
     return { topic: parsedTopic, message: value as StatusMessage };
   }
   const error = (value as Record<string, unknown>).error;

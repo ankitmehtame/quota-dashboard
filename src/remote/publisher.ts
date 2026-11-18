@@ -24,8 +24,10 @@ import {
   DEFAULT_COLD_CCUSAGE_TIMEOUT_MS,
   DEFAULT_CCUSAGE_MAX_BUFFER,
   DEFAULT_HOT_CCUSAGE_TIMEOUT_MS,
+  DEFAULT_HOT_ONLINE_CCUSAGE_TIMEOUT_MS,
   rollingDateRange,
   runCcusage,
+  runHotCcusage,
   sliceCcusageDocument,
   type ExecFileRunner,
 } from "./ccusage.js";
@@ -49,6 +51,8 @@ export type RemotePublisherConfig = {
   /** Kept as an optional compatibility input. New callers should use hotTimeoutMs. */
   ccusageTimeoutMs?: number;
   hotTimeoutMs?: number;
+  /** Timeout for the online hot attempt before falling back to cached pricing. */
+  hotOnlineTimeoutMs?: number;
   coldTimeoutMs?: number;
   coldIntervalMs?: number;
   ccusageMaxBuffer: number;
@@ -58,8 +62,9 @@ export type RemotePublisherConfig = {
   ccusageVersion?: string;
 };
 
-type NormalizedPublisherConfig = Omit<RemotePublisherConfig, "hotTimeoutMs" | "coldTimeoutMs" | "coldIntervalMs" | "coldMode"> & {
+type NormalizedPublisherConfig = Omit<RemotePublisherConfig, "hotTimeoutMs" | "hotOnlineTimeoutMs" | "coldTimeoutMs" | "coldIntervalMs" | "coldMode"> & {
   hotTimeoutMs: number;
+  hotOnlineTimeoutMs: number;
   coldTimeoutMs: number;
   coldIntervalMs: number;
   coldMode: MqttCommandMode;
@@ -127,6 +132,7 @@ export function readRemotePublisherConfig(env: NodeJS.ProcessEnv = process.env):
     publishIntervalMs: positiveNumber(env.MQTT_INTERVAL_MS || env.MQTT_PUBLISH_INTERVAL_MS, DEFAULT_PUBLISH_INTERVAL_MS),
     reconnectTimeoutMs: positiveNumber(env.MQTT_RECONNECT_TIMEOUT_MS, DEFAULT_MQTT_RECONNECT_TIMEOUT_MS),
     hotTimeoutMs: positiveNumber(env.CCUSAGE_HOT_TIMEOUT_MS, legacyTimeout),
+    hotOnlineTimeoutMs: positiveNumber(env.CCUSAGE_HOT_ONLINE_TIMEOUT_MS, DEFAULT_HOT_ONLINE_CCUSAGE_TIMEOUT_MS),
     coldTimeoutMs: positiveNumber(env.CCUSAGE_COLD_TIMEOUT_MS, DEFAULT_COLD_CCUSAGE_TIMEOUT_MS),
     coldIntervalMs: positiveNumber(env.CCUSAGE_COLD_INTERVAL_MS, DEFAULT_COLD_INTERVAL_MS),
     ccusageMaxBuffer: positiveNumber(env.CCUSAGE_MAX_BUFFER, DEFAULT_CCUSAGE_MAX_BUFFER),
@@ -264,6 +270,7 @@ export class RemoteMqttPublisher {
       ...config,
       hostId: sanitizeHostId(config.hostId),
       hotTimeoutMs: config.hotTimeoutMs ?? config.ccusageTimeoutMs ?? DEFAULT_HOT_CCUSAGE_TIMEOUT_MS,
+      hotOnlineTimeoutMs: config.hotOnlineTimeoutMs ?? DEFAULT_HOT_ONLINE_CCUSAGE_TIMEOUT_MS,
       coldTimeoutMs: config.coldTimeoutMs ?? DEFAULT_COLD_CCUSAGE_TIMEOUT_MS,
       coldIntervalMs: config.coldIntervalMs ?? DEFAULT_COLD_INTERVAL_MS,
       coldMode: config.coldMode ?? "offline",
@@ -496,13 +503,16 @@ export class RemoteMqttPublisher {
     try {
       const dates = dateList(job.range);
       const range = { from: job.range.from, to: job.range.to, timezone: this.config.timezone };
-      const result = await this.dependencies.runCcusage({
+      const result = await runHotCcusage({
+        run: this.dependencies.runCcusage,
         binary: this.config.ccusageBinary,
         range,
         timeoutMs,
+        onlineTimeoutMs: this.config.hotOnlineTimeoutMs,
         maxBuffer: this.config.ccusageMaxBuffer,
         offline: job.mode === "offline",
         runner: this.dependencies.execFileRunner,
+        onFallback: (fallbackError) => this.log(`[hot] [${job.runId}] mode=online->offline reason=${safeError(fallbackError)}`, quiet),
       });
       const documents = new Map(dates.map((date) => [date, sliceCcusageDocument(result.document, date)]));
       for (const date of dates) {
@@ -513,7 +523,7 @@ export class RemoteMqttPublisher {
       }
       if (!this.stopped && this.client && job.category === "hot") {
         const statusMetadata = this.nextMetadata(job.range.to, job.category, job.runId);
-        await this.send(this.client, this.topics.status, makeStatusMessage(statusMetadata, "ok"));
+        await this.send(this.client, this.topics.status, makeStatusMessage(statusMetadata, "ok", null, result.fallback?.warning));
         await this.send(this.client, this.topics.error, makeErrorMessage(statusMetadata, null));
       }
     } catch (error) {

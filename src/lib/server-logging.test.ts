@@ -37,7 +37,7 @@ async function readLog(directory: string): Promise<string> {
   }
 }
 
-async function startServer(options: { enabled: boolean; hotIntervalMs?: number; coldIntervalMs?: number }): Promise<{
+async function startServer(options: { enabled: boolean; hotIntervalMs?: number; coldIntervalMs?: number; stub?: string }): Promise<{
   root: string;
   port: number;
   process: ChildProcess;
@@ -55,13 +55,13 @@ async function startServer(options: { enabled: boolean; hotIntervalMs?: number; 
   await mkdir(home, { recursive: true });
   const enabled = options.enabled;
   await writeFile(configPath, JSON.stringify({ usageSources: Object.fromEntries(["codex", "opencode", "hermes", "antigravity"].map((id) => [id, { enabled }])) }));
-  await writeFile(binary, `#!/bin/sh
+  await writeFile(binary, options.stub ?? `#!/bin/sh
 case " $* " in
   *" --no-offline "*)
     n=$(cat "$HOT_COUNTER" 2>/dev/null || echo 0)
     n=$((n + 1))
     echo "$n" > "$HOT_COUNTER"
-    if [ "$n" -le 3 ]; then printf '{"token":"%s"' "$CCUSAGE_TEST_SECRET"; exit 0; fi
+    if [ "$n" -le 3 ]; then sleep 1; printf '{"token":"%s"' "$CCUSAGE_TEST_SECRET"; exit 0; fi
     ;;
   *" --offline "*)
     if [ ! -e "$COLD_GATE" ]; then echo "$CCUSAGE_TEST_SECRET" >&2; exit 1; fi
@@ -258,6 +258,44 @@ test("shutdown closes idle keep-alive connections and flushes their access recor
     assert.doesNotMatch(server.stdout(), /shutdown timed out/);
   } finally {
     socket.destroy();
+    await server.stop();
+  }
+});
+
+test("local hot falls back to cached pricing as a warning, then clears it after an online success", { timeout: 30_000 }, async () => {
+  const server = await startServer({
+    enabled: true,
+    hotIntervalMs: 600,
+    stub: `#!/bin/sh
+case " $* " in
+  *" --no-offline "*) if [ ! -e "$COLD_GATE" ]; then echo "network down" >&2; exit 1; fi ;;
+esac
+printf '{"daily":[{"date":"%s","modelBreakdowns":[{"modelName":"m","cost":1,"inputTokens":1}]}]}\\n' "$(date -u +%F)"
+`,
+  });
+  const usage = async () => {
+    const body = await (await fetch(`http://127.0.0.1:${server.port}/api/v1/usage`)).json() as { usage: { severity: string | null; status: string; error: string | null; hosts: Array<{ local: boolean; severity: string | null; warning: string | null; error: string | null; status: string }> } };
+    return { ...body.usage, host: body.usage.hosts.find((host) => host.local)! };
+  };
+  try {
+    await waitFor(async () => (await readLog(server.logs)).includes("job complete status=degraded"), 12_000, "degraded hot run");
+    assert.match(await readLog(server.logs), /mode=online->offline reason=/);
+    const degraded = await usage();
+    assert.equal(degraded.host.warning, "Pricing fetch failed; using cached pricing");
+    assert.equal(degraded.host.severity, "warning");
+    assert.equal(degraded.host.error, null, "a successful fallback is not an error");
+    assert.equal(degraded.host.status, "ok");
+    assert.equal(degraded.severity, "warning");
+    assert.equal(degraded.status, "ok");
+    assert.equal(degraded.error, null);
+    assert.doesNotMatch(server.stdout(), /Local hot usage refresh failed/);
+
+    await writeFile(join(server.root, "cold-gate"), "ready");
+    await waitFor(async () => (await usage()).host.warning === null, 12_000, "warning cleared");
+    const recovered = await usage();
+    assert.equal(recovered.host.severity, null);
+    assert.equal(recovered.severity, null);
+  } finally {
     await server.stop();
   }
 });

@@ -37,6 +37,8 @@ export type PublisherStatus = "offline" | "online" | "ok" | "error";
 export type StatusMessage = MqttMetadata & {
   status: PublisherStatus;
   error?: string | null;
+  /** Non-fatal note on a successful run, such as hot usage priced from the offline cache. */
+  warning?: string | null;
 };
 
 export type ErrorMessage = MqttMetadata & {
@@ -139,12 +141,14 @@ export function makeStatusMessage(
   metadata: Omit<MqttMetadata, "schemaVersion">,
   status: PublisherStatus,
   error?: string | null,
+  warning?: string | null,
 ): StatusMessage {
   return {
     schemaVersion: MQTT_SCHEMA_VERSION,
     ...metadata,
     status,
     ...(error ? { error } : {}),
+    ...(warning ? { warning } : {}),
   };
 }
 

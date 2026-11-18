@@ -21,7 +21,7 @@ import { OpenRouterUsageCollector } from "./lib/openrouter-usage-collector.js";
 import { aggregateUsageSeverity, offlineUsageWarning, type UsageSeverity } from "./lib/usage-health.js";
 import { createDailyLogger, formatLocalTimestamp } from "./lib/daily-logger.js";
 import { createHttpRequestLog } from "./lib/http-request-log.js";
-import { ccusageErrorMessage, DEFAULT_CCUSAGE_MAX_BUFFER, DEFAULT_COLD_CCUSAGE_TIMEOUT_MS, DEFAULT_HOT_CCUSAGE_TIMEOUT_MS, DEFAULT_ROLLING_DAYS, rollingDateRange, runCcusage, sliceCcusageDocument } from "./remote/ccusage.js";
+import { ccusageErrorMessage, DEFAULT_CCUSAGE_MAX_BUFFER, DEFAULT_COLD_CCUSAGE_TIMEOUT_MS, DEFAULT_HOT_CCUSAGE_TIMEOUT_MS, DEFAULT_HOT_ONLINE_CCUSAGE_TIMEOUT_MS, DEFAULT_ROLLING_DAYS, rollingDateRange, runCcusage, runHotCcusage, sliceCcusageDocument, type HotCcusageResult } from "./remote/ccusage.js";
 import { DEFAULT_COLD_INTERVAL_MS, DEFAULT_PUBLISH_INTERVAL_MS } from "./remote/publisher.js";
 import { isValidRequestId, sanitizeHostId } from "./remote/protocol.js";
 import { RemoteMqttStore, readRemoteMqttSubscriberConfig } from "./remote/subscriber.js";
@@ -77,6 +77,7 @@ function positiveNumber(value: string | undefined, fallback: number): number {
 const localCcusageBinary = process.env.CCUSAGE_BIN?.trim() || "ccusage";
 const localCcusageMaxBuffer = positiveNumber(process.env.CCUSAGE_MAX_BUFFER, DEFAULT_CCUSAGE_MAX_BUFFER);
 const localHotTimeoutMs = positiveNumber(process.env.CCUSAGE_HOT_TIMEOUT_MS, positiveNumber(process.env.CCUSAGE_TIMEOUT_MS, DEFAULT_HOT_CCUSAGE_TIMEOUT_MS));
+const localHotOnlineTimeoutMs = positiveNumber(process.env.CCUSAGE_HOT_ONLINE_TIMEOUT_MS, DEFAULT_HOT_ONLINE_CCUSAGE_TIMEOUT_MS);
 const localColdTimeoutMs = positiveNumber(process.env.CCUSAGE_COLD_TIMEOUT_MS, DEFAULT_COLD_CCUSAGE_TIMEOUT_MS);
 const localColdMode = process.env.CCUSAGE_COLD_MODE?.trim().toLowerCase() === "online" ? "online" : "offline";
 const localRollingDays = Math.max(3, Math.trunc(positiveNumber(process.env.CCUSAGE_DAYS, DEFAULT_ROLLING_DAYS)));
@@ -112,7 +113,7 @@ let localHotSchedulePromise: Promise<void> | null = null;
 let localColdSchedulePromise: Promise<void> | null = null;
 let localHotTimer: NodeJS.Timeout | null = null;
 let localColdTimer: NodeJS.Timeout | null = null;
-const localUsageHealth = { hotError: null as string | null, coldError: null as string | null };
+const localUsageHealth = { hotError: null as string | null, hotWarning: null as string | null, coldError: null as string | null };
 const localColdQueue: LocalColdJob[] = [];
 const localColdQueued = new Set<string>();
 const localColdQueuedJobIds = new Map<string, string>();
@@ -301,8 +302,10 @@ function logHotLocal(jobId: string, message: string, scheduled = false, error = 
 
 type LocalColdJob = { from: string; to: string; offline: boolean; requestId: string; scheduled: boolean };
 
-async function runLocalUsageJob(range: { from: string; to: string }, category: "hot" | "cold", offline: boolean, timeoutMs: number, requestId?: string, scheduled = false): Promise<void> {
+/** Returns the pricing fallback warning when a hot run had to use cached pricing. */
+async function runLocalUsageJob(range: { from: string; to: string }, category: "hot" | "cold", offline: boolean, timeoutMs: number, requestId?: string, scheduled = false): Promise<string | null> {
   const failures: string[] = [];
+  let warning: string | null = null;
   const coldRequestId = requestId || randomUUID();
   const dates = dateList(range.from, range.to);
   let documents: Map<string, Record<string, unknown>>;
@@ -310,13 +313,17 @@ async function runLocalUsageJob(range: { from: string; to: string }, category: "
   if (category === "cold") logColdLocal(coldRequestId, `job start range=${range.from}..${range.to} mode=${offline ? "offline" : "online"}`, false, scheduled);
   else logHotLocal(coldRequestId, `job start range=${range.from}..${range.to} mode=${offline ? "offline" : "online"}`, scheduled);
   try {
-    const result = await runCcusage({
+    const options = {
       binary: localCcusageBinary,
       range: { from: range.from, to: range.to, timezone: usageTimezone },
       offline,
       timeoutMs,
       maxBuffer: localCcusageMaxBuffer,
-    });
+    };
+    const result: HotCcusageResult = category === "hot"
+      ? await runHotCcusage({ ...options, onlineTimeoutMs: localHotOnlineTimeoutMs, onFallback: (error) => logHotLocal(coldRequestId, `mode=online->offline reason=${safeCcusageLogSummary(error)}`, scheduled) })
+      : await runCcusage(options);
+    warning = result.fallback?.warning ?? null;
     documents = new Map(dates.map((date) => [date, sliceCcusageDocument(result.document, date)]));
   } catch (error) {
     if (category === "cold") {
@@ -367,7 +374,7 @@ async function runLocalUsageJob(range: { from: string; to: string }, category: "
     dashboardCache.clear();
     logColdLocal(coldRequestId, `summary succeeded=${result.succeeded} failed=${result.failures.length} elapsed=${elapsedSeconds(startedAt)}`, false, scheduled);
     if (result.failures.length > 0) throw new Error(result.failures.map(({ date, error }) => `${date}: ${error instanceof Error ? error.message : String(error)}`).join("; "));
-    return;
+    return null;
   }
   for (const date of dateList(range.from, range.to)) {
     try {
@@ -379,6 +386,7 @@ async function runLocalUsageJob(range: { from: string; to: string }, category: "
   dashboardCache.clear();
   logHotLocal(coldRequestId, `summary succeeded=${dates.length - failures.length} failed=${failures.length} elapsed=${elapsedSeconds(startedAt)}`, scheduled);
   if (failures.length > 0) throw new Error(failures.join("; "));
+  return warning;
 }
 
 function queueLocalHot(scheduled = false, correlation: { httpId?: string; requestId?: string; checkId?: string } = {}): void {
@@ -392,14 +400,18 @@ function queueLocalHot(scheduled = false, correlation: { httpId?: string; reques
   logHotLocal(jobId, `job accepted source=${scheduled ? "scheduled" : "on-demand"}${context} range=${range.from}..${range.to}`, scheduled);
   localHotJobId = jobId;
   localHotPromise = runLocalUsageJob(range, "hot", false, localHotTimeoutMs, jobId, scheduled)
-    .then(() => {
+    .then((warning) => {
       const recovered = localUsageHealth.hotError !== null;
+      const warningChanged = localUsageHealth.hotWarning !== warning;
       localUsageHealth.hotError = null;
-      logHotLocal(jobId, `job complete status=success duration=${elapsedSeconds(startedAt)}${context}`, scheduled);
+      localUsageHealth.hotWarning = warning;
+      if (warningChanged) dashboardCache.clear();
+      logHotLocal(jobId, `job complete status=${warning ? "degraded" : "success"} duration=${elapsedSeconds(startedAt)}${context}`, scheduled);
       if (recovered) logHotLocal(jobId, `health recovered${context}`, false);
     })
     .catch((error) => {
       localUsageHealth.hotError = ccusageErrorMessage(error, localCcusageBinary);
+      localUsageHealth.hotWarning = null;
       dashboardCache.clear();
       logHotLocal(jobId, `job complete status=failure duration=${elapsedSeconds(startedAt)} error=${safeCcusageLogSummary(error)}${context}`, scheduled, true);
       console.error(`Local hot usage refresh failed: ${safeCcusageLogSummary(error)}`);
@@ -655,7 +667,8 @@ async function buildUsage(url: URL, config: AppConfig) {
     const included = !error && (latest?.timezone ?? state?.usage?.timezone ?? usageTimezone) === usageTimezone;
     const healthy = ["ok", "online"].includes(status) && !error && !stale && included && (isLocal || complete);
     const warning = offlineUsageWarning({ local: isLocal, brokerConnected: remoteState.configured && remoteState.connection === "connected", publisherStatus: state?.status?.status, error, included, generatedAt, missingDates, today });
-    const severity: UsageSeverity = warning ? "warning" : healthy ? null : "error";
+    const pricingWarning = error ? null : (isLocal ? localUsageHealth.hotWarning : state?.status?.warning) || null;
+    const severity: UsageSeverity = warning || (healthy && pricingWarning) ? "warning" : healthy ? null : "error";
     return {
       hostId,
       generatedAt,
@@ -665,6 +678,7 @@ async function buildUsage(url: URL, config: AppConfig) {
       status,
       severity,
       error,
+      warning: pricingWarning,
       active: activeHostIds.has(hostId),
       stale,
       local: isLocal,
@@ -682,7 +696,8 @@ async function buildUsage(url: URL, config: AppConfig) {
       || (!host.local && !["ok", "online"].includes(host.status));
   });
   const hostProblem = problemHosts.length > 0;
-  const severity = aggregateUsageSeverity([...problemHosts.map((host) => host.severity), ...(openRouterUsageError ? ["error" as const] : []), ...(remoteState.configured && remoteState.connection !== "connected" ? ["error" as const] : [])]);
+  const degradedHosts = hosts.filter((host) => activeHostIds.has(host.hostId) && Boolean(host.warning) && !problemHosts.includes(host));
+  const severity = aggregateUsageSeverity([...problemHosts.map((host) => host.severity), ...degradedHosts.map((host) => host.severity), ...(openRouterUsageError ? ["error" as const] : []), ...(remoteState.configured && remoteState.connection !== "connected" ? ["error" as const] : [])]);
   const usageStatus = usageSources.length === 0 ? "disabled" : hostProblem || openRouterUsageError ? (records.length ? "partial" : "error") : "ok";
   const usageResult = usageSources.length ? {
     status: usageStatus,
