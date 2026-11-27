@@ -79,6 +79,30 @@ test("removes a moved billing ID from its old month even when that month receive
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("a failed write while moving a row between months never loses it", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cursor-store-"));
+  try {
+    const store = new CursorUsageStore(join(root, "data"));
+    await store.upsert([event("moving", "2026-11-30T23:59:00.000Z")], "host-1");
+    const writeShard = (store as any).writeShard;
+    const order: string[] = [];
+    (store as any).writeShard = async function (month: string, events: unknown[]) {
+      order.push(month);
+      if (month === "2026-12") throw new Error("disk full");
+      return writeShard.call(this, month, events);
+    };
+    const revision = store.revision;
+    await assert.rejects(store.upsert([event("moving", "2026-12-01T00:01:00.000Z")], "host-1"), /disk full/);
+    // The destination month is written first, so the old copy is still there.
+    assert.deepEqual(order, ["2026-12"]);
+    assert.equal(store.revision, revision + 1);
+    (store as any).writeShard = writeShard;
+    assert.deepEqual((await store.read("2026-11-01", "2026-12-31")).map((item) => [item.id, item.time]), [["moving", "2026-11-30T23:59:00.000Z"]]);
+    assert.deepEqual(await store.upsert([event("moving", "2026-12-01T00:01:00.000Z")], "host-1"), { added: 0, updated: 1, moved: 0 });
+    assert.deepEqual((await store.read("2026-11-01", "2026-12-31")).map((item) => item.time), ["2026-12-01T00:01:00.000Z"]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("groups a large single-month import in linear time", async () => {
   const root = await mkdtemp(join(tmpdir(), "cursor-store-"));
   try {
