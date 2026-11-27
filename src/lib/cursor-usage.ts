@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { UsageRecord } from "./usage.js";
 
 /** Usage source ID for Cursor rows imported from the xAI unified-usage CSV. */
@@ -161,21 +161,26 @@ const defaultRunner: CcusageRunner = (binary, args, options) => new Promise((res
  * directory with one project per host, and read back with `claude daily --instances`.
  */
 /**
- * The user-level ccusage config that ccusage 20 reads for Claude data: each `CLAUDE_CONFIG_DIR`
- * entry's `ccusage.json`, or else `$XDG_CONFIG_HOME/claude`, `~/.config/claude` and `~/.claude`.
- * The first file that parses as JSON wins, as in ccusage. Returns its text, or null.
+ * The user-level ccusage config that ccusage 20.1.2 reads for Claude data, checked against it:
+ * - `CLAUDE_CONFIG_DIR` set: each comma-separated entry's `ccusage.json`, with `~` expanded and a
+ *   `…/projects` entry meaning its parent. The home locations are not used.
+ * - otherwise `$XDG_CONFIG_HOME/claude` (or `~/.config/claude` when unset), then `~/.claude`.
+ * The first file holding a JSON object wins. Returns its text, or null.
  */
 export async function readCcusageUserConfig(env: NodeJS.ProcessEnv, home: string): Promise<string | null> {
-  const claudeDirs = env.CLAUDE_CONFIG_DIR?.split(",").map((dir) => dir.trim()).filter(Boolean) ?? [];
+  const expand = (dir: string) => dir === "~" ? home : dir.startsWith("~/") ? join(home, dir.slice(2)) : dir;
+  const claudeDirs = (env.CLAUDE_CONFIG_DIR ?? "").split(",").map((dir) => dir.trim()).filter(Boolean)
+    .map((dir) => expand(dir).replace(/\/+$/, ""))
+    .map((dir) => basename(dir) === "projects" ? dirname(dir) : dir);
   const xdg = env.XDG_CONFIG_HOME?.trim();
   const candidates = claudeDirs.length
     ? claudeDirs.map((dir) => join(dir, "ccusage.json"))
-    : [...(xdg ? [join(xdg, "claude", "ccusage.json")] : []), join(home, ".config", "claude", "ccusage.json"), join(home, ".claude", "ccusage.json")];
+    : [join(xdg ? expand(xdg) : join(home, ".config"), "claude", "ccusage.json"), join(home, ".claude", "ccusage.json")];
   for (const path of candidates) {
     try {
       const text = await readFile(path, "utf8");
-      JSON.parse(text);
-      return text;
+      const value: unknown = JSON.parse(text);
+      if (value && typeof value === "object" && !Array.isArray(value)) return text;
     } catch { /* missing or malformed: ccusage moves on to the next location */ }
   }
   return null;

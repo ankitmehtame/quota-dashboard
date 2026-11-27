@@ -103,13 +103,20 @@ export class CursorUsageStore {
         else if (before.hostId !== hostId) counts.moved++;
         else counts.updated++;
       }
-      // Write months that receive rows first, then months that only lose moved rows.
-      // If a write fails part way, a moved row can be left in two months, but never in none.
-      const writes = [...shards].filter(([month, shard]) => byMonth.has(month) || shard.changed)
-        .sort(([a], [b]) => Number(!byMonth.has(a)) - Number(!byMonth.has(b)));
+      // Two passes, so a write failing part way can leave a moved row in two months but never in none:
+      // first add incoming rows (keeping copies that move elsewhere), then drop the moved copies.
+      const added = new Map<string, StoredCursorEvent[]>();
+      for (const [month, incoming] of byMonth) {
+        const here = new Set(incoming.map((event) => event.id));
+        const stored = await this.readShard(month);
+        added.set(month, [...stored.filter((event) => !here.has(event.id)), ...incoming.map((event) => ({ ...event, hostId, importedAt }))]);
+      }
       try {
-        for (const [month, shard] of writes) {
-          await this.writeShard(month, [...shard.kept, ...(byMonth.get(month) ?? []).map((event) => ({ ...event, hostId, importedAt }))]);
+        for (const [month, events] of added) await this.writeShard(month, events);
+        for (const [month, shard] of shards) {
+          if (!shard.changed) continue;
+          const final = [...shard.kept, ...(byMonth.get(month) ?? []).map((event) => ({ ...event, hostId, importedAt }))];
+          if (final.length !== added.get(month)?.length) await this.writeShard(month, final);
         }
       } finally {
         // Bump even after a partial failure, so cached results never outlive changed files.
