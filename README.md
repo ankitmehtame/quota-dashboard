@@ -134,6 +134,7 @@ No machine-specific absolute paths or identifiers are stored in the application.
 - `QUOTA_LOG_DIR` (optional daily-log directory; see Logging below)
 - `CCUSAGE_HOT_INTERVAL_MS` (local hot refresh interval; defaults to 600000)
 - `CCUSAGE_HOT_TIMEOUT_MS` (local hot command timeout; defaults to 600000)
+- `CCUSAGE_HOT_ONLINE_TIMEOUT_MS` (timeout for the online hot attempt before falling back to cached pricing; defaults to 120000)
 - `CCUSAGE_COLD_TIMEOUT_MS` (local cold command timeout; defaults to 1800000)
 - `CCUSAGE_COLD_INTERVAL_MS` (local cold scheduler interval; defaults to 86400000)
 - `CCUSAGE_COLD_MODE` (`offline` or `online`, defaults to `offline`)
@@ -432,9 +433,20 @@ of a zero. Grok uses the default `QUOTA_CACHE_TTL_SECONDS` cache and the same
 
 Each remote publisher runs a hot collection for today and yesterday at startup and every
 10 minutes. Cold history is collected one date at a time, starting with the newest stale
-date, once per day or when requested by the dashboard. Hot jobs use a 10-minute timeout;
-cold jobs use a 30-minute timeout and default to `--offline`. The original parsed ccusage
-document remains unchanged under the envelope's `data` field:
+date, once per day or when requested by the dashboard. Hot jobs run online with a
+2-minute timeout and no retries (`CCUSAGE_HOT_ONLINE_TIMEOUT_MS`). If the online run times
+out or exits non-zero, the job reruns with `--offline` (cached pricing) using the 10-minute
+hot timeout and normal retries. A missing binary, invalid JSON, or an output-size overflow
+fails the job without a fallback, since offline would fail the same way. A fallback run
+publishes `ok` status with a non-fatal `warning` ("Pricing fetch failed; using cached
+pricing"), which the dashboard shows as a usage warning, not an error. Only a successful
+online run clears it; an explicit offline run leaves it in place. The dashboard keeps the
+warning in memory only, so a freshly started dashboard can restore it only from a status
+that includes it. The Last Will and the graceful shutdown status never carry the warning, and
+a restarted publisher's `online` status and a failed hot run may omit it, so after a
+dashboard restart the warning can stay hidden until the next successful fallback run
+publishes it again. Cold jobs use a 30-minute timeout and default to `--offline`. The
+original parsed ccusage document remains unchanged under the envelope's `data` field:
 
 ```json
 {
@@ -508,7 +520,7 @@ loginctl enable-linger "$USER"
 The remote publisher accepts these environment variables when run without the setup
 script: `MQTT_URL`, `MQTT_USERNAME`, `MQTT_PASSWORD`, `MQTT_PREFIX`, `MQTT_HOST_ID`,
 `MQTT_RECONNECT_TIMEOUT_MS`, `CCUSAGE_TIMEZONE`, `CCUSAGE_DAYS`, `MQTT_INTERVAL_MS`, `CCUSAGE_HOT_TIMEOUT_MS`,
-`CCUSAGE_COLD_TIMEOUT_MS`, `CCUSAGE_COLD_INTERVAL_MS`, `CCUSAGE_COLD_MODE`,
+`CCUSAGE_HOT_ONLINE_TIMEOUT_MS`, `CCUSAGE_COLD_TIMEOUT_MS`, `CCUSAGE_COLD_INTERVAL_MS`, `CCUSAGE_COLD_MODE`,
 `CCUSAGE_BIN`, `CCUSAGE_MAX_BUFFER`, optional `CCUSAGE_VERSION`, and optional
 `QUOTA_LOG_DIR`. Set `QUOTA_LOG_DIR` when running setup to preserve an override in
 `remote.env`; setup does not require it or prompt for it. Rerunning setup preserves

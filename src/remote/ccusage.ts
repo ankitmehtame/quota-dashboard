@@ -3,6 +3,9 @@ import type { ExecFileOptions } from "node:child_process";
 
 export const DEFAULT_CCUSAGE_TIMEOUT_MS = 30_000;
 export const DEFAULT_HOT_CCUSAGE_TIMEOUT_MS = 10 * 60 * 1000;
+/** The online hot attempt fails fast so the offline fallback starts promptly. */
+export const DEFAULT_HOT_ONLINE_CCUSAGE_TIMEOUT_MS = 2 * 60 * 1000;
+export const HOT_PRICING_FALLBACK_WARNING = "Pricing fetch failed; using cached pricing";
 export const DEFAULT_COLD_CCUSAGE_TIMEOUT_MS = 30 * 60 * 1000;
 export const DEFAULT_CCUSAGE_MAX_BUFFER = 32 * 1024 * 1024;
 export const DEFAULT_ROLLING_DAYS = 370;
@@ -110,6 +113,7 @@ export async function runCcusage({
   timeoutMs = DEFAULT_CCUSAGE_TIMEOUT_MS,
   maxBuffer = DEFAULT_CCUSAGE_MAX_BUFFER,
   offline = false,
+  retry = true,
   runner = execFile as unknown as ExecFileRunner,
   sleep = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
 }: {
@@ -118,6 +122,8 @@ export async function runCcusage({
   timeoutMs?: number;
   maxBuffer?: number;
   offline?: boolean;
+  /** Set to false to fail on the first error instead of retrying. */
+  retry?: boolean;
   runner?: ExecFileRunner;
   sleep?: Sleep;
 }): Promise<CcusageCommandResult> {
@@ -138,11 +144,49 @@ export async function runCcusage({
         stderr,
       };
     } catch (error) {
-      const delay = CCUSAGE_RETRY_DELAYS_MS[attempt];
+      const delay = retry ? CCUSAGE_RETRY_DELAYS_MS[attempt] : undefined;
       if (delay === undefined) throw error;
       await sleep(delay);
       attempt += 1;
     }
+  }
+}
+
+/** A timeout or non-zero exit may be a pricing fetch problem; a missing binary, bad JSON or buffer overflow would fail offline too. */
+export function isOfflineRecoverableFailure(error: unknown): boolean {
+  if (!isObject(error) && !(error instanceof Error)) return false;
+  const { code, killed } = error as { code?: unknown; killed?: unknown };
+  if (typeof code === "number") return true;
+  return code === undefined || code === null ? killed === true : false;
+}
+
+export type HotCcusageResult = CcusageCommandResult & {
+  /** Set when the online run failed and the result comes from cached pricing. */
+  fallback?: { warning: string; error: unknown };
+};
+
+/** Run hot usage online, falling back to cached pricing when the online run fails in a way offline can fix. */
+export async function runHotCcusage({
+  offline = false,
+  timeoutMs = DEFAULT_HOT_CCUSAGE_TIMEOUT_MS,
+  onlineTimeoutMs = DEFAULT_HOT_ONLINE_CCUSAGE_TIMEOUT_MS,
+  onFallback,
+  run = runCcusage,
+  ...options
+}: Parameters<typeof runCcusage>[0] & {
+  onlineTimeoutMs?: number;
+  onFallback?: (error: unknown) => void;
+  /** Injectable for tests. */
+  run?: typeof runCcusage;
+}): Promise<HotCcusageResult> {
+  if (offline) return run({ ...options, timeoutMs, offline: true });
+  try {
+    return await run({ ...options, timeoutMs: Math.min(timeoutMs, onlineTimeoutMs), offline: false, retry: false });
+  } catch (error) {
+    if (!isOfflineRecoverableFailure(error)) throw error;
+    onFallback?.(error);
+    const result = await run({ ...options, timeoutMs, offline: true });
+    return { ...result, fallback: { warning: HOT_PRICING_FALLBACK_WARNING, error } };
   }
 }
 

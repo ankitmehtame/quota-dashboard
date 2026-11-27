@@ -78,11 +78,182 @@ test("publishes retained date-level hot usage with the hot timeout", async () =>
     "quota-dashboard/v1/hosts/workstation/usage/2026-09-13",
   ]);
   assert.deepEqual(calls.filter((call) => !call.offline), [
-    { from: "2026-09-12", to: "2026-09-13", timeoutMs: 600_000, offline: false },
+    { from: "2026-09-12", to: "2026-09-13", timeoutMs: 120_000, offline: false },
   ]);
   assert.ok(usage.every((publication) => publication.options.retain && publication.options.qos === 1));
   assert.equal(JSON.parse(usage[0].payload).date, "2026-09-12");
   assert.ok(client.subscriptions.includes("quota-dashboard/v1/hosts/workstation/command"));
+  await publisher.stop();
+});
+
+const statusMessages = (client: FakeClient) => client.publications
+  .filter((publication) => publication.topic.endsWith("/status"))
+  .map((publication) => JSON.parse(publication.payload));
+
+test("falls back to cached pricing when the online hot run times out and reports a warning, not an error", async () => {
+  const calls: Array<{ timeoutMs?: number; offline?: boolean; retry?: boolean }> = [];
+  const { publisher, client } = startPublisher({
+    runCcusage: (async ({ timeoutMs, offline, retry }: any) => {
+      calls.push({ timeoutMs, offline, retry });
+      if (!offline) throw Object.assign(new Error("timed out"), { killed: true, signal: "SIGTERM" });
+      return { document: { daily: [{ date: "2026-09-13", cost: 3 }] }, stdout: "{}", stderr: "" };
+    }) as never,
+  });
+  const starting = publisher.start();
+  client.emit("connect");
+  await starting;
+  await flush();
+
+  assert.deepEqual(calls.slice(0, 2), [
+    { timeoutMs: 120_000, offline: false, retry: false },
+    { timeoutMs: 600_000, offline: true, retry: undefined },
+  ]);
+  const usage = client.publications.filter((publication) => publication.topic.includes("/usage/") && JSON.parse(publication.payload).category === "hot");
+  assert.equal(usage.length, 2);
+  const statuses = statusMessages(client);
+  const last = statuses.at(-1);
+  assert.equal(last.status, "ok");
+  assert.equal(last.warning, "Pricing fetch failed; using cached pricing");
+  assert.equal(last.error, undefined);
+  await publisher.stop();
+});
+
+test("a later successful online hot run clears the pricing warning", async () => {
+  let online = false;
+  const { publisher, client } = startPublisher({
+    runCcusage: (async ({ offline }: any) => {
+      if (!offline && !online) throw Object.assign(new Error("exit 1"), { code: 1 });
+      return { document: { daily: [] }, stdout: "{}", stderr: "" };
+    }) as never,
+  });
+  const starting = publisher.start();
+  client.emit("connect");
+  await starting;
+  await flush();
+  assert.equal(statusMessages(client).at(-1).warning, "Pricing fetch failed; using cached pricing");
+  online = true;
+  await publisher.publishHot(true);
+  const last = statusMessages(client).at(-1);
+  assert.equal(last.status, "ok");
+  assert.equal(last.warning, undefined);
+  await publisher.stop();
+});
+
+test("keeps the pricing warning through an explicit offline hot run and a reconnect until an online run succeeds", async () => {
+  let online = false;
+  const { publisher, client } = startPublisher({
+    runCcusage: (async ({ offline }: any) => {
+      if (!offline && !online) throw Object.assign(new Error("exit 1"), { code: 1 });
+      return { document: { daily: [] }, stdout: "{}", stderr: "" };
+    }) as never,
+  });
+  const warning = "Pricing fetch failed; using cached pricing";
+  const starting = publisher.start();
+  client.emit("connect");
+  await starting;
+  await flush();
+  assert.equal(statusMessages(client).at(-1).warning, warning);
+
+  assert.equal(publisher.processCommand("quota-dashboard/v1/hosts/workstation/command", JSON.stringify({ schemaVersion: 2, requestId: "hot-offline", category: "hot", from: "2026-09-12", to: "2026-09-13", mode: "offline" })), true);
+  await flush();
+  const afterOffline = statusMessages(client).at(-1);
+  assert.equal(afterOffline.status, "ok");
+  assert.equal(afterOffline.warning, warning, "an offline run does not confirm pricing is reachable");
+
+  client.publications.length = 0;
+  client.emit("close");
+  client.emit("connect");
+  await flush();
+  const lifecycle = statusMessages(client).find((status) => status.status === "online");
+  assert.equal(lifecycle?.warning, warning, "the reconnect status does not clear the warning");
+
+  online = true;
+  await publisher.publishHot(true);
+  assert.equal(statusMessages(client).at(-1).warning, undefined);
+  await publisher.stop();
+});
+
+test("an explicit offline hot run on a restarted publisher marks its ok status keepWarning instead of looking like a pricing recovery", async (t) => {
+  let failAll = true;
+  const { publisher, client } = startPublisher({
+    runCcusage: (async () => {
+      if (failAll) throw Object.assign(new Error("exit 1"), { code: 1 });
+      return { document: { daily: [] }, stdout: "{}", stderr: "" };
+    }) as never,
+  });
+  // A failed assertion must not leave the publisher's intervals running; stop() is idempotent.
+  t.after(() => publisher.stop());
+  const starting = publisher.start();
+  client.emit("connect");
+  await starting.catch(() => {});
+  await flush();
+  failAll = false;
+  assert.equal(publisher.processCommand("quota-dashboard/v1/hosts/workstation/command", JSON.stringify({ schemaVersion: 2, requestId: "hot-offline", category: "hot", from: "2026-09-12", to: "2026-09-13", mode: "offline" })), true);
+  await flush();
+  const offlineRun = statusMessages(client).at(-1);
+  assert.equal(offlineRun.status, "ok");
+  assert.equal(offlineRun.warning, undefined, "the restarted publisher never learned the stored warning");
+  assert.equal(offlineRun.keepWarning, true, "so the status must not count as an online recovery");
+
+  await publisher.publishHot(true);
+  const online = statusMessages(client).at(-1);
+  assert.equal(online.status, "ok");
+  assert.equal(online.keepWarning, undefined, "an online success is a real recovery");
+  await publisher.stop();
+});
+
+test("a failed hot job keeps the pricing warning while the reconnect Last Will and graceful offline status leave it to the store without putting it in lifecycle offline statuses", async () => {
+  let failAll = false;
+  const { publisher, client } = startPublisher({
+    runCcusage: (async ({ offline }: any) => {
+      if (failAll || !offline) throw Object.assign(new Error("exit 1"), { code: 1 });
+      return { document: { daily: [] }, stdout: "{}", stderr: "" };
+    }) as never,
+  });
+  const warning = "Pricing fetch failed; using cached pricing";
+  const starting = publisher.start();
+  client.emit("connect");
+  await starting;
+  await flush();
+  assert.equal(statusMessages(client).at(-1).warning, warning);
+  assert.equal(JSON.parse(client.options.will.payload).warning, undefined, "no warning existed when first connected");
+
+  failAll = true;
+  await publisher.publishHot(true).catch(() => {});
+  const failed = statusMessages(client).at(-1);
+  assert.equal(failed.status, "error");
+  assert.equal(failed.warning, warning, "a failed hot job does not confirm pricing recovered");
+
+  client.emit("reconnect");
+  const will = JSON.parse(client.options.will.payload);
+  assert.equal(will.status, "offline");
+  assert.equal(will.warning, undefined, "the Last Will is fixed at connect time, so it never carries the warning");
+
+  client.emit("connect");
+  await flush();
+  client.publications.length = 0;
+  await publisher.stop();
+  const offline = statusMessages(client).find((status) => status.status === "offline");
+  assert.equal(offline?.warning, undefined, "the store keeps the warning across offline statuses");
+});
+
+test("does not fall back to cached pricing when offline would fail the same way", async () => {
+  const calls: boolean[] = [];
+  const { publisher, client } = startPublisher({
+    runCcusage: (async ({ offline }: any) => {
+      calls.push(Boolean(offline));
+      throw Object.assign(new Error("spawn ccusage ENOENT"), { code: "ENOENT" });
+    }) as never,
+  });
+  const starting = publisher.start();
+  client.emit("connect");
+  await starting;
+  await flush();
+  assert.deepEqual(calls.slice(0, 1), [false]);
+  assert.ok(!calls.slice(0, 1).includes(true));
+  const last = statusMessages(client).at(-1);
+  assert.equal(last.status, "error");
+  assert.equal(last.warning, undefined);
   await publisher.stop();
 });
 
