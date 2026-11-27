@@ -300,6 +300,22 @@ test("offline and malformed preview responses show a fixed Appearance error", as
   assert.equal(api.errors.get(id), "Icon unavailable. Edit the slug to retry.");
 });
 
+test("settings list the Grok usage source with the other known tools, before unknown tools", async () => {
+  const settings = app.slice(app.indexOf("async function loadSettings("), app.indexOf("function showToast("));
+  const elements = new Map<string, { innerHTML: string }>();
+  const providerOrder = ["codex", "grok"];
+  const usageSources = Object.fromEntries(["custom-agent", "grok", "aaa-agent", "claude", "codex"].map((id) => [id, { enabled: true }]));
+  await runInNewContext(`${escape}\n${presentation}\n${settings}\nloadSettings();`, {
+    fetch: async () => ({ json: async () => ({ providerOrder, providers: Object.fromEntries(providerOrder.map((id) => [id, { name: id, description: "Example", enabled: true }])), usageSources }) }),
+    state: { hour12: false }, fetchLabelIcons() {}, renderColdUsageSettings() {}, renderAppearanceSettings() {}, document: { querySelectorAll: () => [] },
+    $: (selector: string) => { if (!elements.has(selector)) elements.set(selector, { innerHTML: "" }); return elements.get(selector); },
+  });
+  const usage = elements.get("#provider-settings")!.innerHTML.split("Usage sources</p>")[1];
+  const rows = [...usage.matchAll(/data-kind="usage" data-provider="([^"]+)"/g)].map((match) => match[1]);
+  assert.deepEqual(rows, ["codex", "claude", "grok", "aaa-agent", "custom-agent"]);
+  assert.match(usage, /data-icon="grok"/);
+});
+
 test("appearance lists each tool once by canonical id with color controls and the per-device clock toggle", () => {
   const elements = new Map<string, { innerHTML: string }>();
   const providerOrder = ["codex", "openrouter", "opencode-go", "ollama", "claude"];

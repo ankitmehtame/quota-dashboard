@@ -274,7 +274,7 @@ export const PROVIDER_FETCHERS: Record<ProviderId, () => Promise<ProviderResult>
 
 export async function isProviderConfigured(id: ProviderId): Promise<boolean> {
   if (id === "claude") return Boolean((await resolveClaudeCredentials()).accessToken);
-  if (id === "grok") return Boolean((await resolveGrokCredentials()).accessToken);
+  if (id === "grok") return (await resolveGrokCredentials()).configured;
   if (id === "openrouter") {
     try {
       const all = await resolveOpenRouterKeys();
