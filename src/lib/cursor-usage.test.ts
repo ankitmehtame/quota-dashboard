@@ -160,7 +160,16 @@ test("finds the ccusage config the way ccusage does for Claude data", async () =
     // CLAUDE_CONFIG_DIR expands ~, treats a projects/ entry as its parent, and never falls back to home.
     await write(join(home, "tilde", "ccusage.json"), '{"n":5}');
     assert.equal(await readCcusageUserConfig({ CLAUDE_CONFIG_DIR: "~/tilde" }, home), '{"n":5}');
+    // Only an existing projects/ directory means its parent.
+    await write(join(home, "tilde", "projects", "ccusage.json"), '{"n":9}');
     assert.equal(await readCcusageUserConfig({ CLAUDE_CONFIG_DIR: `${join(home, "tilde", "projects")}/` }, home), '{"n":5}');
+    await write(join(home, "other", "ccusage.json"), '{"n":6}');
+    assert.equal(await readCcusageUserConfig({ CLAUDE_CONFIG_DIR: join(home, "other", "projects") }, home), null);
+    // XDG_CONFIG_HOME is taken literally, as ccusage does: no ~ expansion and no trimming.
+    await write(join(home, "xdgtilde", "claude", "ccusage.json"), '{"n":7}');
+    assert.equal(await readCcusageUserConfig({ XDG_CONFIG_HOME: "~/xdgtilde" }, home), '{"n":4}');
+    assert.equal(await readCcusageUserConfig({ XDG_CONFIG_HOME: "   " }, home), '{"n":4}');
+    assert.equal(await readCcusageUserConfig({ XDG_CONFIG_HOME: "" }, home), '{"n":3}');
     assert.equal(await readCcusageUserConfig({ CLAUDE_CONFIG_DIR: join(root, "first") }, home), null);
   } finally { await rm(root, { recursive: true, force: true }); }
 });

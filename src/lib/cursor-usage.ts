@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import type { UsageRecord } from "./usage.js";
@@ -162,20 +162,24 @@ const defaultRunner: CcusageRunner = (binary, args, options) => new Promise((res
  */
 /**
  * The user-level ccusage config that ccusage 20.1.2 reads for Claude data, checked against it:
- * - `CLAUDE_CONFIG_DIR` set: each comma-separated entry's `ccusage.json`, with `~` expanded and a
- *   `…/projects` entry meaning its parent. The home locations are not used.
- * - otherwise `$XDG_CONFIG_HOME/claude` (or `~/.config/claude` when unset), then `~/.claude`.
+ * - `CLAUDE_CONFIG_DIR` set: each comma-separated entry's `ccusage.json`, with `~` expanded and an
+ *   existing `…/projects` directory meaning its parent. The home locations are not used.
+ * - otherwise `$XDG_CONFIG_HOME/claude` (taken literally; `~/.config/claude` when unset or empty),
+ *   then `~/.claude`.
  * The first file holding a JSON object wins. Returns its text, or null.
  */
 export async function readCcusageUserConfig(env: NodeJS.ProcessEnv, home: string): Promise<string | null> {
   const expand = (dir: string) => dir === "~" ? home : dir.startsWith("~/") ? join(home, dir.slice(2)) : dir;
-  const claudeDirs = (env.CLAUDE_CONFIG_DIR ?? "").split(",").map((dir) => dir.trim()).filter(Boolean)
-    .map((dir) => expand(dir).replace(/\/+$/, ""))
-    .map((dir) => basename(dir) === "projects" ? dirname(dir) : dir);
-  const xdg = env.XDG_CONFIG_HOME?.trim();
+  const isDirectory = async (path: string) => { try { return (await stat(path)).isDirectory(); } catch { return false; } };
+  const claudeDirs: string[] = [];
+  for (const entry of (env.CLAUDE_CONFIG_DIR ?? "").split(",").map((dir) => dir.trim()).filter(Boolean)) {
+    const dir = expand(entry).replace(/\/+$/, "") || "/";
+    claudeDirs.push(basename(dir) === "projects" && await isDirectory(dir) ? dirname(dir) : dir);
+  }
+  const xdg = env.XDG_CONFIG_HOME;
   const candidates = claudeDirs.length
     ? claudeDirs.map((dir) => join(dir, "ccusage.json"))
-    : [join(xdg ? expand(xdg) : join(home, ".config"), "claude", "ccusage.json"), join(home, ".claude", "ccusage.json")];
+    : [join(xdg ? xdg : join(home, ".config"), "claude", "ccusage.json"), join(home, ".claude", "ccusage.json")];
   for (const path of candidates) {
     try {
       const text = await readFile(path, "utf8");
