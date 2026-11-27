@@ -428,6 +428,44 @@ that are not on The X Subscription have no shared pool and show an error instead
 of a zero. Grok uses the default `QUOTA_CACHE_TTL_SECONDS` cache and the same
 `Retry-After`, 429 backoff, and stale-data rules as Claude.
 
+### Cursor usage import
+
+ccusage does not read Cursor, so Cursor usage comes from the CSV that the xAI
+dashboard exports (`personal-unified-usage-<date>.csv`). Upload it in
+Settings → Usage → Import Cursor usage, or post it directly:
+
+```sh
+curl -X POST -H 'Content-Type: text/csv' --data-binary @personal-unified-usage.csv \
+  'http://127.0.0.1:4173/api/v1/usage/import?hostId=my-laptop'
+```
+
+- Only rows with `Product` = `cursor` are imported. `grok-build` rows are skipped
+  because ccusage's Grok Build collector already counts them. Other products are
+  skipped too, and the response counts every skipped row by product.
+- Token columns map to input (`prompt-text-tokens`), output
+  (`completion-text-tokens`), cache read (`cached-prompt-text-tokens`) and cache
+  write (`cache-write-text-tokens`). `included` and `credits` rows count the same way.
+- The export bills these rows at $0, so the cost shown is the API-equivalent price.
+  It comes from `pricingOverrides` in the server's ccusage config
+  (`~/.config/ccusage/config.json`, then `~/.ccusage/ccusage.json`, or
+  `CCUSAGE_CONFIG_PATH`). `commands.daily` overrides `defaults`, and the 200k-token
+  tier fields work as they do in ccusage. Model names must match exactly. Models with
+  no price are flagged as unpriced, and the import result lists them. Prices are
+  applied when usage is read, so adding an override later re-prices past imports.
+- `hostId` is optional, defaults to the dashboard host, and must be a known machine.
+  The export has no machine column, so the host is whatever you pick.
+- Rows are keyed by `Billing Item ID` across all machines. Importing the same or an
+  overlapping file again never double counts. A row imported again under a different
+  machine moves to it, and the result reports it as moved.
+- Days follow `USAGE_TIMEZONE`, like the rest of the usage data.
+- Only the billing ID, event time, model, usage type and token counts are stored,
+  under `cursor-usage/` next to `USAGE_DATA_DIR`, one file per UTC month. Email and
+  principal columns are dropped. Uploads are limited to 10 MB and must come from the
+  dashboard's own origin.
+
+After the first import, a Cursor usage source appears in Settings → Sources, where
+you can turn it off like the others.
+
 ## Remote usage
 
 Each remote publisher runs a hot collection for today and yesterday at startup and every

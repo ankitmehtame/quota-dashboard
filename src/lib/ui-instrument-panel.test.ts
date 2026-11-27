@@ -47,7 +47,7 @@ test("dashboard has one period control, no promotional hero, and settings sectio
   assert.doesNotMatch(html, /pacing-key|The fill shows quota used/);
   assert.doesNotMatch(html, /<details/);
   for (const section of ["appearance", "sources", "usage"]) assert.match(html, new RegExp(`data-settings-section="${section}"`));
-  assert.match(html, /<section id="settings-panel-usage"[^>]*>\s*<h3 class="settings-panel-title">Load older usage<\/h3>\s*<div id="usage-cold-settings"/);
+  assert.match(html, /<section id="settings-panel-usage"[^>]*>\s*<h3 class="settings-panel-title">Import Cursor usage<\/h3>\s*<div id="usage-import-settings"[^>]*><\/div>\s*<h3 class="settings-panel-title settings-panel-title-next">Load older usage<\/h3>\s*<div id="usage-cold-settings"/);
 });
 
 test("tooltip and machine-status backgrounds use the shared raised surface", () => {

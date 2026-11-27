@@ -32,6 +32,7 @@ The collection advertises free personal and commercial use without required attr
 | `antigravity.svg` | Google / Antigravity | https://thesvg.org/icon/google-antigravity | https://thesvg.org/icons/google-antigravity/default.svg |
 | `gemini.svg` | Google / Gemini | https://thesvg.org/icon/google-gemini | https://thesvg.org/icons/google-gemini/default.svg |
 | `opencode.svg` | OpenCode | https://thesvg.org/icon/opencode | https://thesvg.org/icons/opencode/default.svg |
+| `cursor.svg` | Anysphere / Cursor | https://thesvg.org/icon/cursor | https://thesvg.org/icons/cursor/default.svg |
 
 ## Modifications and updates
 
