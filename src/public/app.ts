@@ -23,12 +23,12 @@ const state: AppState & { hour12: boolean } = { days: 1, range: "today", modelsR
 const $ = (selector: string): any => document.querySelector(selector);
 const element = (target: EventTarget | null): HTMLElement => target as HTMLElement;
 const escapeHtml = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] || character);
-const usageSourceNames: Record<string, string> = { codex: "Codex", opencode: "OpenCode", hermes: "Hermes", antigravity: "Antigravity", claude: "Claude", shared: "Shared" };
+const usageSourceNames: Record<string, string> = { codex: "Codex", opencode: "OpenCode", hermes: "Hermes", antigravity: "Antigravity", claude: "Claude", cursor: "Cursor", shared: "Shared" };
 let settingsUsageSourceLabels: Record<string, string> = {};
-const usageSourceColors: Record<string, string> = { codex: "mint", opencode: "violet", hermes: "yellow", antigravity: "antigravity", claude: "claude", gemini: "gemini", "gemini-cli": "gemini", openrouter: "teal", ollama: "neutral", grok: "grok", shared: "neutral" };
+const usageSourceColors: Record<string, string> = { codex: "mint", opencode: "violet", hermes: "yellow", antigravity: "antigravity", claude: "claude", gemini: "gemini", "gemini-cli": "gemini", openrouter: "teal", ollama: "neutral", grok: "grok", cursor: "cursor", shared: "neutral" };
 const usageColorPalette = ["mint", "violet", "neutral", "rose", "yellow", "teal"] as const;
 // Mirrors the --<token> custom properties in styles.css so defaults can seed <input type="color">.
-const colorTokenHex: Record<string, string> = { mint: "#a8f2cf", violet: "#c7b8ff", neutral: "#aeb8b2", rose: "#ed9dcc", yellow: "#e6d477", teal: "#66c9bf", claude: "#e8a285", antigravity: "#8ab4f8", gemini: "#9fa8f5", grok: "#dfe3ea" };
+const colorTokenHex: Record<string, string> = { mint: "#a8f2cf", violet: "#c7b8ff", neutral: "#aeb8b2", rose: "#ed9dcc", yellow: "#e6d477", teal: "#66c9bf", claude: "#e8a285", antigravity: "#8ab4f8", gemini: "#9fa8f5", grok: "#dfe3ea", cursor: "#c3e88d" };
 // User color overrides by canonical tool id, previewed live and persisted separately.
 let toolColors: Record<string, string> = {};
 // Quota providers and usage sources of one tool share a canonical id and color.
@@ -58,10 +58,10 @@ function applyToolColors(ids?: Iterable<string>): void {
 }
 // Brand assets from https://selfh.st/icons/ and https://thesvg.org/.
 // Sources, licenses, and modifications are recorded in icons/ATTRIBUTION.md.
-const sourceIcons: Record<string, string> = { claude: "claude", codex: "openai", openrouter: "openrouter", ollama: "ollama", hermes: "hermes", antigravity: "antigravity", gemini: "gemini", "gemini-cli": "gemini", opencode: "opencode", "opencode-go": "opencode", grok: "grok" };
+const sourceIcons: Record<string, string> = { claude: "claude", codex: "openai", openrouter: "openrouter", ollama: "ollama", hermes: "hermes", antigravity: "antigravity", gemini: "gemini", "gemini-cli": "gemini", opencode: "opencode", "opencode-go": "opencode", grok: "grok", cursor: "cursor" };
 let labelIcons: Record<string, string> = {};
 let configuredLabelNames: Record<string, string> = {};
-const builtInIconSources: Record<string, string> = { claude: "selfh.st: claude", openai: "selfh.st: openai-light", openrouter: "selfh.st: openrouter-light", ollama: "selfh.st: ollama", hermes: "theSVG: nousresearch-hermes/default", antigravity: "theSVG: google-antigravity/default", gemini: "theSVG: google-gemini/default", opencode: "theSVG: opencode/default", grok: "selfh.st: grok-light" };
+const builtInIconSources: Record<string, string> = { claude: "selfh.st: claude", openai: "selfh.st: openai-light", openrouter: "selfh.st: openrouter-light", ollama: "selfh.st: ollama", hermes: "theSVG: nousresearch-hermes/default", antigravity: "theSVG: google-antigravity/default", gemini: "theSVG: google-gemini/default", opencode: "theSVG: opencode/default", grok: "selfh.st: grok-light", cursor: "theSVG: cursor/default" };
 let iconRevisions: Record<string, string> = {};
 function hasSourceIcon(id: string): boolean {
   return Object.hasOwn(sourceIcons, id) || Boolean(labelIcons[id] && iconRevisions[`selfhst-${labelIcons[id]}`]);
@@ -1270,6 +1270,74 @@ function validDateInput(value: string): boolean {
   return Boolean(localApiDate(value));
 }
 
+type CursorImportResult = { hostId: string; rows: number; cursorRows: number; added: number; updated: number; moved: number; skipped: number; skippedByProduct: Record<string, number>; invalid: number; from: string | null; to: string | null; unpricedModels: Array<{ model: string; rows: number }> };
+
+function formatFileSize(bytes: number): string {
+  return bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function cursorImportSummary(result: CursorImportResult): string {
+  const range = result.from && result.to ? (result.from === result.to ? ` for ${result.from}` : ` for ${result.from} to ${result.to}`) : "";
+  const stats = [["new", result.added], ["updated", result.updated], ["moved host", result.moved], ["skipped", result.skipped]] as const;
+  const notes = [
+    ...Object.entries(result.skippedByProduct).map(([product, rows]) => `${rows} skipped: ${product}${product === "grok-build" ? " (counted by ccusage)" : ""}`),
+    ...(result.invalid ? [`${result.invalid} Cursor row${result.invalid === 1 ? "" : "s"} could not be read`] : []),
+  ].map((note) => `<li>${escapeHtml(note)}</li>`);
+  const unpriced = result.unpricedModels.map(({ model, rows }) => `<li class="import-warning">${rows} row${rows === 1 ? "" : "s"} unpriced: ${escapeHtml(model)}. Add it to ccusage pricingOverrides.</li>`);
+  return `<div class="import-result-title">✓ Imported ${result.cursorRows} Cursor row${result.cursorRows === 1 ? "" : "s"}${escapeHtml(range)} on ${escapeHtml(result.hostId)}</div><div class="import-stats">${stats.map(([label, value]) => `<div class="import-stat${label === "moved host" && value ? " import-warning" : ""}"><span class="import-stat-value">${value}</span><span class="import-stat-label">${label}</span></div>`).join("")}</div>${notes.length || unpriced.length ? `<ul class="import-notes">${[...notes, ...unpriced].join("")}</ul>` : ""}`;
+}
+
+function renderCursorImportSettings(usage: Usage | undefined): void {
+  const hosts = usage?.hosts || [];
+  const localHost = hosts.find((host) => host.local)?.hostId || "";
+  const options = (localHost ? hosts : [{ hostId: "", local: true } as UsageHost, ...hosts]).map((host) => ({ id: host.hostId, label: host.hostId ? `${host.hostId}${host.local ? " (local)" : ""}` : "Local machine" }));
+  const selected = options.find((option) => option.id === localHost) ?? options[0];
+  const hostOptions = options.map((host) => `<button type="button" role="menuitemradio" tabindex="-1" aria-checked="${host.id === selected.id}" class="${host.id === selected.id ? "active" : ""}" data-import-host="${escapeHtml(host.id)}">${escapeHtml(host.label)}</button>`).join("");
+  $("#usage-import-settings").innerHTML = `<p class="dialog-copy cold-copy">Upload the usage CSV exported from the xAI dashboard. Only Cursor rows are imported. Grok Build rows are skipped because ccusage already counts them. Costs use your ccusage pricingOverrides, and importing the same rows again is safe.</p><form id="cursor-import-form" class="cold-usage-form"><label class="cold-field"><span>File</span><span class="import-drop"><span class="import-drop-icon" aria-hidden="true">⇪</span><span class="import-drop-copy"><span class="import-file-name" id="import-file-name">Choose a CSV file</span><span class="import-file-meta" id="import-file-meta">xAI unified usage export, up to 10 MB</span></span><input id="import-file" type="file" accept=".csv,text/csv" required /></span></label><div class="cold-field"><span id="import-host-label">Machine</span><div class="range-menu cold-host-menu"><button class="range-menu-button" id="import-host-button" type="button" aria-labelledby="import-host-label import-host-button" aria-haspopup="menu" aria-expanded="false" aria-controls="import-host-options">${escapeHtml(selected.label)}</button><div class="range-menu-items" id="import-host-options" role="menu" aria-labelledby="import-host-label">${hostOptions}</div></div><span class="import-hint">Optional. Defaults to this machine. Rows imported before move to the machine you pick.</span></div><button class="text-button cold-submit" type="submit">Import usage</button></form><div id="import-result" class="import-result" role="status" aria-live="polite" hidden></div>`;
+  const settings = $("#usage-import-settings") as HTMLElement;
+  let importHost = selected.id;
+  bindRangeMenus(settings);
+  settings.querySelectorAll<HTMLButtonElement>("[data-import-host]").forEach((item) => item.addEventListener("click", () => {
+    importHost = item.dataset.importHost || "";
+    $("#import-host-button").textContent = item.textContent;
+    settings.querySelectorAll<HTMLButtonElement>("[data-import-host]").forEach((option) => {
+      option.classList.toggle("active", option === item);
+      option.setAttribute("aria-checked", String(option === item));
+    });
+    closeRangeMenus(true);
+  }));
+  const fileInput = $("#import-file") as HTMLInputElement;
+  fileInput.addEventListener("change", () => {
+    const file = fileInput.files?.[0];
+    $("#import-file-name").textContent = file ? file.name : "Choose a CSV file";
+    $("#import-file-meta").textContent = file ? formatFileSize(file.size) : "xAI unified usage export, up to 10 MB";
+  });
+  const form = $("#cursor-import-form") as HTMLFormElement;
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const file = fileInput.files?.[0];
+    if (!file) { showToast("Choose a CSV file"); return; }
+    if (file.size > 10 * 1024 * 1024) { showToast("CSV must be 10 MB or smaller"); return; }
+    const hostId = importHost;
+    const submit = form.querySelector<HTMLButtonElement>(".cold-submit");
+    const output = $("#import-result") as HTMLElement;
+    if (submit) submit.disabled = true;
+    try {
+      const response = await fetch(`/api/v1/usage/import${hostId ? `?hostId=${encodeURIComponent(hostId)}` : ""}`, { method: "POST", headers: { "Content-Type": "text/csv" }, body: file });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "Cursor usage could not be imported");
+      output.innerHTML = cursorImportSummary(result as CursorImportResult);
+      output.hidden = false;
+      showToast("Cursor usage imported");
+      await loadDashboard(true);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : "Cursor usage could not be imported");
+    } finally {
+      if (submit) submit.disabled = false;
+    }
+  });
+}
+
 function renderColdUsageSettings(usage: Usage | undefined): void {
   const end = usage?.to && validDateInput(usage.to) ? usage.to : new Date().toISOString().slice(0, 10);
   const start = shiftDate(end, -6);
@@ -1324,15 +1392,16 @@ async function loadSettings(): Promise<void> {
   const quotaSettings = providerOrder.map((id, index) => { const provider = data.providers[id]; return `<div class="setting-row" data-provider-row="${id}"><div class="setting-copy"><div class="provider-name">${sourceIcon(id)}${provider.name}</div><div class="provider-sub">${provider.description}${provider.configured ? " · configured" : " · credentials not detected"}</div></div><div class="order-actions"><button class="order-button" type="button" data-order-direction="up" data-provider="${id}" aria-label="Move ${provider.name} up" ${index === 0 ? "disabled" : ""}>↑</button><button class="order-button" type="button" data-order-direction="down" data-provider="${id}" aria-label="Move ${provider.name} down" ${index === providerOrder.length - 1 ? "disabled" : ""}>↓</button><input class="switch" type="checkbox" data-kind="provider" data-provider="${id}" ${provider.enabled ? "checked" : ""} aria-label="Enable ${provider.name}" /></div></div>`; }).join("");
   const usageNames = usageSourceName;
   const usageIds = Object.keys(data.usageSources || {}).sort((left, right) => {
-    const knownOrder = ["codex", "opencode", "hermes", "antigravity", "claude", "grok"];
+    const knownOrder = ["codex", "opencode", "hermes", "antigravity", "claude", "grok", "cursor"];
     const leftIndex = knownOrder.indexOf(left);
     const rightIndex = knownOrder.indexOf(right);
     if (leftIndex >= 0 || rightIndex >= 0) return (leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex) - (rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex);
     return left.localeCompare(right);
   });
-  const usageSettings = usageIds.map((id) => `<label class="setting-row"><div class="setting-copy"><div class="provider-name">${sourceIcon(id)}${escapeHtml(usageNames(id))} usage</div><div class="provider-sub">Provider group from shared ccusage output</div></div><input class="switch" type="checkbox" data-kind="usage" data-provider="${escapeHtml(id)}" ${data.usageSources?.[id]?.enabled ? "checked" : ""} aria-label="Enable ${escapeHtml(usageNames(id))} usage" /></label>`).join("");
+  const usageSettings = usageIds.map((id) => `<label class="setting-row"><div class="setting-copy"><div class="provider-name">${sourceIcon(id)}${escapeHtml(usageNames(id))} usage</div><div class="provider-sub">${id === "cursor" ? "Imported from the xAI usage CSV" : "Provider group from shared ccusage output"}</div></div><input class="switch" type="checkbox" data-kind="usage" data-provider="${escapeHtml(id)}" ${data.usageSources?.[id]?.enabled ? "checked" : ""} aria-label="Enable ${escapeHtml(usageNames(id))} usage" /></label>`).join("");
   $("#provider-settings").innerHTML = `<p class="settings-group">Quota providers</p>${quotaSettings}<p class="settings-group">Usage sources</p>${usageSettings}`;
   renderAppearanceSettings(data, usageIds);
+  renderCursorImportSettings(state.dashboard?.usage);
   renderColdUsageSettings(state.dashboard?.usage);
   document.querySelectorAll<HTMLButtonElement>(".order-button").forEach((button) => button.addEventListener("click", async () => { const id = button.dataset.provider || ""; const index = providerOrder.indexOf(id); const nextIndex = index + (button.dataset.orderDirection === "up" ? -1 : 1); if (index < 0 || nextIndex < 0 || nextIndex >= providerOrder.length) return; const nextOrder = [...providerOrder]; [nextOrder[index], nextOrder[nextIndex]] = [nextOrder[nextIndex], nextOrder[index]]; document.querySelectorAll<HTMLButtonElement>(".order-button").forEach((item) => { item.disabled = true; }); try { const save = await fetch("/api/v1/providers/order", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ order: nextOrder }) }); if (!save.ok) throw new Error("Provider order could not be saved"); providerOrder = nextOrder; if (state.dashboard) renderQuotas(state.dashboard); await loadSettings(); showToast("Provider order saved"); } catch (error) { showToast(error instanceof Error ? error.message : "Provider order could not be saved"); await loadSettings(); } }));
   document.querySelectorAll<HTMLInputElement>("#provider-settings .switch").forEach((input) => input.addEventListener("change", async (event) => { const target = event.target as HTMLInputElement; const id = target.dataset.provider || ""; const kind = target.dataset.kind || ""; const path = kind === "usage" ? `/api/v1/usage-sources/${encodeURIComponent(id)}/enabled` : `/api/v1/providers/${encodeURIComponent(id)}/enabled`; await fetch(path, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: target.checked }) }); showToast(`${kind === "usage" ? usageNames(id) + " usage" : data.providers[id].name} ${target.checked ? "enabled" : "disabled"}`); await loadDashboard(true); }));

@@ -18,6 +18,8 @@ import { filterUsageRecords, summarizeUsage } from "./lib/usage.js";
 import { FilesystemUsageStore } from "./lib/usage-store.js";
 import { OpenRouterUsageStore } from "./lib/openrouter-usage-store.js";
 import { OpenRouterUsageCollector } from "./lib/openrouter-usage-collector.js";
+import { CURSOR_SOURCE_ID, UnifiedUsageCsvError, aggregateCursorEvents, eventCost, loadCcusagePricing, localDate, parseUnifiedUsageCsv } from "./lib/cursor-usage.js";
+import { CursorUsageStore } from "./lib/cursor-usage-store.js";
 import { aggregateUsageSeverity, offlineUsageWarning, type UsageSeverity } from "./lib/usage-health.js";
 import { createDailyLogger, formatLocalTimestamp } from "./lib/daily-logger.js";
 import { createHttpRequestLog } from "./lib/http-request-log.js";
@@ -61,6 +63,8 @@ const usageTimezone = validatedTimezone(process.env.USAGE_TIMEZONE?.trim() || In
 const usageDataRoot = resolve(process.env.USAGE_DATA_DIR?.trim() || join(homedir(), ".local", "share", "quota-dashboard", "usage"));
 const usageStore = new FilesystemUsageStore({ dataRoot: usageDataRoot });
 const openRouterUsageCollector = new OpenRouterUsageCollector(new OpenRouterUsageStore(join(dirname(usageDataRoot), "openrouter-usage")));
+const cursorUsageStore = new CursorUsageStore(join(dirname(usageDataRoot), "cursor-usage"));
+const MAX_IMPORT_BYTES = 10 * 1024 * 1024;
 // A cold failure remains visible until all selected keys succeed for that same date.
 const openRouterRefreshErrors: { hot: string | null; cold: Map<string, string> } = { hot: null, cold: new Map() };
 const OPENROUTER_STALE_MS = 10 * 60 * 1000;
@@ -189,6 +193,7 @@ async function loadConfig(): Promise<AppConfig> {
   }
   const toolIds = new Set(await usageStore.listToolIds());
   for (const id of toolIds) config.usageSources[id] ??= { enabled: true };
+  if (await cursorUsageStore.hasEvents()) config.usageSources[CURSOR_SOURCE_ID] ??= { enabled: true };
   const labels = await openRouterUsageLabels();
   const configuredLabels = await configuredOpenRouterLabels();
   for (const id of Object.keys(config.labelIcons)) {
@@ -634,7 +639,14 @@ async function buildUsage(url: URL, config: AppConfig) {
     openRouterRecords = entries.flatMap((entry) => entry.records.map((record) => ({ ...record, provider: openRouterSourceId(entry.label), hostId: localHostId })));
     openRouterUsageError ??= error;
   } catch { openRouterUsageError = "Invalid OpenRouter usage key configuration"; }
-  const storedRecords = [...storedFiles.flatMap((file) => file.records.map((record) => ({ ...record, hostId: file.hostId }))), ...openRouterRecords];
+  let cursorRecords: import("./lib/usage.js").UsageRecord[] = [];
+  let cursorUsageError: string | null = null;
+  if (usageSources.includes(CURSOR_SOURCE_ID)) {
+    try {
+      cursorRecords = aggregateCursorEvents(await cursorUsageStore.read(range.from, range.to), range, usageTimezone, await loadCcusagePricing());
+    } catch { cursorUsageError = "Imported Cursor usage could not be read"; }
+  }
+  const storedRecords = [...storedFiles.flatMap((file) => file.records.map((record) => ({ ...record, hostId: file.hostId }))), ...openRouterRecords, ...cursorRecords];
   const records = filterUsageRecords(usageSources, storedRecords);
   const summary = summarizeUsage(records);
   const hostIds = new Set<string>([localHostId, ...persistedHostIds, ...storedFiles.map((file) => file.hostId), ...Object.keys(remoteState.hosts)]);
@@ -688,14 +700,14 @@ async function buildUsage(url: URL, config: AppConfig) {
       || (!host.local && !["ok", "online"].includes(host.status));
   });
   const hostProblem = problemHosts.length > 0;
-  const severity = aggregateUsageSeverity([...problemHosts.map((host) => host.severity), ...(openRouterUsageError ? ["error" as const] : []), ...(remoteState.configured && remoteState.connection !== "connected" ? ["error" as const] : [])]);
-  const usageStatus = usageSources.length === 0 ? "disabled" : hostProblem || openRouterUsageError ? (records.length ? "partial" : "error") : "ok";
+  const severity = aggregateUsageSeverity([...problemHosts.map((host) => host.severity), ...(openRouterUsageError || cursorUsageError ? ["error" as const] : []), ...(remoteState.configured && remoteState.connection !== "connected" ? ["error" as const] : [])]);
+  const usageStatus = usageSources.length === 0 ? "disabled" : hostProblem || openRouterUsageError || cursorUsageError ? (records.length ? "partial" : "error") : "ok";
   const usageResult = usageSources.length ? {
     status: usageStatus,
     severity,
-    error: [hosts.find((host) => Boolean(host.error))?.error, openRouterUsageError].filter(Boolean).join("; ") || null,
+    error: [hosts.find((host) => Boolean(host.error))?.error, openRouterUsageError, cursorUsageError].filter(Boolean).join("; ") || null,
     source: "filesystem",
-    sources: usageSources.map((provider) => ({ provider, status: usageStatus, severity, error: (provider in sourceLabels ? openRouterUsageError : null) ?? hosts.find((host) => Boolean(host.error))?.error ?? null })),
+    sources: usageSources.map((provider) => ({ provider, status: usageStatus, severity, error: (provider in sourceLabels ? openRouterUsageError : provider === CURSOR_SOURCE_ID ? cursorUsageError : null) ?? hosts.find((host) => Boolean(host.error))?.error ?? null })),
     hosts,
     records,
     ...summary,
@@ -753,6 +765,70 @@ async function body(request: import("node:http").IncomingMessage): Promise<Reque
   return value ? JSON.parse(value) : {};
 }
 
+function sameOrigin(request: import("node:http").IncomingMessage): boolean {
+  let allowedOrigin = true;
+  if (request.headers.origin) {
+    try { allowedOrigin = new URL(request.headers.origin).host === request.headers.host; } catch { allowedOrigin = false; }
+  }
+  return request.headers["sec-fetch-site"] !== "cross-site" && allowedOrigin;
+}
+
+class PayloadTooLargeError extends Error {}
+
+/** Read a raw request body, stopping as soon as it passes the byte limit. */
+async function rawBody(request: import("node:http").IncomingMessage, limit: number): Promise<string> {
+  if (Number(request.headers["content-length"]) > limit) throw new PayloadTooLargeError();
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += (chunk as Buffer).length;
+    if (size > limit) throw new PayloadTooLargeError();
+    chunks.push(chunk as Buffer);
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+async function knownHostIds(): Promise<Set<string>> {
+  return new Set([localHostId, ...await usageStore.listHostIds(), ...Object.keys(remoteUsageStore.getSnapshot().hosts)]);
+}
+
+async function importCursorUsage(request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse, url: URL, httpId: string): Promise<void> {
+  if (!sameOrigin(request)) return json(response, 403, { error: "Forbidden" });
+  const requestedHost = url.searchParams.get("hostId");
+  const hostId = requestedHost || localHostId;
+  if (sanitizeHostId(hostId) !== hostId || !(await knownHostIds()).has(hostId)) return json(response, 400, { error: "hostId must be a known machine" });
+  let text: string;
+  try { text = await rawBody(request, MAX_IMPORT_BYTES); } catch (error) {
+    if (error instanceof PayloadTooLargeError) { response.setHeader("Connection", "close"); return json(response, 413, { error: "CSV must be 10 MB or smaller" }); }
+    throw error;
+  }
+  let parsed: ReturnType<typeof parseUnifiedUsageCsv>;
+  try { parsed = parseUnifiedUsageCsv(text); } catch (error) {
+    if (error instanceof UnifiedUsageCsvError) return json(response, 400, { error: error.message });
+    throw error;
+  }
+  const counts = await cursorUsageStore.upsert(parsed.events, hostId);
+  dashboardCache.clear();
+  const pricing = await loadCcusagePricing();
+  const unpriced = new Map<string, number>();
+  for (const event of parsed.events) if (eventCost(event, pricing) === null) unpriced.set(event.model, (unpriced.get(event.model) ?? 0) + 1);
+  const dates = parsed.events.map((event) => localDate(event.time, usageTimezone)).sort();
+  const skipped = Object.values(parsed.skipped).reduce((total, count) => total + count, 0);
+  dailyLogger.log(`[import] [cursor] httpId=${httpId} host=${hostId} rows=${parsed.rows} cursor=${parsed.events.length} added=${counts.added} updated=${counts.updated} moved=${counts.moved} skipped=${skipped} invalid=${parsed.invalid}`);
+  return json(response, 200, {
+    hostId,
+    rows: parsed.rows,
+    cursorRows: parsed.events.length,
+    ...counts,
+    skipped,
+    skippedByProduct: parsed.skipped,
+    invalid: parsed.invalid,
+    from: dates[0] ?? null,
+    to: dates.at(-1) ?? null,
+    unpricedModels: [...unpriced].map(([model, rows]) => ({ model, rows })).sort((a, b) => b.rows - a.rows || a.model.localeCompare(b.model)),
+  });
+}
+
 function publishRemoteRefresh(category: "hot" | "cold", from: string, to: string, mode: "online" | "offline", requestId: string = randomUUID(), httpId?: string): void {
   for (const hostId of Object.keys(remoteUsageStore.getSnapshot().hosts)) {
     if (hostId === localHostId) continue;
@@ -765,11 +841,7 @@ function publishRemoteRefresh(category: "hot" | "cold", from: string, to: string
 
 async function handleApi(request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse, url: URL, httpId: string): Promise<void> {
   if (request.method === "POST" && url.pathname === "/api/v1/icons/refresh") {
-    let allowedOrigin = true;
-    if (request.headers.origin) {
-      try { allowedOrigin = new URL(request.headers.origin).host === request.headers.host; } catch { allowedOrigin = false; }
-    }
-    if (request.headers["sec-fetch-site"] === "cross-site" || !allowedOrigin) return json(response, 403, { error: "Forbidden" });
+    if (!sameOrigin(request)) return json(response, 403, { error: "Forbidden" });
     await syncIconAssignments();
     // Snapshot before starting the refresh: background changes appear on a later opening.
     const icons = await iconCache.manifest();
@@ -802,9 +874,7 @@ async function handleApi(request: import("node:http").IncomingMessage, response:
     }
   }
   if (request.method === "POST" && url.pathname === "/api/v1/appearance/icons/preview") {
-    let allowedOrigin = true;
-    if (request.headers.origin) { try { allowedOrigin = new URL(request.headers.origin).host === request.headers.host; } catch { allowedOrigin = false; } }
-    if (request.headers["sec-fetch-site"] === "cross-site" || !allowedOrigin) return json(response, 403, { error: "Forbidden" });
+    if (!sameOrigin(request)) return json(response, 403, { error: "Forbidden" });
     const input = await body(request);
     if (!isIconSlug(input.slug)) return json(response, 400, { error: "Use a selfh.st slug with lowercase letters, numbers and hyphens" });
     const icon = await iconCache.preview(input.slug);
@@ -862,6 +932,7 @@ async function handleApi(request: import("node:http").IncomingMessage, response:
     if (!hostId) publishRemoteRefresh("cold", from, to, mode, requestId, httpId);
     return json(response, 202, { accepted: true, requestId, ...(localAccepted === undefined ? {} : { localAccepted }), category: "cold", from, to, mode, hostId: target });
   }
+  if (request.method === "POST" && url.pathname === "/api/v1/usage/import") return importCursorUsage(request, response, url, httpId);
   if (request.method === "GET" && url.pathname === "/api/v1/quotas") {
     const enabled = config.providerOrder.filter((id) => config.providers[id].enabled);
     const entries = await Promise.all(enabled.map(async (id) => [id, await getQuota(id, url.searchParams.get("refresh") === "1")]));

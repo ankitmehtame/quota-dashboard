@@ -117,7 +117,7 @@ test("settings list dynamic sources, honor saved toggles, and escape labels and 
   const elements = new Map<string, { innerHTML: string }>();
   await runInNewContext(`${escape}\n${presentation}\n${settings}\nloadSettings();`, {
     fetch: async () => ({ json: async () => ({ providerOrder: [], providers: {}, usageSources: { "new-tool": { enabled: true }, "another-agent": { enabled: false }, 'odd-"<tool>': { enabled: true } } }) }),
-    state: { hour12: false }, fetchLabelIcons() {}, renderColdUsageSettings() {}, renderAppearanceSettings() {},
+    state: { hour12: false }, fetchLabelIcons() {}, renderCursorImportSettings() {}, renderColdUsageSettings() {}, renderAppearanceSettings() {},
     document: { querySelectorAll: () => [] },
     $: (selector: string) => {
       if (!elements.has(selector)) elements.set(selector, { innerHTML: "" });
@@ -139,7 +139,7 @@ test("settings show icons in both provider sections without changing controls", 
   const usageSources = Object.fromEntries(["codex", "opencode", "hermes", "antigravity", "custom-agent"].map((id) => [id, { enabled: true }]));
   await runInNewContext(`${escape}\n${presentation}\n${settings}\nloadSettings();`, {
     fetch: async () => ({ json: async () => ({ providerOrder, providers: Object.fromEntries(providerOrder.map((id) => [id, { name: id, description: "Example", enabled: true }])), usageSources }) }),
-    state: { hour12: false }, fetchLabelIcons() {}, renderColdUsageSettings() {}, renderAppearanceSettings() {}, document: { querySelectorAll: () => [] },
+    state: { hour12: false }, fetchLabelIcons() {}, renderCursorImportSettings() {}, renderColdUsageSettings() {}, renderAppearanceSettings() {}, document: { querySelectorAll: () => [] },
     $: (selector: string) => { if (!elements.has(selector)) elements.set(selector, { innerHTML: "" }); return elements.get(selector); },
   });
   const html = elements.get("#provider-settings")!.innerHTML;
@@ -307,7 +307,7 @@ test("settings list the Grok usage source with the other known tools, before unk
   const usageSources = Object.fromEntries(["custom-agent", "grok", "aaa-agent", "claude", "codex"].map((id) => [id, { enabled: true }]));
   await runInNewContext(`${escape}\n${presentation}\n${settings}\nloadSettings();`, {
     fetch: async () => ({ json: async () => ({ providerOrder, providers: Object.fromEntries(providerOrder.map((id) => [id, { name: id, description: "Example", enabled: true }])), usageSources }) }),
-    state: { hour12: false }, fetchLabelIcons() {}, renderColdUsageSettings() {}, renderAppearanceSettings() {}, document: { querySelectorAll: () => [] },
+    state: { hour12: false }, fetchLabelIcons() {}, renderCursorImportSettings() {}, renderColdUsageSettings() {}, renderAppearanceSettings() {}, document: { querySelectorAll: () => [] },
     $: (selector: string) => { if (!elements.has(selector)) elements.set(selector, { innerHTML: "" }); return elements.get(selector); },
   });
   const usage = elements.get("#provider-settings")!.innerHTML.split("Usage sources</p>")[1];
