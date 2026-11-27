@@ -37,10 +37,11 @@ test("Cursor import defaults to the local machine, posts the CSV to the chosen m
   };
   const requests: Array<{ url: string; body: unknown; contentType: string }> = [];
   let reloaded = 0;
+  let settingsReloaded = 0;
   const response = { hostId, rows: 3, cursorRows: 2, added: 2, updated: 0, moved: 1, skipped: 1, skippedByProduct: { "grok-build": 1 }, invalid: 0, from: "2026-11-27", to: "2026-11-27", unpricedModels: [{ model: "<model>", rows: 1 }] };
   runInNewContext(`${escape}\n${renderer}\nrenderCursorImportSettings(usage);`, {
     usage: { hosts: [{ hostId: "controller", local: true }, { hostId }] },
-    bindRangeMenus() {}, closeRangeMenus() {}, showToast() {}, loadDashboard: async () => { reloaded++; },
+    bindRangeMenus() {}, closeRangeMenus() {}, showToast() {}, loadDashboard: async () => { reloaded++; }, loadSettings: async () => { settingsReloaded++; result.innerHTML = ""; result.hidden = true; },
     fetch: async (url: string, options: { body: unknown; headers: Record<string, string> }) => {
       requests.push({ url, body: options.body, contentType: options.headers["Content-Type"] });
       return { ok: true, json: async () => response };
@@ -61,6 +62,8 @@ test("Cursor import defaults to the local machine, posts the CSV to the chosen m
   assert.equal(requests[1].url, `/api/v1/usage/import?hostId=${encodeURIComponent(hostId)}`);
   assert.equal(result.hidden, false);
   assert.equal(reloaded, 2);
+  // Settings reload after each import so the new Cursor source toggle appears; the summary survives the redraw.
+  assert.equal(settingsReloaded, 2);
   assert.match(result.innerHTML, /Imported 2 Cursor rows for 2026-11-27 on odd-&quot;&lt;host&gt;/);
   assert.match(result.innerHTML, /1 skipped: grok-build \(counted by ccusage\)/);
   assert.match(result.innerHTML, /import-stat import-warning"><span class="import-stat-value">1<\/span><span class="import-stat-label">moved host/);

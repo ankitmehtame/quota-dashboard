@@ -23,6 +23,9 @@ test("keys events by billing ID across hosts and reports new, updated and moved 
     assert.deepEqual(events.map((item) => [item.id, item.hostId, item.inputTokens]), [["a", "host-1", 5], ["c", "host-2", 1], ["b", "host-2", 1]]);
     assert.equal(await store.hasEvents(), true);
     assert.deepEqual([...await store.hostIds()].sort(), ["host-1", "host-2"]);
+    // The host list is cached per revision and refreshed by the next import.
+    await store.upsert([event("d", "2026-11-27T12:00:00.000Z")], "host-3");
+    assert.deepEqual([...await store.hostIds()].sort(), ["host-1", "host-2", "host-3"]);
     assert.equal((await stat(join(root, "cursor-usage"))).mode & 0o777, 0o700);
     assert.equal((await stat(join(root, "cursor-usage", "2026-11.json"))).mode & 0o777, 0o600);
   } finally { await rm(root, { recursive: true, force: true }); }

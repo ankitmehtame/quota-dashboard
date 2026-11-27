@@ -66,17 +66,22 @@ const openRouterUsageCollector = new OpenRouterUsageCollector(new OpenRouterUsag
 const cursorUsageStore = new CursorUsageStore(join(dirname(usageDataRoot), "cursor-usage"));
 const MAX_IMPORT_BYTES = 10 * 1024 * 1024;
 const CURSOR_PRICE_TTL_MS = 10 * 60 * 1000;
-const cursorPriceCache = new Map<string, { revision: number; expiresAt: number; prices: CcusagePrices }>();
+const cursorPriceCache = new Map<string, { expiresAt: number; prices: Promise<CcusagePrices> }>();
 
-/** ccusage prices for imported Cursor events, reused until the next import or for ten minutes. */
-async function cursorPrices(events: HostCursorEvent[], range: { from: string; to: string }): Promise<CcusagePrices> {
-  const key = `${range.from}:${range.to}`;
+/**
+ * ccusage prices for imported Cursor events, keyed by range and by the store revision the events
+ * were read at, so prices of older data are never filed under a newer revision. Concurrent
+ * requests share one ccusage run. Results are reused for ten minutes; failures are not kept.
+ */
+function cursorPrices(events: HostCursorEvent[], range: { from: string; to: string }, revision: number): Promise<CcusagePrices> {
+  const key = `${revision}:${range.from}:${range.to}`;
   const cached = cursorPriceCache.get(key);
-  if (cached && cached.revision === cursorUsageStore.revision && Date.now() < cached.expiresAt) return cached.prices;
-  const revision = cursorUsageStore.revision;
-  const prices = await priceWithCcusage(events, { binary: localCcusageBinary, timeZone: usageTimezone, timeoutMs: localHotTimeoutMs, maxBuffer: localCcusageMaxBuffer });
+  if (cached && Date.now() < cached.expiresAt) return cached.prices;
+  for (const [entryKey, entry] of cursorPriceCache) if (Date.now() >= entry.expiresAt || !entryKey.startsWith(`${cursorUsageStore.revision}:`)) cursorPriceCache.delete(entryKey);
   if (cursorPriceCache.size >= 20) cursorPriceCache.clear();
-  cursorPriceCache.set(key, { revision, expiresAt: Date.now() + CURSOR_PRICE_TTL_MS, prices });
+  const prices = priceWithCcusage(events, { binary: localCcusageBinary, timeZone: usageTimezone, timeoutMs: localHotTimeoutMs, maxBuffer: localCcusageMaxBuffer });
+  cursorPriceCache.set(key, { expiresAt: Date.now() + CURSOR_PRICE_TTL_MS, prices });
+  prices.catch(() => { if (cursorPriceCache.get(key)?.prices === prices) cursorPriceCache.delete(key); });
   return prices;
 }
 // A cold failure remains visible until all selected keys succeed for that same date.
@@ -655,23 +660,36 @@ async function buildUsage(url: URL, config: AppConfig) {
   } catch { openRouterUsageError = "Invalid OpenRouter usage key configuration"; }
   let cursorRecords: import("./lib/usage.js").UsageRecord[] = [];
   let cursorUsageError: string | null = null;
+  let cursorHostIds = new Set<string>();
   if (usageSources.includes(CURSOR_SOURCE_ID)) {
     try {
+      // Read the revision before the events, so their prices are filed under the data they came from.
+      const cursorRevision = cursorUsageStore.revision;
+      cursorHostIds = await cursorUsageStore.hostIds();
       const events = (await cursorUsageStore.read(range.from, range.to)).filter((event) => { const date = localDate(event.time, usageTimezone); return date >= range.from && date <= range.to; });
       cursorRecords = aggregateCursorEvents(events, range, usageTimezone);
-      try { cursorRecords = applyCcusagePrices(cursorRecords, await cursorPrices(events, range)); }
+      try { cursorRecords = applyCcusagePrices(cursorRecords, await cursorPrices(events, range, cursorRevision)); }
       catch (error) { cursorUsageError = `Cursor costs unavailable: ${ccusageErrorMessage(error, localCcusageBinary)}`; dailyLogger.log(`[import] [cursor] pricing failure error=${safeCcusageLogSummary(error)}`); }
     } catch { cursorUsageError = "Imported Cursor usage could not be read"; }
   }
   const storedRecords = [...storedFiles.flatMap((file) => file.records.map((record) => ({ ...record, hostId: file.hostId }))), ...openRouterRecords, ...cursorRecords];
   const records = filterUsageRecords(usageSources, storedRecords);
   const summary = summarizeUsage(records);
-  const hostIds = new Set<string>([localHostId, ...persistedHostIds, ...storedFiles.map((file) => file.hostId), ...Object.keys(remoteState.hosts), ...cursorRecords.map((record) => record.hostId!)]);
+  const hostIds = new Set<string>([localHostId, ...persistedHostIds, ...storedFiles.map((file) => file.hostId), ...Object.keys(remoteState.hosts)]);
+  // Machines whose only usage is imported Cursor rows: listed for every range, so the import menu keeps them,
+  // and healthy, since there is no collector whose freshness or coverage could be judged.
+  const importOnlyHostIds = new Set([...cursorHostIds, ...cursorRecords.map((record) => record.hostId!)].filter((hostId) => !hostIds.has(hostId)));
+  for (const hostId of importOnlyHostIds) hostIds.add(hostId);
   const activeHostIds = new Set<string>([localHostId, ...Object.keys(remoteState.hosts)]);
   const storageErrorsByHost = new Map<string, string | null>();
   const storedDatesByHost = new Map<string, Set<string>>();
-  if (usageSources.length) await Promise.all([...hostIds].map(async (hostId) => storedDatesByHost.set(hostId, await usageStore.readStoredDates(hostId, range.from, range.to))));
+  if (usageSources.length) await Promise.all([...hostIds].filter((hostId) => !importOnlyHostIds.has(hostId)).map(async (hostId) => storedDatesByHost.set(hostId, await usageStore.readStoredDates(hostId, range.from, range.to))));
   const hosts = [...hostIds].map((hostId) => {
+    if (importOnlyHostIds.has(hostId)) {
+      storageErrorsByHost.set(hostId, null);
+      return { hostId, generatedAt: null, timezone: usageTimezone, category: null, range: { from: range.from, to: range.to }, status: "ok", severity: null as UsageSeverity, error: null,
+        active: false, stale: false, local: false, included: true, complete: true, missingDates: [] as string[], usable: true, disabledReason: null };
+    }
     const state = remoteState.hosts[hostId];
     const latest = latestByHost.get(hostId) || null;
     const generatedAt = latest?.generatedAt ?? state?.usage?.generatedAt ?? null;
@@ -755,6 +773,8 @@ async function dashboard(url: URL, config: AppConfig) {
   const forceRefresh = url.searchParams.get("refresh") === "1";
   const cached = dashboardCache.get(cacheKey);
   if (!forceRefresh && cached && Date.now() < cached.expiresAt) return { ...cached.value, quotas: liveQuotaCredits(cached.value.quotas), serverNow: new Date().toISOString(), cache: { fetchedAt: cached.fetchedAt, expiresAt: new Date(cached.expiresAt).toISOString() } };
+  // An import during this build clears the cache; do not put the pre-import result back.
+  const cursorRevision = cursorUsageStore.revision;
   const { usage } = await buildUsage(url, config);
   const enabled = config.providerOrder.filter((id) => config.providers[id].enabled);
   const quotaEntries = await Promise.all(enabled.map(async (id) => [id, await getQuota(id, forceRefresh)] as const));
@@ -764,7 +784,7 @@ async function dashboard(url: URL, config: AppConfig) {
   const value = { version: buildInfo.version, apiVersion: 1, serverNow: new Date().toISOString(), timezone: range.timeZone, providerOrder: config.providerOrder, providers: statuses, quotas, usage };
   // Do not extend a quota TTL or a cooldown by putting it into an aggregate cache.
   const expiresAt = Math.min(Date.now() + 300_000, ...enabled.map((id) => quotaCache.expiresAt(id)));
-  if (revision === quotaRevision && quotaEntries.every(([id, quota]) => quotaCache.isCurrent(id, quota))) {
+  if (revision === quotaRevision && cursorRevision === cursorUsageStore.revision && quotaEntries.every(([id, quota]) => quotaCache.isCurrent(id, quota))) {
     dashboardCache.set(cacheKey, { expiresAt, fetchedAt: value.serverNow, value });
   }
   return { ...value, quotas: liveQuotaCredits(quotas), cache: { fetchedAt: value.serverNow, expiresAt: new Date(expiresAt).toISOString() } };

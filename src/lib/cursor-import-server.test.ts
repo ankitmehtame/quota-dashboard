@@ -168,11 +168,22 @@ test("imports Cursor rows from an xAI usage CSV, prices them with ccusage and me
     const controller = after.hosts.find((host: { hostId: string }) => host.hostId === "controller");
     assert.ok(controller, JSON.stringify(after.hosts));
     assert.equal(controller.usable, true);
+    // It has no collector, so it is not reported as stale, incomplete or failing.
+    assert.deepEqual([controller.severity, controller.stale, controller.complete, controller.status, controller.error], [null, false, true, "ok", null]);
     assert.ok(after.records.some((record: { provider: string; hostId: string; missingPricing: boolean }) => record.provider === "cursor" && record.hostId === "controller" && record.missingPricing));
     assert.match(after.error, /Cursor costs unavailable/);
     const imported: any = await (await other.upload(csv, "?hostId=controller")).json();
     assert.equal(imported.updated, 2);
     assert.match(imported.pricingError, /missing-ccusage was not found|not found/);
+
+    // Today's rows move to this machine and the Cursor-only machine keeps only an old row:
+    // it stays listed for the Today view, so the import menu still offers it.
+    const old = new Date(Date.now() - 40 * 86_400_000).toISOString();
+    assert.equal((await other.upload([HEADER, row("bill-old", old, "cursor", "grok-4.7-medium", usage(5, 0, 1))].join("\n"), "?hostId=controller")).status, 200);
+    assert.equal((await other.upload(csv, "?hostId=other-controller")).status, 200);
+    const today2 = await other.usage();
+    assert.ok(!today2.records.some((record: { hostId: string }) => record.hostId === "controller"));
+    assert.ok(today2.hosts.some((host: { hostId: string; severity: unknown }) => host.hostId === "controller" && host.severity === null), JSON.stringify(today2.hosts));
   } finally {
     await Promise.all(children.map(stop));
     await rm(root, { recursive: true, force: true });

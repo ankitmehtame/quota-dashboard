@@ -1322,16 +1322,19 @@ function renderCursorImportSettings(usage: Usage | undefined): void {
     if (file.size > 10 * 1024 * 1024) { showToast("CSV must be 10 MB or smaller"); return; }
     const hostId = importHost;
     const submit = form.querySelector<HTMLButtonElement>(".cold-submit");
-    const output = $("#import-result") as HTMLElement;
     if (submit) submit.disabled = true;
     try {
       const response = await fetch(`/api/v1/usage/import${hostId ? `?hostId=${encodeURIComponent(hostId)}` : ""}`, { method: "POST", headers: { "Content-Type": "text/csv" }, body: file });
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.error || "Cursor usage could not be imported");
-      output.innerHTML = cursorImportSummary(result as CursorImportResult);
-      output.hidden = false;
+      const summary = cursorImportSummary(result as CursorImportResult);
       showToast("Cursor usage imported");
       await loadDashboard(true);
+      // The first import adds the Cursor source toggle; reloading settings redraws this form, so show the summary after.
+      await loadSettings();
+      const output = $("#import-result") as HTMLElement;
+      output.innerHTML = summary;
+      output.hidden = false;
     } catch (error) {
       showToast(error instanceof Error ? error.message : "Cursor usage could not be imported");
     } finally {
