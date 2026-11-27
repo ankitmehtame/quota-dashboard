@@ -32,6 +32,8 @@ function shiftDay(date: string, delta: number): string {
  */
 export class CursorUsageStore {
   private queue: Promise<unknown> = Promise.resolve();
+  /** Increases after every completed import, so derived results can be cached. */
+  revision = 0;
 
   constructor(private readonly root: string) {}
 
@@ -71,11 +73,31 @@ export class CursorUsageStore {
     const run = this.queue.catch(() => undefined).then(async () => {
       const counts: CursorImportCounts = { added: 0, updated: 0, moved: 0 };
       const byMonth = new Map<string, CursorUsageEvent[]>();
-      for (const event of events) byMonth.set(monthOf(event.time), [...(byMonth.get(monthOf(event.time)) ?? []), event]);
+      for (const event of events) {
+        const month = monthOf(event.time);
+        // Check every month before writing any file, so a bad event cannot leave a partial import.
+        if (!MONTH.test(month)) throw new Error("Invalid Cursor usage month");
+        const bucket = byMonth.get(month);
+        if (bucket) bucket.push(event);
+        else byMonth.set(month, [event]);
+      }
+      const incomingIds = new Map(events.map((event) => [event.id, monthOf(event.time)]));
+      // A billing ID whose time moved to another month must not stay behind in its old file.
+      const previousElsewhere = new Map<string, StoredCursorEvent>();
+      for (const month of await this.months()) {
+        if (byMonth.has(month)) continue;
+        const stored = await this.readShard(month);
+        const kept = stored.filter((event) => {
+          if (!incomingIds.has(event.id)) return true;
+          previousElsewhere.set(event.id, event);
+          return false;
+        });
+        if (kept.length !== stored.length) await this.writeShard(month, kept);
+      }
       for (const [month, incoming] of byMonth) {
         const existing = new Map((await this.readShard(month)).map((event) => [event.id, event]));
         for (const event of incoming) {
-          const previous = existing.get(event.id);
+          const previous = existing.get(event.id) ?? previousElsewhere.get(event.id);
           if (!previous) counts.added++;
           else if (previous.hostId !== hostId) counts.moved++;
           else counts.updated++;
@@ -83,6 +105,7 @@ export class CursorUsageStore {
         }
         await this.writeShard(month, [...existing.values()]);
       }
+      this.revision++;
       return counts;
     });
     this.queue = run;
@@ -98,8 +121,19 @@ export class CursorUsageStore {
     return (await Promise.all(months.map((month) => this.readShard(month)))).flat();
   }
 
+  private async months(): Promise<string[]> {
+    try { return (await readdir(this.root)).filter((name) => /^\d{4}-\d{2}\.json$/.test(name)).map((name) => name.slice(0, 7)).sort(); }
+    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
+  }
+
+  /** Every host that owns at least one imported event. */
+  async hostIds(): Promise<Set<string>> {
+    const hosts = new Set<string>();
+    for (const month of await this.months()) for (const event of await this.readShard(month)) hosts.add(event.hostId);
+    return hosts;
+  }
+
   async hasEvents(): Promise<boolean> {
-    try { return (await readdir(this.root)).some((name) => /^\d{4}-\d{2}\.json$/.test(name)); }
-    catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
+    return (await this.months()).length > 0;
   }
 }

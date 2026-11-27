@@ -22,6 +22,7 @@ test("keys events by billing ID across hosts and reports new, updated and moved 
     const events = await store.read("2026-11-27", "2026-11-27");
     assert.deepEqual(events.map((item) => [item.id, item.hostId, item.inputTokens]), [["a", "host-1", 5], ["c", "host-2", 1], ["b", "host-2", 1]]);
     assert.equal(await store.hasEvents(), true);
+    assert.deepEqual([...await store.hostIds()].sort(), ["host-1", "host-2"]);
     assert.equal((await stat(join(root, "cursor-usage"))).mode & 0o777, 0o700);
     assert.equal((await stat(join(root, "cursor-usage", "2026-11.json"))).mode & 0o777, 0o600);
   } finally { await rm(root, { recursive: true, force: true }); }
@@ -43,3 +44,35 @@ test("serializes concurrent uploads, shards by UTC month and pads reads for time
     assert.doesNotMatch(await readFile(join(root, "data", "2026-11.json"), "utf8"), /email|principal/i);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
+
+test("moves a billing ID between month files, rejects bad months before writing and counts revisions", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cursor-store-"));
+  try {
+    const store = new CursorUsageStore(join(root, "data"));
+    assert.equal(store.revision, 0);
+    await store.upsert([event("edge", "2026-11-30T23:59:00.000Z"), event("stay", "2026-11-15T00:00:00.000Z")], "host-1");
+    assert.equal(store.revision, 1);
+    // The same billing ID reappears in December: it leaves November instead of counting twice.
+    assert.deepEqual(await store.upsert([event("edge", "2026-12-01T00:01:00.000Z")], "host-2"), { added: 0, updated: 0, moved: 1 });
+    const all = await store.read("2026-11-01", "2026-12-31");
+    assert.deepEqual(all.map((item) => [item.id, item.hostId, item.time]), [["stay", "host-1", "2026-11-15T00:00:00.000Z"], ["edge", "host-2", "2026-12-01T00:01:00.000Z"]]);
+    const before = (await readdir(join(root, "data"))).sort();
+    await assert.rejects(store.upsert([event("good", "2027-01-02T00:00:00.000Z"), event("bad", "+010000-01-01T00:00:00.000Z")], "host-1"), /Invalid Cursor usage month/);
+    assert.deepEqual((await readdir(join(root, "data"))).sort(), before);
+    assert.equal(store.revision, 2);
+    // A failed import does not block the next one.
+    assert.deepEqual(await store.upsert([event("good", "2027-01-02T00:00:00.000Z")], "host-1"), { added: 1, updated: 0, moved: 0 });
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("groups a large single-month import in linear time", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cursor-store-"));
+  try {
+    const store = new CursorUsageStore(join(root, "data"));
+    const events = Array.from({ length: 40_000 }, (_, index) => event(`row-${index}`, `2026-11-${String(1 + (index % 28)).padStart(2, "0")}T10:00:00.000Z`));
+    const started = Date.now();
+    assert.deepEqual(await store.upsert(events, "host-1"), { added: 40_000, updated: 0, moved: 0 });
+    assert.ok(Date.now() - started < 5000, `took ${Date.now() - started} ms`);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
