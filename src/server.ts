@@ -10,7 +10,7 @@ import { type AppConfig, type ProviderId, DEFAULT_CONFIG, PROVIDER_IDS, isToolCo
 import { isUsageSourceId } from "./lib/usage-source-id.js";
 import type { ProviderResult } from "./lib/core.js";
 import { processColdDays } from "./lib/cold-range.js";
-import { fetchClaude, resolveClaudeCredentials, isProviderConfigured, PROVIDER_FETCHERS } from "./lib/providers.js";
+import { fetchClaude, resolveClaudeCredentials, fetchGrok, resolveGrokCredentials, isProviderConfigured, PROVIDER_FETCHERS } from "./lib/providers.js";
 import { createQuotaCache } from "./lib/quota-cache.js";
 import { createIconCache, isIconId, isIconSlug } from "./lib/provider-icons.js";
 import { resolveOpenRouterKeys, resolveOpenRouterUsageSelection } from "./lib/openrouter.js";
@@ -90,6 +90,10 @@ const quotaCache = createQuotaCache({
     if (id === "claude") {
       const credentials = await resolveClaudeCredentials();
       return { configured: credentials.configured, identity: credentials.identity, fetch: () => fetchClaude(credentials) };
+    }
+    if (id === "grok") {
+      const credentials = await resolveGrokCredentials();
+      return { configured: credentials.configured, identity: credentials.identity, fetch: () => fetchGrok(credentials) };
     }
     return { configured: await isProviderConfigured(id), fetch: PROVIDER_FETCHERS[id] };
   },
@@ -252,10 +256,11 @@ async function getQuota(id: ProviderId, force = false): Promise<ProviderResult> 
 }
 
 async function configuredStatus(id: ProviderId, enabled: boolean): Promise<boolean> {
-  if (id !== "claude") return isProviderConfigured(id);
+  if (id !== "claude" && id !== "grok") return isProviderConfigured(id);
   if (!enabled) return false;
-  const credentials = await resolveClaudeCredentials();
-  const failure = credentials.error ? await fetchClaude(credentials) : undefined;
+  const credentials = id === "claude" ? await resolveClaudeCredentials() : await resolveGrokCredentials();
+  // A credential error fails locally without contacting the provider.
+  const failure = credentials.error ? id === "claude" ? await fetchClaude(credentials) : await fetchGrok(credentials) : undefined;
   quotaCache.observe(id, credentials.identity, failure);
   return Boolean(credentials.accessToken);
 }

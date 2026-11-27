@@ -5,22 +5,24 @@ import { normalizeConfig, normalizeProviderOrder } from "./core.js";
 import { isUsageSourceId } from "./usage-source-id.js";
 
 test("normalizes provider order and appends missing providers", () => {
-  assert.deepEqual(normalizeProviderOrder(["ollama", "ollama", "unknown", "codex"]), ["ollama", "codex", "openrouter", "opencode-go", "claude"]);
+  assert.deepEqual(normalizeProviderOrder(["ollama", "ollama", "unknown", "codex"]), ["ollama", "codex", "openrouter", "opencode-go", "claude", "grok"]);
 });
 
 test("uses the default provider order when no order is stored", () => {
-  assert.deepEqual(normalizeConfig({}).providerOrder, ["codex", "openrouter", "opencode-go", "ollama", "claude"]);
+  assert.deepEqual(normalizeConfig({}).providerOrder, ["codex", "openrouter", "opencode-go", "ollama", "claude", "grok"]);
 });
 
-test("Claude quota is opt-in and migration preserves existing settings and order", () => {
+test("Claude and Grok quotas are opt-in and migration preserves existing settings and order", () => {
   const config = normalizeConfig({ providers: { codex: { enabled: false }, ollama: { enabled: false } },
     providerOrder: ["ollama", "opencode-go", "openrouter", "codex"], usageSources: { codex: { enabled: false } } });
   assert.equal(config.providers.claude.enabled, false);
+  assert.equal(config.providers.grok.enabled, false);
   assert.equal(config.providers.codex.enabled, false);
   assert.equal(config.providers.ollama.enabled, false);
-  assert.deepEqual(config.providerOrder, ["ollama", "opencode-go", "openrouter", "codex", "claude"]);
+  assert.deepEqual(config.providerOrder, ["ollama", "opencode-go", "openrouter", "codex", "claude", "grok"]);
   assert.equal(config.usageSources.codex.enabled, false);
   assert.equal(normalizeConfig({ providers: { claude: { enabled: true } } }).providers.claude.enabled, true);
+  assert.equal(normalizeConfig({ providers: { grok: { enabled: true } } }).providers.grok.enabled, true);
 });
 
 test("enables new usage sources when normalizing an existing config", () => {

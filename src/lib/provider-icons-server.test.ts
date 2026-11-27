@@ -92,8 +92,8 @@ globalThis.fetch = async (url, init) => {
     assert.notEqual(refreshed.headers.get("etag"), etag);
     await Promise.all(Array.from({ length: 5 }, () => request("/api/v1/icons/refresh", { method: "POST" })));
     const calls = (await readFile(callsPath, "utf8")).trim().split("\n");
-    assert.equal(calls.length, 8);
-    assert.equal(new Set(calls).size, 8);
+    assert.equal(calls.length, 9);
+    assert.equal(new Set(calls).size, 9);
     assert.ok(calls.includes("https://thesvg.org/icons/google-gemini/default.svg"));
   } finally {
     if (child.exitCode === null && child.signalCode === null) {

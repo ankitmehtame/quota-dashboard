@@ -19,6 +19,7 @@ const providers = Object.fromEntries([
   ['openrouter', 'OpenRouter', 'OpenRouter', 'teal', 'Key credit usage in USD'],
   ['opencode-go', 'OpenCode Go', 'OpenCode Go', 'violet', 'Coding subscription'],
   ['ollama', 'Ollama Cloud', 'Ollama', 'blue', 'Cloud credits'],
+  ['grok', 'Grok (X Subscription)', 'Grok', 'grok', 'Weekly usage pool shared by Grok and Cursor'],
 ].map(([id, name, shortName, accent, description]) => [id, { id, name, shortName, accent, description, enabled: true, configured: true, status: 'connected' }]));
 let providerOrder = Object.keys(providers);
 const toolColors = {};
@@ -30,6 +31,7 @@ const quotas = {
   openrouter: { openrouterKeys: [{ id: 'default', label: 'Default', configured: true, status: 'ok', error: null, fetchedAt: now(), accountBalanceUsd: 15.16, windows: [{ name: 'total', usedPercent: null, usedValue: 9.84, limitValue: null, unit: 'USD', valueLabel: '$9.84 spent' }], byokWindows: [{ name: 'total', valueLabel: '$7.41 spent' }] }] },
   'opencode-go': { windows: [window('weekly', 83, 30, 138), window('monthly', 56, 240, 480)] },
   ollama: { windows: [{ ...window('monthly', 36, 240, 480), valueLabel: '$7.20 used', limitValue: 20, unit: 'USD' }], creditBalance: { includedUsd: 12.8, purchasedUsd: 5 } },
+  grok: { windows: [{ ...window('Weekly', 38, 102, 66), valueLabel: 'Cursor 26% · Grok Build 12%' }] },
 };
 const models = [['codex', 'gpt-5.4'], ['opencode', 'claude-sonnet-4-6'], ['hermes', 'gemini-3.1-pro']];
 
