@@ -1,5 +1,6 @@
-import { readFile } from "node:fs/promises";
-import { homedir } from "node:os";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { UsageRecord } from "./usage.js";
 
@@ -10,6 +11,7 @@ const IMPORTED_PRODUCT = "cursor";
 const REQUIRED_COLUMNS = ["Billing Item ID", "Event Time", "Product", "Usage Type", "Usage", "Pricing Currency", "Pricing Contracted", "Model"] as const;
 const MAX_SKIPPED_PRODUCT_KEYS = 20;
 const BILLING_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const ISO_YEAR = /^\d{4}-/;
 
 /** One Cursor billing event. Personal columns (email, principal) are never kept. */
 export type CursorUsageEvent = {
@@ -97,7 +99,8 @@ export function parseUnifiedUsageCsv(text: string): ParsedUnifiedUsage {
       if (value && typeof value === "object" && !Array.isArray(value)) usage = value;
     } catch { /* counted as invalid below */ }
     const counts = usage ? ["prompt-text-tokens", "completion-text-tokens", "cached-prompt-text-tokens", "cache-write-text-tokens"].map((key) => tokenCount(usage![key])) : [];
-    if (!BILLING_ID.test(id) || !Number.isFinite(time) || !usage || counts.some((count) => count === null)) { invalid++; continue; }
+    // Four-digit years only: expanded ISO years such as +010000 cannot name a month file.
+    if (!BILLING_ID.test(id) || !Number.isFinite(time) || !ISO_YEAR.test(new Date(time).toISOString()) || !usage || counts.some((count) => count === null)) { invalid++; continue; }
     const [inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens] = counts as number[];
     events.set(id, {
       id,
@@ -110,90 +113,113 @@ export function parseUnifiedUsageCsv(text: string): ParsedUnifiedUsage {
   return { rows: rows.length, events: [...events.values()], skipped: { ...skipped }, invalid };
 }
 
-/** The ccusage pricingOverrides fields this importer uses, in USD per token. */
-export type ModelPricing = {
-  inputCostPerToken?: number;
-  outputCostPerToken?: number;
-  cacheReadInputTokenCost?: number;
-  cacheCreationInputTokenCost?: number;
-  inputCostPerTokenAbove200kTokens?: number;
-  outputCostPerTokenAbove200kTokens?: number;
-  cacheReadInputTokenCostAbove200kTokens?: number;
-  cacheCreationInputTokenCostAbove200kTokens?: number;
-};
-export type PricingTable = Map<string, ModelPricing>;
+const formatters = new Map<string, Intl.DateTimeFormat>();
 
-const PRICE_FIELDS = ["inputCostPerToken", "outputCostPerToken", "cacheReadInputTokenCost", "cacheCreationInputTokenCost", "inputCostPerTokenAbove200kTokens", "outputCostPerTokenAbove200kTokens", "cacheReadInputTokenCostAbove200kTokens", "cacheCreationInputTokenCostAbove200kTokens"] as const;
-const TIER_THRESHOLD = 200_000;
-
-function pricingEntries(value: unknown): Array<[string, ModelPricing]> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return [];
-  return Object.entries(value).flatMap(([model, raw]) => {
-    if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
-    const pricing: ModelPricing = {};
-    for (const field of PRICE_FIELDS) {
-      const price = (raw as Record<string, unknown>)[field];
-      if (typeof price === "number" && Number.isFinite(price) && price >= 0) pricing[field] = price;
-    }
-    return [[model, pricing]];
-  });
-}
-
-/** ccusage auto-discovers these files. Earlier paths win, and `commands.daily` overrides `defaults`. */
-export function ccusageConfigPaths(env: NodeJS.ProcessEnv = process.env, home = homedir()): string[] {
-  const explicit = env.CCUSAGE_CONFIG_PATH?.trim();
-  return explicit ? [explicit] : [join(home, ".config", "ccusage", "config.json"), join(home, ".ccusage", "ccusage.json")];
-}
-
-/** Read ccusage pricingOverrides, keyed by exact model name. Missing or unreadable files give no prices. */
-export async function loadCcusagePricing(paths = ccusageConfigPaths()): Promise<PricingTable> {
-  const table: PricingTable = new Map();
-  for (const path of [...paths].reverse()) {
-    let config: Record<string, any>;
-    try { config = JSON.parse(await readFile(path, "utf8")); } catch { continue; }
-    for (const section of [config?.defaults, config?.commands?.daily]) {
-      for (const [model, pricing] of pricingEntries(section?.pricingOverrides)) table.set(model, pricing);
-    }
-  }
-  return table;
-}
-
-function tieredCost(tokens: number, base: number | undefined, above: number | undefined): number {
-  if (tokens <= 0) return 0;
-  if (above !== undefined && tokens > TIER_THRESHOLD) return TIER_THRESHOLD * (base ?? 0) + (tokens - TIER_THRESHOLD) * above;
-  return tokens * (base ?? 0);
-}
-
-/** API-equivalent cost of one event, with ccusage's 200k-token tiers. Null when the model has no price. */
-export function eventCost(event: CursorUsageEvent, pricing: PricingTable): number | null {
-  const price = pricing.get(event.model);
-  if (!price) return null;
-  return tieredCost(event.inputTokens, price.inputCostPerToken, price.inputCostPerTokenAbove200kTokens)
-    + tieredCost(event.outputTokens, price.outputCostPerToken, price.outputCostPerTokenAbove200kTokens)
-    + tieredCost(event.cacheReadTokens, price.cacheReadInputTokenCost, price.cacheReadInputTokenCostAbove200kTokens)
-    + tieredCost(event.cacheWriteTokens, price.cacheCreationInputTokenCost, price.cacheCreationInputTokenCostAbove200kTokens);
-}
-
+/** The event's calendar date in a time zone. One formatter per zone, since this runs per event. */
 export function localDate(time: string, timeZone: string): string {
-  return new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(time));
+  let formatter = formatters.get(timeZone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat("en-CA", { timeZone, year: "numeric", month: "2-digit", day: "2-digit" });
+    formatters.set(timeZone, formatter);
+  }
+  return formatter.format(new Date(time));
 }
 
-/** Group events into one usage record per local date, host and model. */
-export function aggregateCursorEvents(events: Array<CursorUsageEvent & { hostId: string }>, range: { from: string; to: string }, timeZone: string, pricing: PricingTable): UsageRecord[] {
-  const records = new Map<string, UsageRecord>();
+export type HostCursorEvent = CursorUsageEvent & { hostId: string };
+type RecordKey = string;
+export const recordKey = (date: string, hostId: string, model: string): RecordKey => JSON.stringify([date, hostId, model]);
+
+/** Token totals per local date, host and model. Costs start unpriced until ccusage prices them. */
+export function aggregateCursorEvents(events: HostCursorEvent[], range: { from: string; to: string }, timeZone: string): UsageRecord[] {
+  const records = new Map<RecordKey, UsageRecord>();
   for (const event of events) {
     const date = localDate(event.time, timeZone);
     if (date < range.from || date > range.to) continue;
-    const key = JSON.stringify([date, event.hostId, event.model]);
-    const record = records.get(key) ?? { hostId: event.hostId, date, provider: CURSOR_SOURCE_ID, model: event.model, inputTokens: 0, cachedInputTokens: 0, cacheCreationTokens: 0, outputTokens: 0, reasoningTokens: 0, costUsd: 0, missingPricing: false };
-    const cost = eventCost(event, pricing);
+    const key = recordKey(date, event.hostId, event.model);
+    const record = records.get(key) ?? { hostId: event.hostId, date, provider: CURSOR_SOURCE_ID, model: event.model, inputTokens: 0, cachedInputTokens: 0, cacheCreationTokens: 0, outputTokens: 0, reasoningTokens: 0, costUsd: 0, missingPricing: true };
     record.inputTokens += event.inputTokens;
     record.cachedInputTokens += event.cacheReadTokens;
     record.cacheCreationTokens += event.cacheWriteTokens;
     record.outputTokens += event.outputTokens;
-    record.costUsd += cost ?? 0;
-    record.missingPricing ||= cost === null;
     records.set(key, record);
   }
   return [...records.values()].sort((a, b) => a.date.localeCompare(b.date) || a.hostId!.localeCompare(b.hostId!) || a.model.localeCompare(b.model));
+}
+
+export type CcusagePrice = { costUsd: number; missingPricing: boolean };
+export type CcusagePrices = Map<RecordKey, CcusagePrice>;
+export type CcusageRunner = (binary: string, args: string[], options: { env: NodeJS.ProcessEnv; timeout: number; maxBuffer: number }) => Promise<string>;
+
+const defaultRunner: CcusageRunner = (binary, args, options) => new Promise((resolve, reject) => {
+  execFile(binary, args, { ...options, windowsHide: true }, (error, stdout) => error ? reject(error) : resolve(String(stdout)));
+});
+
+/**
+ * Price events with ccusage itself, so its catalog, pricingOverrides, config discovery,
+ * cache-rate defaults and long-context tiers all apply exactly as for other tools.
+ * Events are written as one Claude Code request each, in a private temporary data
+ * directory with one project per host, and read back with `claude daily --instances`.
+ */
+export async function priceWithCcusage(events: HostCursorEvent[], options: { binary: string; timeZone: string; timeoutMs: number; maxBuffer: number; runner?: CcusageRunner }): Promise<CcusagePrices> {
+  const prices: CcusagePrices = new Map();
+  if (events.length === 0) return prices;
+  const root = await mkdtemp(join(tmpdir(), "quota-cursor-pricing-"));
+  try {
+    const hosts = [...new Set(events.map((event) => event.hostId))].sort();
+    const projectHost = new Map(hosts.map((hostId, index) => [`host-${index}`, hostId]));
+    const projectOf = new Map(hosts.map((hostId, index) => [hostId, `host-${index}`]));
+    let since = "9999-12-31";
+    let until = "0000-01-01";
+    const byProject = new Map<string, string[]>();
+    for (const event of events) {
+      const date = localDate(event.time, options.timeZone);
+      if (date < since) since = date;
+      if (date > until) until = date;
+      const project = projectOf.get(event.hostId)!;
+      const line = JSON.stringify({
+        type: "assistant", timestamp: event.time, sessionId: "cursor-import", requestId: event.id, uuid: event.id, cwd: "/cursor-import",
+        message: { id: event.id, model: event.model, role: "assistant", usage: { input_tokens: event.inputTokens, output_tokens: event.outputTokens, cache_read_input_tokens: event.cacheReadTokens, cache_creation_input_tokens: event.cacheWriteTokens } },
+      });
+      const lines = byProject.get(project) ?? [];
+      lines.push(line);
+      byProject.set(project, lines);
+    }
+    for (const [project, lines] of byProject) {
+      await mkdir(join(root, "projects", project), { recursive: true, mode: 0o700 });
+      await writeFile(join(root, "projects", project, "cursor.jsonl"), `${lines.join("\n")}\n`, { mode: 0o600 });
+    }
+    const args = ["claude", "daily", "--json", "--instances", "--breakdown", "--offline", "--mode", "calculate", "--timezone", options.timeZone, "--since", since.replaceAll("-", ""), "--until", until.replaceAll("-", "")];
+    const stdout = await (options.runner ?? defaultRunner)(options.binary, args, { env: { ...process.env, CLAUDE_CONFIG_DIR: root }, timeout: options.timeoutMs, maxBuffer: options.maxBuffer });
+    const document = JSON.parse(stdout) as { projects?: Record<string, Array<{ date?: unknown; modelBreakdowns?: Array<Record<string, unknown>> }>>; totals?: { unpricedModels?: unknown } };
+    if (!document || typeof document !== "object" || !document.projects || typeof document.projects !== "object") throw new Error("ccusage did not return per-project usage");
+    const unpriced = new Set(Array.isArray(document.totals?.unpricedModels) ? document.totals.unpricedModels.filter((model): model is string => typeof model === "string") : []);
+    for (const [project, rows] of Object.entries(document.projects)) {
+      const hostId = projectHost.get(project);
+      if (!hostId || !Array.isArray(rows)) continue;
+      for (const row of rows) {
+        if (typeof row?.date !== "string" || !Array.isArray(row.modelBreakdowns)) continue;
+        for (const model of row.modelBreakdowns) {
+          if (typeof model?.modelName !== "string") continue;
+          const cost = typeof model.cost === "number" && Number.isFinite(model.cost) && model.cost >= 0 ? model.cost : null;
+          const key = recordKey(row.date, hostId, model.modelName);
+          const previous = prices.get(key);
+          prices.set(key, {
+            costUsd: (previous?.costUsd ?? 0) + (cost ?? 0),
+            missingPricing: Boolean(previous?.missingPricing) || cost === null || model.missingPricing === true || unpriced.has(model.modelName),
+          });
+        }
+      }
+    }
+    return prices;
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+/** Apply ccusage prices. Records ccusage did not report stay unpriced. */
+export function applyCcusagePrices(records: UsageRecord[], prices: CcusagePrices): UsageRecord[] {
+  return records.map((record) => {
+    const price = prices.get(recordKey(record.date, record.hostId!, record.model));
+    return price ? { ...record, costUsd: price.costUsd, missingPricing: price.missingPricing } : { ...record, costUsd: 0, missingPricing: true };
+  });
 }

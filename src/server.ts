@@ -18,7 +18,7 @@ import { filterUsageRecords, summarizeUsage } from "./lib/usage.js";
 import { FilesystemUsageStore } from "./lib/usage-store.js";
 import { OpenRouterUsageStore } from "./lib/openrouter-usage-store.js";
 import { OpenRouterUsageCollector } from "./lib/openrouter-usage-collector.js";
-import { CURSOR_SOURCE_ID, UnifiedUsageCsvError, aggregateCursorEvents, eventCost, loadCcusagePricing, localDate, parseUnifiedUsageCsv } from "./lib/cursor-usage.js";
+import { CURSOR_SOURCE_ID, UnifiedUsageCsvError, aggregateCursorEvents, applyCcusagePrices, localDate, parseUnifiedUsageCsv, priceWithCcusage, recordKey, type CcusagePrices, type HostCursorEvent } from "./lib/cursor-usage.js";
 import { CursorUsageStore } from "./lib/cursor-usage-store.js";
 import { aggregateUsageSeverity, offlineUsageWarning, type UsageSeverity } from "./lib/usage-health.js";
 import { createDailyLogger, formatLocalTimestamp } from "./lib/daily-logger.js";
@@ -65,6 +65,20 @@ const usageStore = new FilesystemUsageStore({ dataRoot: usageDataRoot });
 const openRouterUsageCollector = new OpenRouterUsageCollector(new OpenRouterUsageStore(join(dirname(usageDataRoot), "openrouter-usage")));
 const cursorUsageStore = new CursorUsageStore(join(dirname(usageDataRoot), "cursor-usage"));
 const MAX_IMPORT_BYTES = 10 * 1024 * 1024;
+const CURSOR_PRICE_TTL_MS = 10 * 60 * 1000;
+const cursorPriceCache = new Map<string, { revision: number; expiresAt: number; prices: CcusagePrices }>();
+
+/** ccusage prices for imported Cursor events, reused until the next import or for ten minutes. */
+async function cursorPrices(events: HostCursorEvent[], range: { from: string; to: string }): Promise<CcusagePrices> {
+  const key = `${range.from}:${range.to}`;
+  const cached = cursorPriceCache.get(key);
+  if (cached && cached.revision === cursorUsageStore.revision && Date.now() < cached.expiresAt) return cached.prices;
+  const revision = cursorUsageStore.revision;
+  const prices = await priceWithCcusage(events, { binary: localCcusageBinary, timeZone: usageTimezone, timeoutMs: localHotTimeoutMs, maxBuffer: localCcusageMaxBuffer });
+  if (cursorPriceCache.size >= 20) cursorPriceCache.clear();
+  cursorPriceCache.set(key, { revision, expiresAt: Date.now() + CURSOR_PRICE_TTL_MS, prices });
+  return prices;
+}
 // A cold failure remains visible until all selected keys succeed for that same date.
 const openRouterRefreshErrors: { hot: string | null; cold: Map<string, string> } = { hot: null, cold: new Map() };
 const OPENROUTER_STALE_MS = 10 * 60 * 1000;
@@ -643,13 +657,16 @@ async function buildUsage(url: URL, config: AppConfig) {
   let cursorUsageError: string | null = null;
   if (usageSources.includes(CURSOR_SOURCE_ID)) {
     try {
-      cursorRecords = aggregateCursorEvents(await cursorUsageStore.read(range.from, range.to), range, usageTimezone, await loadCcusagePricing());
+      const events = (await cursorUsageStore.read(range.from, range.to)).filter((event) => { const date = localDate(event.time, usageTimezone); return date >= range.from && date <= range.to; });
+      cursorRecords = aggregateCursorEvents(events, range, usageTimezone);
+      try { cursorRecords = applyCcusagePrices(cursorRecords, await cursorPrices(events, range)); }
+      catch (error) { cursorUsageError = `Cursor costs unavailable: ${ccusageErrorMessage(error, localCcusageBinary)}`; dailyLogger.log(`[import] [cursor] pricing failure error=${safeCcusageLogSummary(error)}`); }
     } catch { cursorUsageError = "Imported Cursor usage could not be read"; }
   }
   const storedRecords = [...storedFiles.flatMap((file) => file.records.map((record) => ({ ...record, hostId: file.hostId }))), ...openRouterRecords, ...cursorRecords];
   const records = filterUsageRecords(usageSources, storedRecords);
   const summary = summarizeUsage(records);
-  const hostIds = new Set<string>([localHostId, ...persistedHostIds, ...storedFiles.map((file) => file.hostId), ...Object.keys(remoteState.hosts)]);
+  const hostIds = new Set<string>([localHostId, ...persistedHostIds, ...storedFiles.map((file) => file.hostId), ...Object.keys(remoteState.hosts), ...cursorRecords.map((record) => record.hostId!)]);
   const activeHostIds = new Set<string>([localHostId, ...Object.keys(remoteState.hosts)]);
   const storageErrorsByHost = new Map<string, string | null>();
   const storedDatesByHost = new Map<string, Set<string>>();
@@ -789,7 +806,7 @@ async function rawBody(request: import("node:http").IncomingMessage, limit: numb
 }
 
 async function knownHostIds(): Promise<Set<string>> {
-  return new Set([localHostId, ...await usageStore.listHostIds(), ...Object.keys(remoteUsageStore.getSnapshot().hosts)]);
+  return new Set([localHostId, ...await usageStore.listHostIds(), ...Object.keys(remoteUsageStore.getSnapshot().hosts), ...await cursorUsageStore.hostIds()]);
 }
 
 async function importCursorUsage(request: import("node:http").IncomingMessage, response: import("node:http").ServerResponse, url: URL, httpId: string): Promise<void> {
@@ -809,9 +826,16 @@ async function importCursorUsage(request: import("node:http").IncomingMessage, r
   }
   const counts = await cursorUsageStore.upsert(parsed.events, hostId);
   dashboardCache.clear();
-  const pricing = await loadCcusagePricing();
+  const imported = parsed.events.map((event) => ({ ...event, hostId }));
   const unpriced = new Map<string, number>();
-  for (const event of parsed.events) if (eventCost(event, pricing) === null) unpriced.set(event.model, (unpriced.get(event.model) ?? 0) + 1);
+  let pricingError: string | null = null;
+  try {
+    const prices = await priceWithCcusage(imported, { binary: localCcusageBinary, timeZone: usageTimezone, timeoutMs: localHotTimeoutMs, maxBuffer: localCcusageMaxBuffer });
+    for (const event of imported) {
+      const price = prices.get(recordKey(localDate(event.time, usageTimezone), hostId, event.model));
+      if (!price || price.missingPricing) unpriced.set(event.model, (unpriced.get(event.model) ?? 0) + 1);
+    }
+  } catch (error) { pricingError = ccusageErrorMessage(error, localCcusageBinary); }
   const dates = parsed.events.map((event) => localDate(event.time, usageTimezone)).sort();
   const skipped = Object.values(parsed.skipped).reduce((total, count) => total + count, 0);
   dailyLogger.log(`[import] [cursor] httpId=${httpId} host=${hostId} rows=${parsed.rows} cursor=${parsed.events.length} added=${counts.added} updated=${counts.updated} moved=${counts.moved} skipped=${skipped} invalid=${parsed.invalid}`);
@@ -826,6 +850,7 @@ async function importCursorUsage(request: import("node:http").IncomingMessage, r
     from: dates[0] ?? null,
     to: dates.at(-1) ?? null,
     unpricedModels: [...unpriced].map(([model, rows]) => ({ model, rows })).sort((a, b) => b.rows - a.rows || a.model.localeCompare(b.model)),
+    pricingError,
   });
 }
 

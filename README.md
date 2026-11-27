@@ -445,18 +445,23 @@ curl -X POST -H 'Content-Type: text/csv' --data-binary @personal-unified-usage.c
 - Token columns map to input (`prompt-text-tokens`), output
   (`completion-text-tokens`), cache read (`cached-prompt-text-tokens`) and cache
   write (`cache-write-text-tokens`). `included` and `credits` rows count the same way.
-- The export bills these rows at $0, so the cost shown is the API-equivalent price.
-  It comes from `pricingOverrides` in the server's ccusage config
-  (`~/.config/ccusage/config.json`, then `~/.ccusage/ccusage.json`, or
-  `CCUSAGE_CONFIG_PATH`). `commands.daily` overrides `defaults`, and the 200k-token
-  tier fields work as they do in ccusage. Model names must match exactly. Models with
-  no price are flagged as unpriced, and the import result lists them. Prices are
-  applied when usage is read, so adding an override later re-prices past imports.
-- `hostId` is optional, defaults to the dashboard host, and must be a known machine.
+- The export bills these rows at $0, so the cost shown is the API-equivalent price,
+  calculated by ccusage itself (`CCUSAGE_BIN`, offline pricing). The dashboard writes
+  each row as one Claude Code request in a private temporary data directory and runs
+  `ccusage claude daily --instances --breakdown` on it. ccusage's own model
+  catalog, your `pricingOverrides`, its config file discovery, cache-rate defaults and
+  long-context tiers therefore apply exactly as they do for your other tools. Models
+  ccusage cannot price are flagged as unpriced, and the import result lists them.
+  Prices are applied when usage is read and cached for up to ten minutes, so adding an
+  override re-prices past imports. If ccusage is missing or fails, tokens still show,
+  the rows are marked unpriced, and the usage status reports the error.
+- `hostId` is optional, defaults to the dashboard host, and must be a known machine:
+  one with ccusage data, a connected publisher, or earlier Cursor imports.
   The export has no machine column, so the host is whatever you pick.
 - Rows are keyed by `Billing Item ID` across all machines. Importing the same or an
-  overlapping file again never double counts. A row imported again under a different
-  machine moves to it, and the result reports it as moved.
+  overlapping file again never double counts, even if a row's time moves to another
+  month. A row imported again under a different machine moves to it, and the result
+  reports it as moved.
 - Days follow `USAGE_TIMEZONE`, like the rest of the usage data.
 - Only the billing ID, event time, model, usage type and token counts are stored,
   under `cursor-usage/` next to `USAGE_DATA_DIR`, one file per UTC month. Email and

@@ -1,9 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { join } from "node:path";
-import { aggregateCursorEvents, ccusageConfigPaths, eventCost, loadCcusagePricing, parseCsv, parseUnifiedUsageCsv, UnifiedUsageCsvError, type CursorUsageEvent, type PricingTable } from "./cursor-usage.js";
+import { aggregateCursorEvents, applyCcusagePrices, localDate, parseCsv, parseUnifiedUsageCsv, priceWithCcusage, recordKey, UnifiedUsageCsvError, type CursorUsageEvent } from "./cursor-usage.js";
 
 const HEADER = "Billing Item ID,Event Time,Product,Charge Category,Usage Type,Principal Type,Principal ID,Usage,Pricing Currency,Pricing Contracted,Model,User Email";
 const cursorUsage = (prompt: number, cached: number, completion: number, write = 0) =>
@@ -55,41 +54,76 @@ test("rejects files that are not unified usage exports and counts unreadable Cur
   assert.deepEqual(parsed.events.map((item) => [item.id, item.model, item.inputTokens, item.outputTokens]), [["ok-4", "unknown", 8, 0]]);
 });
 
-test("reads ccusage pricingOverrides with commands.daily over defaults and the XDG file first", async () => {
-  const root = await mkdtemp(join(tmpdir(), "cursor-pricing-"));
-  try {
-    await mkdir(join(root, ".config", "ccusage"), { recursive: true });
-    await mkdir(join(root, ".ccusage"));
-    await writeFile(join(root, ".config", "ccusage", "config.json"), JSON.stringify({ defaults: { pricingOverrides: { a: { inputCostPerToken: 1 }, b: { inputCostPerToken: 1, outputCostPerToken: "bad" } } }, commands: { daily: { pricingOverrides: { b: { inputCostPerToken: 3 } } } } }));
-    await writeFile(join(root, ".ccusage", "ccusage.json"), JSON.stringify({ defaults: { pricingOverrides: { a: { inputCostPerToken: 9 }, c: { outputCostPerToken: 2 } } } }));
-    const pricing = await loadCcusagePricing(ccusageConfigPaths({}, root));
-    assert.deepEqual(Object.fromEntries(pricing), { a: { inputCostPerToken: 1 }, b: { inputCostPerToken: 3 }, c: { outputCostPerToken: 2 } });
-    assert.deepEqual(ccusageConfigPaths({ CCUSAGE_CONFIG_PATH: "/x.json" }, root), ["/x.json"]);
-    assert.equal((await loadCcusagePricing([join(root, "missing.json")])).size, 0);
-  } finally { await rm(root, { recursive: true, force: true }); }
+test("rejects event times whose year cannot name a month file", () => {
+  const csv = [HEADER,
+    `far-1,+010000-01-01T00:00:00.000Z,cursor,usage,included,user,x,${cursorUsage(1, 0, 0)},USD,0,m,x`,
+    `neg-1,-000001-01-01T00:00:00.000Z,cursor,usage,included,user,x,${cursorUsage(1, 0, 0)},USD,0,m,x`,
+    `ok-1,2026-11-27T10:00:00.000Z,cursor,usage,included,user,x,${cursorUsage(1, 0, 0)},USD,0,m,x`,
+  ].join("\n");
+  const parsed = parseUnifiedUsageCsv(csv);
+  assert.equal(parsed.invalid, 2);
+  assert.deepEqual(parsed.events.map((item) => item.id), ["ok-1"]);
 });
 
-test("prices each token bucket with ccusage's 200k tiers and flags unknown models", () => {
-  const pricing: PricingTable = new Map([["m", { inputCostPerToken: 1e-6, outputCostPerToken: 1e-5, cacheReadInputTokenCost: 1e-7, cacheCreationInputTokenCost: 2e-6, cacheReadInputTokenCostAbove200kTokens: 2e-7 }]]);
-  assert.equal(eventCost(event({ model: "other" }), pricing), null);
-  const cost = eventCost(event({ inputTokens: 1000, outputTokens: 100, cacheReadTokens: 300_000, cacheWriteTokens: 10 }), pricing)!;
-  assert.ok(Math.abs(cost - (1000e-6 + 100e-5 + 200_000e-7 + 100_000 * 2e-7 + 10 * 2e-6)) < 1e-12);
-  // Without an above-200k price the base rate applies to every token.
-  assert.ok(Math.abs(eventCost(event({ inputTokens: 300_000 }), pricing)! - 0.3) < 1e-12);
-});
-
-test("groups events by local date, host and model and keeps the date range", () => {
-  const pricing: PricingTable = new Map([["priced", { inputCostPerToken: 0.5 }]]);
+test("groups tokens by local date, host and model and leaves them unpriced until ccusage prices them", () => {
   const events = [
     { ...event({ id: "1", time: "2026-11-27T15:59:59.000Z", model: "priced", inputTokens: 2, cacheReadTokens: 5 }), hostId: "a" },
     { ...event({ id: "2", time: "2026-11-27T16:00:00.000Z", model: "priced", inputTokens: 2 }), hostId: "a" },
     { ...event({ id: "3", time: "2026-11-27T10:00:00.000Z", model: "priced", inputTokens: 4, cacheWriteTokens: 1, outputTokens: 3 }), hostId: "a" },
-    { ...event({ id: "4", time: "2026-11-27T10:00:00.000Z", model: "free-text", inputTokens: 4 }), hostId: "b" },
+    { ...event({ id: "4", time: "2026-11-27T10:00:00.000Z", model: "other", inputTokens: 4 }), hostId: "b" },
   ];
-  const records = aggregateCursorEvents(events, { from: "2026-11-27", to: "2026-11-27" }, "Asia/Singapore", pricing);
+  const records = aggregateCursorEvents(events, { from: "2026-11-27", to: "2026-11-27" }, "Asia/Singapore");
   assert.deepEqual(records, [
-    { hostId: "a", date: "2026-11-27", provider: "cursor", model: "priced", inputTokens: 6, cachedInputTokens: 5, cacheCreationTokens: 1, outputTokens: 3, reasoningTokens: 0, costUsd: 3, missingPricing: false },
-    { hostId: "b", date: "2026-11-27", provider: "cursor", model: "free-text", inputTokens: 4, cachedInputTokens: 0, cacheCreationTokens: 0, outputTokens: 0, reasoningTokens: 0, costUsd: 0, missingPricing: true },
+    { hostId: "a", date: "2026-11-27", provider: "cursor", model: "priced", inputTokens: 6, cachedInputTokens: 5, cacheCreationTokens: 1, outputTokens: 3, reasoningTokens: 0, costUsd: 0, missingPricing: true },
+    { hostId: "b", date: "2026-11-27", provider: "cursor", model: "other", inputTokens: 4, cachedInputTokens: 0, cacheCreationTokens: 0, outputTokens: 0, reasoningTokens: 0, costUsd: 0, missingPricing: true },
   ]);
-  assert.deepEqual(aggregateCursorEvents(events, { from: "2026-11-28", to: "2026-11-28" }, "Asia/Singapore", pricing).map((record) => record.inputTokens), [2]);
+  assert.deepEqual(aggregateCursorEvents(events, { from: "2026-11-28", to: "2026-11-28" }, "Asia/Singapore").map((record) => record.inputTokens), [2]);
+  const prices = new Map([[recordKey("2026-11-27", "a", "priced"), { costUsd: 1.5, missingPricing: false }]]);
+  assert.deepEqual(applyCcusagePrices(records, prices).map((record) => [record.model, record.costUsd, record.missingPricing]), [["priced", 1.5, false], ["other", 0, true]]);
+  assert.equal(localDate("2026-11-27T16:00:00.000Z", "Asia/Singapore"), "2026-11-28");
+  assert.equal(localDate("2026-11-27T16:00:00.000Z", "UTC"), "2026-11-27");
+});
+
+test("prices events with ccusage as one Claude request each, one private project per host", async () => {
+  const events = [
+    { ...event({ id: "bill-1", time: "2026-11-27T04:00:00.000Z", model: "grok-4.7-medium", inputTokens: 10, outputTokens: 2, cacheReadTokens: 300, cacheWriteTokens: 1 }), hostId: "zeta" },
+    { ...event({ id: "bill-2", time: "2026-11-27T05:00:00.000Z", model: "new-model", inputTokens: 1 }), hostId: "alpha" },
+    { ...event({ id: "bill-3", time: "2026-11-28T05:00:00.000Z", model: "grok-4.7-medium", inputTokens: 1 }), hostId: "zeta" },
+  ];
+  let seen: { args: string[]; files: Record<string, string>; mode: number } | null = null;
+  const prices = await priceWithCcusage(events, {
+    binary: "fake-ccusage", timeZone: "Asia/Singapore", timeoutMs: 1000, maxBuffer: 1024 * 1024,
+    runner: async (binary, args, options) => {
+      assert.equal(binary, "fake-ccusage");
+      const root = options.env.CLAUDE_CONFIG_DIR!;
+      const projects = (await readdir(join(root, "projects"))).sort();
+      const files = Object.fromEntries(await Promise.all(projects.map(async (project) => [project, await readFile(join(root, "projects", project, "cursor.jsonl"), "utf8")])));
+      seen = { args, files, mode: (await stat(root)).mode & 0o777 };
+      return JSON.stringify({
+        projects: {
+          "host-0": [{ date: "2026-11-27", modelBreakdowns: [{ modelName: "new-model", cost: 0, missingPricing: true }] }],
+          "host-1": [{ date: "2026-11-27", modelBreakdowns: [{ modelName: "grok-4.7-medium", cost: 0.25 }] }, { date: "2026-11-28", modelBreakdowns: [{ modelName: "grok-4.7-medium", cost: 0.5 }] }],
+          "unknown-project": [{ date: "2026-11-27", modelBreakdowns: [{ modelName: "x", cost: 9 }] }],
+        },
+        totals: { unpricedModels: ["new-model"] },
+      });
+    },
+  });
+  assert.ok(seen);
+  const { args, files, mode } = seen as { args: string[]; files: Record<string, string>; mode: number };
+  assert.deepEqual(args, ["claude", "daily", "--json", "--instances", "--breakdown", "--offline", "--mode", "calculate", "--timezone", "Asia/Singapore", "--since", "20261127", "--until", "20261128"]);
+  assert.equal(mode, 0o700);
+  // Hosts map to opaque project names, so machine names never become paths.
+  assert.deepEqual(Object.keys(files), ["host-0", "host-1"]);
+  const line = JSON.parse(files["host-1"].split("\n")[0]);
+  assert.deepEqual(line.message, { id: "bill-1", model: "grok-4.7-medium", role: "assistant", usage: { input_tokens: 10, output_tokens: 2, cache_read_input_tokens: 300, cache_creation_input_tokens: 1 } });
+  assert.equal(line.requestId, "bill-1");
+  assert.equal(line.timestamp, "2026-11-27T04:00:00.000Z");
+  assert.deepEqual(Object.fromEntries(prices), {
+    [recordKey("2026-11-27", "alpha", "new-model")]: { costUsd: 0, missingPricing: true },
+    [recordKey("2026-11-27", "zeta", "grok-4.7-medium")]: { costUsd: 0.25, missingPricing: false },
+    [recordKey("2026-11-28", "zeta", "grok-4.7-medium")]: { costUsd: 0.5, missingPricing: false },
+  });
+  assert.equal((await priceWithCcusage([], { binary: "unused", timeZone: "UTC", timeoutMs: 1, maxBuffer: 1, runner: async () => { throw new Error("not called"); } })).size, 0);
+  await assert.rejects(priceWithCcusage(events, { binary: "x", timeZone: "UTC", timeoutMs: 1, maxBuffer: 1, runner: async () => "{}" }), /per-project/);
 });
