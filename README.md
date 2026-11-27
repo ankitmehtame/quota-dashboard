@@ -158,7 +158,8 @@ No machine-specific absolute paths or identifiers are stored in the application.
 - `CLAUDE_CONFIG_DIR` (directory containing `.credentials.json`)
 - `CLAUDE_USER_AGENT` (defaults to `claude-code/2.1.69`)
 - `CLAUDE_RESET_USER_AGENT` (defaults to `claude-cli/2.1.280 (external, cli)` for reset grants; non-empty printable ASCII only)
-- `GROK_AUTH_PATH` (Grok CLI login file; defaults to `~/.grok/auth.json`)
+- `GROK_AUTH_PATH` (Grok CLI login file; defaults to `$GROK_HOME/auth.json`, then `~/.grok/auth.json`)
+- `GROK_HOME` (Grok CLI home directory, used for the login file when `GROK_AUTH_PATH` is unset)
 - `GROK_CLIENT_VERSION` (sent as `x-grok-client-version`; defaults to `1.0.92`)
 - `CONFIG_PATH` (defaults to `~/.config/quota-dashboard/config.json`)
 - `HOST` and `PORT` (server bind address and port)
@@ -408,9 +409,11 @@ used, the reset time, and how much of it each product used (for example
 `Cursor 2% · Grok Build 1%`). Cursor usage counts toward this pool, so the card also
 covers Cursor on X Subscription plans.
 
-Credentials come from the Grok CLI's own login, `~/.grok/auth.json` or
-`GROK_AUTH_PATH`, on the host running the dashboard. Sign in there with `grok login`.
-If the file holds more than one login, the one that expires last is used. The
+Credentials come from the Grok CLI's own login on the host running the dashboard,
+looked up the same way as the CLI: `GROK_AUTH_PATH`, then `$GROK_HOME/auth.json`,
+then `~/.grok/auth.json`. Sign in there with `grok login`. Only grok.com logins are
+used. A stored xAI API key is never sent, because it has no subscription usage. If
+the file holds more than one login, the one that expires last is used. The
 dashboard reads the file again for each fetch and never changes it or refreshes
 tokens. The CLI renews its short-lived access token while it runs. When the
 token in the file has expired, the card asks you to run `grok` on that host. Tokens,

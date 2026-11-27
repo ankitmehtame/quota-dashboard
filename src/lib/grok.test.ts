@@ -103,7 +103,7 @@ test("Grok credentials come from the CLI login file, pick the newest login, and 
   await writeFile(path, JSON.stringify({ "https://auth.x.ai::b": login("bad token") }));
   assert.equal((await resolveGrokCredentials({}, now, root)).accessToken, undefined);
   await writeFile(path, JSON.stringify({ other: { refresh_token: "x" } }));
-  assert.match((await resolveGrokCredentials({}, now, root)).error!, /no login/);
+  assert.match((await resolveGrokCredentials({}, now, root)).error!, /no grok\.com login/);
   const custom = join(root, "custom.json");
   await writeFile(custom, JSON.stringify({ "https://auth.x.ai::c": login("FAKE_CUSTOM_TOKEN") }));
   assert.equal((await resolveGrokCredentials({ GROK_AUTH_PATH: custom }, now, root)).accessToken, "FAKE_CUSTOM_TOKEN");
@@ -202,4 +202,34 @@ test("an expired Grok login still counts as configured so settings point to rene
   assert.equal(expired.errorKind, "authentication");
   await writeFile(path, JSON.stringify({ "https://auth.x.ai::a": login("bad token") }));
   assert.equal(await isProviderConfigured("grok"), false);
+});
+
+test("Grok never sends a stored API key to the subscription endpoint and follows the CLI's GROK_HOME lookup", async (t) => {
+  const root = await home(t);
+  const path = join(root, ".grok", "auth.json");
+  const apiKey = { key: "FAKE_API_KEY", auth_mode: "api_key", create_time: "2026-11-27T00:00:00Z" };
+  // Alone, or listed first beside a login without a parseable expiry, the API key must not be picked.
+  await writeFile(path, JSON.stringify({ "xai::api_key": apiKey }));
+  const only = await resolveGrokCredentials({}, now, root);
+  assert.equal(only.configured, false);
+  assert.equal(only.accessToken, undefined);
+  assert.match(only.error!, /no grok\.com login/);
+  const { expires_at: _, ...noExpiry } = login("FAKE_OIDC_TOKEN");
+  await writeFile(path, JSON.stringify({ "xai::api_key": apiKey, "https://auth.x.ai::a": noExpiry }));
+  assert.equal((await resolveGrokCredentials({}, now, root)).accessToken, "FAKE_OIDC_TOKEN");
+  // An entry without a refresh token is not an OIDC login either, whatever its auth_mode says.
+  await writeFile(path, JSON.stringify({ "https://auth.x.ai::a": { ...login("FAKE_OIDC_TOKEN"), refresh_token: "" } }));
+  assert.equal((await resolveGrokCredentials({}, now, root)).accessToken, undefined);
+  const grokHome = join(root, "custom-grok-home");
+  await mkdir(grokHome);
+  await writeFile(join(grokHome, "auth.json"), JSON.stringify({ "https://auth.x.ai::h": login("FAKE_HOME_TOKEN") }));
+  const fromHome = await resolveGrokCredentials({ GROK_HOME: grokHome }, now, root);
+  assert.equal(fromHome.accessToken, "FAKE_HOME_TOKEN");
+  assert.doesNotMatch(fromHome.identity, /FAKE_/);
+  // GROK_AUTH_PATH still wins over GROK_HOME, and a blank GROK_HOME falls back to ~/.grok.
+  const custom = join(root, "custom.json");
+  await writeFile(custom, JSON.stringify({ "https://auth.x.ai::c": login("FAKE_CUSTOM_TOKEN") }));
+  assert.equal((await resolveGrokCredentials({ GROK_HOME: grokHome, GROK_AUTH_PATH: custom }, now, root)).accessToken, "FAKE_CUSTOM_TOKEN");
+  await writeFile(path, JSON.stringify({ "https://auth.x.ai::a": login("FAKE_DEFAULT_TOKEN") }));
+  assert.equal((await resolveGrokCredentials({ GROK_HOME: " " }, now, root)).accessToken, "FAKE_DEFAULT_TOKEN");
 });
