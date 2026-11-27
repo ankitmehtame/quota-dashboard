@@ -100,6 +100,20 @@ test("a failed write while moving a row between months never loses it", async ()
     assert.deepEqual((await store.read("2026-11-01", "2026-12-31")).map((item) => [item.id, item.time]), [["moving", "2026-11-30T23:59:00.000Z"]]);
     assert.deepEqual(await store.upsert([event("moving", "2026-12-01T00:01:00.000Z")], "host-1"), { added: 0, updated: 1, moved: 0 });
     assert.deepEqual((await store.read("2026-11-01", "2026-12-31")).map((item) => item.time), ["2026-12-01T00:01:00.000Z"]);
+
+    // The old month also receives rows in the same import, and rows move both ways.
+    await store.upsert([event("back", "2026-11-29T00:00:00.000Z"), event("stay", "2026-11-15T00:00:00.000Z")], "host-1");
+    (store as any).writeShard = async function (month: string, events: unknown[]) {
+      if (month === "2026-12") throw new Error("disk full");
+      return writeShard.call(this, month, events);
+    };
+    await assert.rejects(store.upsert([event("stay", "2026-11-15T00:00:00.000Z", 2), event("back", "2026-12-02T00:00:00.000Z"), event("moving", "2026-11-28T00:00:00.000Z")], "host-1"), /disk full/);
+    (store as any).writeShard = writeShard;
+    const ids = (await store.read("2026-11-01", "2026-12-31")).map((item) => item.id).sort();
+    for (const id of ["back", "moving", "stay"]) assert.ok(ids.includes(id), `${id} was lost: ${ids}`);
+    // Retrying heals the duplicates.
+    await store.upsert([event("stay", "2026-11-15T00:00:00.000Z", 2), event("back", "2026-12-02T00:00:00.000Z"), event("moving", "2026-11-28T00:00:00.000Z")], "host-1");
+    assert.deepEqual((await store.read("2026-11-01", "2026-12-31")).map((item) => [item.id, item.time]), [["stay", "2026-11-15T00:00:00.000Z"], ["moving", "2026-11-28T00:00:00.000Z"], ["back", "2026-12-02T00:00:00.000Z"]]);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 

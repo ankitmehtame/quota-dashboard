@@ -149,10 +149,19 @@ test("finds the ccusage config the way ccusage does for Claude data", async () =
     assert.equal(await readCcusageUserConfig({}, home), '{"n":4}', "a malformed file is skipped");
     await write(join(home, ".config", "claude", "ccusage.json"), '{"n":3}');
     assert.equal(await readCcusageUserConfig({}, home), '{"n":3}');
+    // With XDG_CONFIG_HOME set, ccusage checks it instead of ~/.config, then ~/.claude.
+    assert.equal(await readCcusageUserConfig({ XDG_CONFIG_HOME: join(root, "xdg") }, home), '{"n":4}');
     await write(join(root, "xdg", "claude", "ccusage.json"), '{"n":2}');
     assert.equal(await readCcusageUserConfig({ XDG_CONFIG_HOME: join(root, "xdg") }, home), '{"n":2}');
+    await write(join(root, "xdg", "claude", "ccusage.json"), "[]");
+    assert.equal(await readCcusageUserConfig({ XDG_CONFIG_HOME: join(root, "xdg") }, home), '{"n":4}', "JSON that is not an object is skipped");
     await write(join(root, "second", "ccusage.json"), '{"n":1}');
     assert.equal(await readCcusageUserConfig({ CLAUDE_CONFIG_DIR: `${join(root, "first")}, ${join(root, "second")}`, XDG_CONFIG_HOME: join(root, "xdg") }, home), '{"n":1}');
+    // CLAUDE_CONFIG_DIR expands ~, treats a projects/ entry as its parent, and never falls back to home.
+    await write(join(home, "tilde", "ccusage.json"), '{"n":5}');
+    assert.equal(await readCcusageUserConfig({ CLAUDE_CONFIG_DIR: "~/tilde" }, home), '{"n":5}');
+    assert.equal(await readCcusageUserConfig({ CLAUDE_CONFIG_DIR: `${join(home, "tilde", "projects")}/` }, home), '{"n":5}');
+    assert.equal(await readCcusageUserConfig({ CLAUDE_CONFIG_DIR: join(root, "first") }, home), null);
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
