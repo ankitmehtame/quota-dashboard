@@ -142,11 +142,20 @@ export class CursorUsageStore {
     catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
   }
 
-  /** Every host that owns at least one imported event. */
-  async hostIds(): Promise<Set<string>> {
-    const hosts = new Set<string>();
-    for (const month of await this.months()) for (const event of await this.readShard(month)) hosts.add(event.hostId);
-    return hosts;
+  private hostCache: { revision: number; hosts: Promise<Set<string>> } | null = null;
+
+  /** Every host that owns at least one imported event. Cached until the next import. */
+  hostIds(): Promise<Set<string>> {
+    if (this.hostCache?.revision === this.revision) return this.hostCache.hosts.then((hosts) => new Set(hosts));
+    const revision = this.revision;
+    const hosts = (async () => {
+      const found = new Set<string>();
+      for (const month of await this.months()) for (const event of await this.readShard(month)) found.add(event.hostId);
+      return found;
+    })();
+    this.hostCache = { revision, hosts };
+    hosts.catch(() => { if (this.hostCache?.hosts === hosts) this.hostCache = null; });
+    return hosts.then((found) => new Set(found));
   }
 
   async hasEvents(): Promise<boolean> {
