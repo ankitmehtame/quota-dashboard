@@ -24,11 +24,14 @@ function timestamp(value: unknown): number {
   return Date.parse(value.replace(/(\.\d{3})\d+/, "$1"));
 }
 
-// The Grok CLI keeps one entry per OIDC login, keyed by "<issuer>::<user>". Only equality metadata leaves the resolver.
+// The Grok CLI keeps one entry per OIDC login, keyed by "<issuer>::<user>", and may also keep a plain API key
+// under "xai::api_key". Only OIDC logins carry subscription usage. Only equality metadata leaves the resolver.
 export async function resolveGrokCredentials(env: NodeJS.ProcessEnv = process.env, now = Date.now(), home = homedir()): Promise<GrokCredentials> {
   if (env.GROK_AUTH_PATH === "") return { configured: false, identity: "grok:empty-path", error: "GROK_AUTH_PATH is empty", errorKind: "configuration" };
-  const path = resolve(env.GROK_AUTH_PATH ?? join(home, ".grok", "auth.json"));
-  const source = `${env.GROK_AUTH_PATH !== undefined ? "auth-path" : "default"}:${path}`;
+  // Same lookup order as the CLI: GROK_AUTH_PATH, then $GROK_HOME/auth.json, then ~/.grok/auth.json.
+  const grokHome = env.GROK_HOME?.trim() ? env.GROK_HOME : undefined;
+  const path = resolve(env.GROK_AUTH_PATH ?? join(grokHome ?? join(home, ".grok"), "auth.json"));
+  const source = `${env.GROK_AUTH_PATH !== undefined ? "auth-path" : grokHome !== undefined ? "grok-home" : "default"}:${path}`;
   const fail = (message: string, kind: ProviderResult["errorKind"] = "configuration", configured = false, identity = source): GrokCredentials =>
     ({ configured, identity, error: message, errorKind: kind });
   let document: ObjectValue;
@@ -39,9 +42,11 @@ export async function resolveGrokCredentials(env: NodeJS.ProcessEnv = process.en
   }
   const logins = Object.entries(document).flatMap(([account, raw]) => {
     const entry = object(raw);
-    return typeof entry.key === "string" ? [{ account, token: entry.key, expiresAt: entry.expires_at }] : [];
+    // An API key has no refresh token and cannot read the subscription pool, so it is never sent to the billing endpoint.
+    const oidc = entry.auth_mode !== "api_key" && typeof entry.refresh_token === "string" && entry.refresh_token.trim() !== "";
+    return oidc && typeof entry.key === "string" ? [{ account, token: entry.key, expiresAt: entry.expires_at }] : [];
   });
-  if (!logins.length) return fail(`Grok credential file has no login. ${loginGuidance}`);
+  if (!logins.length) return fail(`Grok credential file has no grok.com login. Run grok login on the dashboard host; an API key alone has no subscription usage.`);
   // Several logins only happen after switching accounts; the one that expires last is the one the CLI refreshed most recently.
   const login = logins.reduce((best, entry) => (timestamp(entry.expiresAt) || 0) > (timestamp(best.expiresAt) || 0) ? entry : best);
   const account = `${source}:${login.account}`;
