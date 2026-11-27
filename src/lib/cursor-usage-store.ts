@@ -69,7 +69,9 @@ export class CursorUsageStore {
   }
 
   /** Add or replace events under one host. Returns how many were new, changed, or moved from another host. */
-  upsert(events: CursorUsageEvent[], hostId: string, importedAt = new Date().toISOString()): Promise<CursorImportCounts> {
+  upsert(batch: CursorUsageEvent[], hostId: string, importedAt = new Date().toISOString()): Promise<CursorImportCounts> {
+    // One row per billing ID; a later duplicate in the same batch wins.
+    const events = [...new Map(batch.map((event) => [event.id, event])).values()];
     const run = this.queue.catch(() => undefined).then(async () => {
       const counts: CursorImportCounts = { added: 0, updated: 0, moved: 0 };
       const byMonth = new Map<string, CursorUsageEvent[]>();
@@ -81,29 +83,30 @@ export class CursorUsageStore {
         if (bucket) bucket.push(event);
         else byMonth.set(month, [event]);
       }
-      const incomingIds = new Map(events.map((event) => [event.id, monthOf(event.time)]));
-      // A billing ID whose time moved to another month must not stay behind in its old file.
-      const previousElsewhere = new Map<string, StoredCursorEvent>();
-      for (const month of await this.months()) {
-        if (byMonth.has(month)) continue;
+      const incomingIds = new Set(events.map((event) => event.id));
+      // Read every month first: an incoming billing ID replaces its stored copy wherever
+      // that copy is, including a month that also receives other incoming rows.
+      const previous = new Map<string, StoredCursorEvent>();
+      const shards = new Map<string, { kept: StoredCursorEvent[]; changed: boolean }>();
+      for (const month of new Set([...await this.months(), ...byMonth.keys()])) {
         const stored = await this.readShard(month);
         const kept = stored.filter((event) => {
           if (!incomingIds.has(event.id)) return true;
-          previousElsewhere.set(event.id, event);
+          previous.set(event.id, event);
           return false;
         });
-        if (kept.length !== stored.length) await this.writeShard(month, kept);
+        shards.set(month, { kept, changed: kept.length !== stored.length });
       }
-      for (const [month, incoming] of byMonth) {
-        const existing = new Map((await this.readShard(month)).map((event) => [event.id, event]));
-        for (const event of incoming) {
-          const previous = existing.get(event.id) ?? previousElsewhere.get(event.id);
-          if (!previous) counts.added++;
-          else if (previous.hostId !== hostId) counts.moved++;
-          else counts.updated++;
-          existing.set(event.id, { ...event, hostId, importedAt });
-        }
-        await this.writeShard(month, [...existing.values()]);
+      for (const event of events) {
+        const before = previous.get(event.id);
+        if (!before) counts.added++;
+        else if (before.hostId !== hostId) counts.moved++;
+        else counts.updated++;
+      }
+      for (const [month, shard] of shards) {
+        const incoming = byMonth.get(month);
+        if (!incoming && !shard.changed) continue;
+        await this.writeShard(month, [...shard.kept, ...(incoming ?? []).map((event) => ({ ...event, hostId, importedAt }))]);
       }
       this.revision++;
       return counts;

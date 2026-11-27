@@ -65,6 +65,20 @@ test("moves a billing ID between month files, rejects bad months before writing 
   } finally { await rm(root, { recursive: true, force: true }); }
 });
 
+test("removes a moved billing ID from its old month even when that month receives other rows", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cursor-store-"));
+  try {
+    const store = new CursorUsageStore(join(root, "data"));
+    await store.upsert([event("moved-id", "2026-11-30T23:59:00.000Z"), event("stay-nov", "2026-11-15T00:00:00.000Z")], "host-1");
+    assert.deepEqual(await store.upsert([event("stay-nov", "2026-11-15T00:00:00.000Z"), event("moved-id", "2026-12-01T00:01:00.000Z")], "host-1"), { added: 0, updated: 2, moved: 0 });
+    const all = await store.read("2026-11-01", "2026-12-31");
+    assert.deepEqual(all.map((item) => [item.id, item.time]), [["stay-nov", "2026-11-15T00:00:00.000Z"], ["moved-id", "2026-12-01T00:01:00.000Z"]]);
+    // And back again, with a duplicate inside the batch: the last copy wins and counts once.
+    assert.deepEqual(await store.upsert([event("moved-id", "2026-12-01T00:01:00.000Z"), event("moved-id", "2026-11-30T23:59:00.000Z", 9)], "host-2"), { added: 0, updated: 0, moved: 1 });
+    assert.deepEqual((await store.read("2026-11-01", "2026-12-31")).map((item) => [item.id, item.hostId, item.inputTokens]), [["stay-nov", "host-1", 1], ["moved-id", "host-2", 9]]);
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("groups a large single-month import in linear time", async () => {
   const root = await mkdtemp(join(tmpdir(), "cursor-store-"));
   try {

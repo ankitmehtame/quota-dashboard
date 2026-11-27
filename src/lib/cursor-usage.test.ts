@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { aggregateCursorEvents, applyCcusagePrices, localDate, parseCsv, parseUnifiedUsageCsv, priceWithCcusage, recordKey, UnifiedUsageCsvError, type CursorUsageEvent } from "./cursor-usage.js";
+import { aggregateCursorEvents, applyCcusagePrices, localDate, parseCsv, parseUnifiedUsageCsv, priceWithCcusage, readCcusageUserConfig, recordKey, UnifiedUsageCsvError, type CursorUsageEvent } from "./cursor-usage.js";
 
 const HEADER = "Billing Item ID,Event Time,Product,Charge Category,Usage Type,Principal Type,Principal ID,Usage,Pricing Currency,Pricing Contracted,Model,User Email";
 const cursorUsage = (prompt: number, cached: number, completion: number, write = 0) =>
@@ -91,11 +93,17 @@ test("prices events with ccusage as one Claude request each, one private project
     { ...event({ id: "bill-3", time: "2026-11-28T05:00:00.000Z", model: "grok-4.7-medium", inputTokens: 1 }), hostId: "zeta" },
   ];
   let seen: { args: string[]; files: Record<string, string>; mode: number } | null = null;
+  const home = await mkdtemp(join(tmpdir(), "cursor-home-"));
+  await mkdir(join(home, ".claude"), { recursive: true });
+  await writeFile(join(home, ".claude", "ccusage.json"), '{"defaults":{"pricingOverrides":{"new-model":{"inputCostPerToken":1}}}}');
   const prices = await priceWithCcusage(events, {
-    binary: "fake-ccusage", timeZone: "Asia/Singapore", timeoutMs: 1000, maxBuffer: 1024 * 1024,
+    binary: "fake-ccusage", timeZone: "Asia/Singapore", timeoutMs: 1000, maxBuffer: 1024 * 1024, env: { PATH: "/bin" }, home,
     runner: async (binary, args, options) => {
       assert.equal(binary, "fake-ccusage");
       const root = options.env.CLAUDE_CONFIG_DIR!;
+      // The user's ccusage config travels with the generated data directory.
+      assert.equal(await readFile(join(root, "ccusage.json"), "utf8"), '{"defaults":{"pricingOverrides":{"new-model":{"inputCostPerToken":1}}}}');
+      assert.equal(options.env.PATH, "/bin");
       const projects = (await readdir(join(root, "projects"))).sort();
       const files = Object.fromEntries(await Promise.all(projects.map(async (project) => [project, await readFile(join(root, "projects", project, "cursor.jsonl"), "utf8")])));
       seen = { args, files, mode: (await stat(root)).mode & 0o777 };
@@ -126,4 +134,42 @@ test("prices events with ccusage as one Claude request each, one private project
   });
   assert.equal((await priceWithCcusage([], { binary: "unused", timeZone: "UTC", timeoutMs: 1, maxBuffer: 1, runner: async () => { throw new Error("not called"); } })).size, 0);
   await assert.rejects(priceWithCcusage(events, { binary: "x", timeZone: "UTC", timeoutMs: 1, maxBuffer: 1, runner: async () => "{}" }), /per-project/);
+  await rm(home, { recursive: true, force: true });
+});
+
+test("finds the ccusage config the way ccusage does for Claude data", async () => {
+  const root = await mkdtemp(join(tmpdir(), "cursor-config-"));
+  try {
+    const home = join(root, "home");
+    const write = async (path: string, text: string) => { await mkdir(join(path, ".."), { recursive: true }); await writeFile(path, text); };
+    assert.equal(await readCcusageUserConfig({}, home), null);
+    await write(join(home, ".claude", "ccusage.json"), '{"n":4}');
+    assert.equal(await readCcusageUserConfig({}, home), '{"n":4}');
+    await write(join(home, ".config", "claude", "ccusage.json"), "{broken");
+    assert.equal(await readCcusageUserConfig({}, home), '{"n":4}', "a malformed file is skipped");
+    await write(join(home, ".config", "claude", "ccusage.json"), '{"n":3}');
+    assert.equal(await readCcusageUserConfig({}, home), '{"n":3}');
+    await write(join(root, "xdg", "claude", "ccusage.json"), '{"n":2}');
+    assert.equal(await readCcusageUserConfig({ XDG_CONFIG_HOME: join(root, "xdg") }, home), '{"n":2}');
+    await write(join(root, "second", "ccusage.json"), '{"n":1}');
+    assert.equal(await readCcusageUserConfig({ CLAUDE_CONFIG_DIR: `${join(root, "first")}, ${join(root, "second")}`, XDG_CONFIG_HOME: join(root, "xdg") }, home), '{"n":1}');
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+const realCcusage = (() => { try { return execFileSync("ccusage", ["--version"], { encoding: "utf8" }).trim(); } catch { return null; } })();
+
+test("real ccusage prices imported rows with the user's pricingOverrides", { skip: realCcusage ? false : "ccusage is not installed" }, async () => {
+  const root = await mkdtemp(join(tmpdir(), "cursor-real-ccusage-"));
+  try {
+    const home = join(root, "home");
+    await mkdir(join(home, ".config", "claude"), { recursive: true });
+    await writeFile(join(home, ".config", "claude", "ccusage.json"), JSON.stringify({ defaults: { pricingOverrides: { "zz-cursor-test-model": { inputCostPerToken: 2e-6, outputCostPerToken: 1e-5 } } } }));
+    const prices = await priceWithCcusage([
+      { ...event({ id: "real-1", time: "2026-11-27T04:00:00.000Z", model: "zz-cursor-test-model", inputTokens: 1000, outputTokens: 100 }), hostId: "h" },
+      { ...event({ id: "real-2", time: "2026-11-27T04:00:00.000Z", model: "zz-cursor-unknown-model", inputTokens: 1000 }), hostId: "h" },
+    ], { binary: "ccusage", timeZone: "UTC", timeoutMs: 60_000, maxBuffer: 1024 * 1024, env: { PATH: process.env.PATH, HOME: home }, home });
+    const priced = prices.get(recordKey("2026-11-27", "h", "zz-cursor-test-model"));
+    assert.ok(priced && !priced.missingPricing && Math.abs(priced.costUsd - (1000 * 2e-6 + 100 * 1e-5)) < 1e-9, JSON.stringify(priced));
+    assert.equal(prices.get(recordKey("2026-11-27", "h", "zz-cursor-unknown-model"))?.missingPricing, true);
+  } finally { await rm(root, { recursive: true, force: true }); }
 });

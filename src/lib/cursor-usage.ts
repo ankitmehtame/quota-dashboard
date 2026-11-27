@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import type { UsageRecord } from "./usage.js";
 
@@ -160,7 +160,28 @@ const defaultRunner: CcusageRunner = (binary, args, options) => new Promise((res
  * Events are written as one Claude Code request each, in a private temporary data
  * directory with one project per host, and read back with `claude daily --instances`.
  */
-export async function priceWithCcusage(events: HostCursorEvent[], options: { binary: string; timeZone: string; timeoutMs: number; maxBuffer: number; runner?: CcusageRunner }): Promise<CcusagePrices> {
+/**
+ * The user-level ccusage config that ccusage 20 reads for Claude data: each `CLAUDE_CONFIG_DIR`
+ * entry's `ccusage.json`, or else `$XDG_CONFIG_HOME/claude`, `~/.config/claude` and `~/.claude`.
+ * The first file that parses as JSON wins, as in ccusage. Returns its text, or null.
+ */
+export async function readCcusageUserConfig(env: NodeJS.ProcessEnv, home: string): Promise<string | null> {
+  const claudeDirs = env.CLAUDE_CONFIG_DIR?.split(",").map((dir) => dir.trim()).filter(Boolean) ?? [];
+  const xdg = env.XDG_CONFIG_HOME?.trim();
+  const candidates = claudeDirs.length
+    ? claudeDirs.map((dir) => join(dir, "ccusage.json"))
+    : [...(xdg ? [join(xdg, "claude", "ccusage.json")] : []), join(home, ".config", "claude", "ccusage.json"), join(home, ".claude", "ccusage.json")];
+  for (const path of candidates) {
+    try {
+      const text = await readFile(path, "utf8");
+      JSON.parse(text);
+      return text;
+    } catch { /* missing or malformed: ccusage moves on to the next location */ }
+  }
+  return null;
+}
+
+export async function priceWithCcusage(events: HostCursorEvent[], options: { binary: string; timeZone: string; timeoutMs: number; maxBuffer: number; runner?: CcusageRunner; env?: NodeJS.ProcessEnv; home?: string }): Promise<CcusagePrices> {
   const prices: CcusagePrices = new Map();
   if (events.length === 0) return prices;
   const root = await mkdtemp(join(tmpdir(), "quota-cursor-pricing-"));
@@ -188,8 +209,12 @@ export async function priceWithCcusage(events: HostCursorEvent[], options: { bin
       await mkdir(join(root, "projects", project), { recursive: true, mode: 0o700 });
       await writeFile(join(root, "projects", project, "cursor.jsonl"), `${lines.join("\n")}\n`, { mode: 0o600 });
     }
+    // CLAUDE_CONFIG_DIR also moves where ccusage looks for its config, so bring the file it
+    // would otherwise use. A project `.ccusage/ccusage.json` still wins, as ccusage runs in the same directory.
+    const config = await readCcusageUserConfig(options.env ?? process.env, options.home ?? homedir());
+    if (config !== null) await writeFile(join(root, "ccusage.json"), config, { mode: 0o600 });
     const args = ["claude", "daily", "--json", "--instances", "--breakdown", "--offline", "--mode", "calculate", "--timezone", options.timeZone, "--since", since.replaceAll("-", ""), "--until", until.replaceAll("-", "")];
-    const stdout = await (options.runner ?? defaultRunner)(options.binary, args, { env: { ...process.env, CLAUDE_CONFIG_DIR: root }, timeout: options.timeoutMs, maxBuffer: options.maxBuffer });
+    const stdout = await (options.runner ?? defaultRunner)(options.binary, args, { env: { ...(options.env ?? process.env), CLAUDE_CONFIG_DIR: root }, timeout: options.timeoutMs, maxBuffer: options.maxBuffer });
     const document = JSON.parse(stdout) as { projects?: Record<string, Array<{ date?: unknown; modelBreakdowns?: Array<Record<string, unknown>> }>>; totals?: { unpricedModels?: unknown } };
     if (!document || typeof document !== "object" || !document.projects || typeof document.projects !== "object") throw new Error("ccusage did not return per-project usage");
     const unpriced = new Set(Array.isArray(document.totals?.unpricedModels) ? document.totals.unpricedModels.filter((model): model is string => typeof model === "string") : []);
