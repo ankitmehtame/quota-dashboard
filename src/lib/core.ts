@@ -1,6 +1,6 @@
 import { isUsageSourceId } from "./usage-source-id.js";
 
-export const PROVIDER_IDS = ["codex", "openrouter", "opencode-go", "ollama", "claude"] as const;
+export const PROVIDER_IDS = ["codex", "openrouter", "opencode-go", "ollama", "claude", "grok"] as const;
 export type ProviderId = typeof PROVIDER_IDS[number];
 export const USAGE_SOURCE_IDS = ["codex", "opencode", "hermes", "antigravity"] as const;
 export type UsageSourceId = string;
@@ -87,6 +87,11 @@ export const PROVIDER_DEFINITIONS: Record<ProviderId, {
     description: "Claude subscription quota windows",
     capabilities: { quota: true, usage: false, usedPercent: true, remainingValue: false, resetAt: true, historicalUsage: false, cost: false, tokenCounts: false },
   },
+  grok: {
+    name: "Grok (X Subscription)", shortName: "Grok", accent: "grok",
+    description: "Weekly usage pool shared by Grok and Cursor",
+    capabilities: { quota: true, usage: false, usedPercent: true, remainingValue: false, resetAt: true, historicalUsage: false, cost: false, tokenCounts: false },
+  },
   codex: {
     name: "Codex / ChatGPT",
     shortName: "Codex",
@@ -160,6 +165,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     "opencode-go": { enabled: false },
     ollama: { enabled: true },
     claude: { enabled: false },
+    grok: { enabled: false },
   },
   providerOrder: [...PROVIDER_IDS],
   usageSources: {

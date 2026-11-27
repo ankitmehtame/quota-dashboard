@@ -18,6 +18,7 @@ Collection license: [Creative Commons Attribution 4.0 International](https://cre
 | `openai.svg` | OpenAI | https://cdn.jsdelivr.net/gh/selfhst/icons@main/svg/openai-light.svg |
 | `openrouter.svg` | OpenRouter | https://cdn.jsdelivr.net/gh/selfhst/icons@main/svg/openrouter-light.svg |
 | `ollama.svg` | Ollama | https://cdn.jsdelivr.net/gh/selfhst/icons@main/svg/ollama.svg |
+| `grok.svg` | xAI / Grok | https://cdn.jsdelivr.net/gh/selfhst/icons@main/svg/grok-light.svg |
 
 ## theSVG
 
@@ -34,7 +35,7 @@ The collection advertises free personal and commercial use without required attr
 
 ## Modifications and updates
 
-All bundled and runtime-downloaded SVGs pass through the same static-SVG validation and serialization. Comments and unnecessary namespace declarations are removed. Internal XLink references become SVG `href` attributes. `currentColor` becomes the dashboard's light icon color, `#f0f5f1`. Explicit colors, including multicolor artwork, and implicit SVG black fills are preserved. The OpenAI and OpenRouter light variants are used for contrast on the dark dashboard.
+All bundled and runtime-downloaded SVGs pass through the same static-SVG validation and serialization. Comments and unnecessary namespace declarations are removed. Internal XLink references become SVG `href` attributes. `currentColor` becomes the dashboard's light icon color, `#f0f5f1`. Explicit colors, including multicolor artwork, and implicit SVG black fills are preserved. The OpenAI, OpenRouter, and Grok light variants are used for contrast on the dark dashboard.
 
 The Gemini asset's root `role="img"` attribute is omitted to match the static-SVG allowlist. The enclosing dashboard markup already handles accessibility.
 

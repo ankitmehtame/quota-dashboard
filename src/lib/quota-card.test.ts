@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { runInNewContext } from "node:vm";
-import { parseClaudeQuota, parseClaudeResetCredits, parseCodexQuota, parseCodexRenewalDate, parseOllamaBalance, parseOllamaCreditBalance } from "./providers.js";
+import { parseClaudeQuota, parseClaudeResetCredits, parseCodexQuota, parseCodexRenewalDate, parseGrokQuota, parseOllamaBalance, parseOllamaCreditBalance } from "./providers.js";
 import { parseOpenRouterUsage } from "./openrouter.js";
 
 const app = readFileSync(new URL("../public/app.js", import.meta.url), "utf8");
@@ -255,8 +255,20 @@ test("Claude cards render available reset grants in the existing usage limit res
   for (const resetCredits of [undefined, []]) assert.doesNotMatch(renderClaude({ resetCredits }), /Usage limit resets/);
 });
 
+test("Grok cards name the weekly pool, show the product split, and do not invent a balance", () => {
+  const html = runInNewContext(`${icons}\n${renderer}\nquotaCard("grok", provider, quota);`, {
+    provider: { id: "grok", shortName: "Grok", description: "Weekly usage pool shared by Grok and Cursor", accent: "grok", configured: true, status: "ok" },
+    quota: { windows: parseGrokQuota({ config: { creditUsagePercent: 3, productUsage: [{ product: "Cursor", usagePercent: 2 }, { product: "GrokBuild", usagePercent: 1 }],
+      currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY", start: "2026-11-27T01:20:13.017+00:00", end: "2026-12-04T01:20:13.017+00:00" } } }) },
+    state: { hour12: false }, escapeHtml: String,
+  });
+  for (const text of ["Grok", "Weekly", "3%", "resets in", "Cursor 2% · Grok Build 1%", 'data-icon="grok"', "var(--grok)"]) assert.ok(html.includes(text), `Missing ${text}`);
+  assert.match(html, /class="bar"/);
+  assert.doesNotMatch(html, /No balance reported|quota-credit-balance|limit /);
+});
+
 test("quota cards use 20px decorative icons for every provider, including Go", () => {
-  for (const [id, icon] of Object.entries({ claude: "claude", codex: "openai", openrouter: "openrouter", ollama: "ollama", "opencode-go": "opencode" })) {
+  for (const [id, icon] of Object.entries({ claude: "claude", codex: "openai", openrouter: "openrouter", ollama: "ollama", "opencode-go": "opencode", grok: "grok" })) {
     const html = runInNewContext(`${icons}\n${renderer}\nquotaCard(id, provider, { windows: [] });`, {
       id, provider: { shortName: id === "opencode-go" ? "Go" : id, accent: "mint", description: "", configured: false, status: "unconfigured" },
       state: { hour12: false }, escapeHtml: String,

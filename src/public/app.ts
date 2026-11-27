@@ -25,10 +25,10 @@ const element = (target: EventTarget | null): HTMLElement => target as HTMLEleme
 const escapeHtml = (value: unknown): string => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character] || character);
 const usageSourceNames: Record<string, string> = { codex: "Codex", opencode: "OpenCode", hermes: "Hermes", antigravity: "Antigravity", claude: "Claude", shared: "Shared" };
 let settingsUsageSourceLabels: Record<string, string> = {};
-const usageSourceColors: Record<string, string> = { codex: "mint", opencode: "violet", hermes: "yellow", antigravity: "antigravity", claude: "claude", gemini: "gemini", "gemini-cli": "gemini", openrouter: "teal", ollama: "neutral", shared: "neutral" };
+const usageSourceColors: Record<string, string> = { codex: "mint", opencode: "violet", hermes: "yellow", antigravity: "antigravity", claude: "claude", gemini: "gemini", "gemini-cli": "gemini", openrouter: "teal", ollama: "neutral", grok: "grok", shared: "neutral" };
 const usageColorPalette = ["mint", "violet", "neutral", "rose", "yellow", "teal"] as const;
 // Mirrors the --<token> custom properties in styles.css so defaults can seed <input type="color">.
-const colorTokenHex: Record<string, string> = { mint: "#a8f2cf", violet: "#c7b8ff", neutral: "#aeb8b2", rose: "#ed9dcc", yellow: "#e6d477", teal: "#66c9bf", claude: "#e8a285", antigravity: "#8ab4f8", gemini: "#9fa8f5" };
+const colorTokenHex: Record<string, string> = { mint: "#a8f2cf", violet: "#c7b8ff", neutral: "#aeb8b2", rose: "#ed9dcc", yellow: "#e6d477", teal: "#66c9bf", claude: "#e8a285", antigravity: "#8ab4f8", gemini: "#9fa8f5", grok: "#dfe3ea" };
 // User color overrides by canonical tool id, previewed live and persisted separately.
 let toolColors: Record<string, string> = {};
 // Quota providers and usage sources of one tool share a canonical id and color.
@@ -58,10 +58,10 @@ function applyToolColors(ids?: Iterable<string>): void {
 }
 // Brand assets from https://selfh.st/icons/ and https://thesvg.org/.
 // Sources, licenses, and modifications are recorded in icons/ATTRIBUTION.md.
-const sourceIcons: Record<string, string> = { claude: "claude", codex: "openai", openrouter: "openrouter", ollama: "ollama", hermes: "hermes", antigravity: "antigravity", gemini: "gemini", "gemini-cli": "gemini", opencode: "opencode", "opencode-go": "opencode" };
+const sourceIcons: Record<string, string> = { claude: "claude", codex: "openai", openrouter: "openrouter", ollama: "ollama", hermes: "hermes", antigravity: "antigravity", gemini: "gemini", "gemini-cli": "gemini", opencode: "opencode", "opencode-go": "opencode", grok: "grok" };
 let labelIcons: Record<string, string> = {};
 let configuredLabelNames: Record<string, string> = {};
-const builtInIconSources: Record<string, string> = { claude: "selfh.st: claude", openai: "selfh.st: openai-light", openrouter: "selfh.st: openrouter-light", ollama: "selfh.st: ollama", hermes: "theSVG: nousresearch-hermes/default", antigravity: "theSVG: google-antigravity/default", gemini: "theSVG: google-gemini/default", opencode: "theSVG: opencode/default" };
+const builtInIconSources: Record<string, string> = { claude: "selfh.st: claude", openai: "selfh.st: openai-light", openrouter: "selfh.st: openrouter-light", ollama: "selfh.st: ollama", hermes: "theSVG: nousresearch-hermes/default", antigravity: "theSVG: google-antigravity/default", gemini: "theSVG: google-gemini/default", opencode: "theSVG: opencode/default", grok: "selfh.st: grok-light" };
 let iconRevisions: Record<string, string> = {};
 function hasSourceIcon(id: string): boolean {
   return Object.hasOwn(sourceIcons, id) || Boolean(labelIcons[id] && iconRevisions[`selfhst-${labelIcons[id]}`]);
@@ -76,7 +76,7 @@ function sourceIcon(id: string, size = 14, tooltip = false): string {
   if (!icon) return swatch;
   return `<span class="source-icon${size === 20 ? " source-icon-large" : ""}" aria-hidden="true"><span class="icon-fallback">${swatch}</span><img data-icon="${icon}" src="${sourceIconUrl(icon)}" width="${size}" height="${size}" alt="" /></span>`;
 }
-let providerOrder = ["codex", "openrouter", "opencode-go", "ollama", "claude"];
+let providerOrder = ["codex", "openrouter", "opencode-go", "ollama", "claude", "grok"];
 type UsageSourceConfig = { enabled: boolean };
 const HOT_USAGE_POLL_INTERVAL_MS = 5_000;
 const HOT_USAGE_RETRY_GRACE_PERIOD_MS = 15_000;
@@ -491,7 +491,7 @@ function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][st
       ? window?.valueLabel || ""
       : percent == null && window?.valueLabel
         ? ""
-        : window?.valueLabel || (["codex", "claude"].includes(provider.id) ? "" : provider.configured ? "No balance reported" : "Configure credentials on server");
+        : window?.valueLabel || (["codex", "claude", "grok"].includes(provider.id) ? "" : provider.configured ? "No balance reported" : "Configure credentials on server");
     const formattedLimit = window?.unit === "USD" && window.limitValue != null
       ? money(window.limitValue) : quotaValue(window?.limitValue, window?.unit);
     const limitLabel = formattedLimit === null ? "" : `limit ${formattedLimit}`;
@@ -499,7 +499,7 @@ function quotaCard(id: string, provider: Provider, quota: Dashboard["quotas"][st
     const footLabel = [label, limitLabel, requestLabel].filter(Boolean).join(" · ");
     const resetLabel = window?.resetAt ? timeUntil(window.resetAt, now).split(" · ")[0].replace(/^resets/, "Resets") : provider.id === "ollama" && window?.name === "monthly" ? "Reset not reported" : "";
     const nowDescription = `${nowExpected}% of window elapsed`;
-    const showWindowName = windows.length > 1 || ["codex", "ollama", "claude"].includes(provider.id);
+    const showWindowName = windows.length > 1 || ["codex", "ollama", "claude", "grok"].includes(provider.id);
     const reset = resetLabel ? `<span class="quota-reset-label" title="${escapeHtml(timeUntil(window?.resetAt, now))}">${escapeHtml(resetLabel)}</span>` : "";
     const marker = nowPosition === null ? "" : `<button class="quota-now-marker" style="left:${nowPosition}%" type="button" aria-label="Current quota window position"><span class="quota-now-tooltip"><strong>Time elapsed</strong><span>${nowDescription}</span><span>Resets: ${escapeHtml(formatRefreshTime(window?.resetAt))}</span><span>Snapshot: ${escapeHtml(formatRefreshTime(refreshedAt))}</span></span></button>`;
     const pacing = nowExpected === null || percent == null ? "" : `<div class="quota-pacing"><span>${formatPercent(percent)}% used</span><span>${formatPercent(nowExpected)}% of window elapsed</span></div>`;

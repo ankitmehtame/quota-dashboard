@@ -34,7 +34,7 @@ test("service worker precaches icons, stores refreshed responses, and uses them 
   assert.equal(stores.has("quota-dashboard-shell-v1"), false);
   const shellName = [...stores.keys()].find((name) => name.startsWith("quota-dashboard-shell-v3-"))!;
   const shell = stores.get(shellName)!;
-  assert.equal([...shell.keys()].filter((url) => url.includes("/icons/")).length, 8);
+  assert.equal([...shell.keys()].filter((url) => url.includes("/icons/")).length, 9);
   assert.equal([...shell.keys()].filter((url) => /\/icon-(192|512)-[a-f0-9]+\.png$/.test(url)).length, 2);
   const request = async (path: string, method = "GET") => {
     const pending: Promise<unknown>[] = [];

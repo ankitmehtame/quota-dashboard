@@ -158,6 +158,8 @@ No machine-specific absolute paths or identifiers are stored in the application.
 - `CLAUDE_CONFIG_DIR` (directory containing `.credentials.json`)
 - `CLAUDE_USER_AGENT` (defaults to `claude-code/2.1.69`)
 - `CLAUDE_RESET_USER_AGENT` (defaults to `claude-cli/2.1.280 (external, cli)` for reset grants; non-empty printable ASCII only)
+- `GROK_AUTH_PATH` (Grok CLI login file; defaults to `~/.grok/auth.json`)
+- `GROK_CLIENT_VERSION` (sent as `x-grok-client-version`; defaults to `1.0.92`)
 - `CONFIG_PATH` (defaults to `~/.config/quota-dashboard/config.json`)
 - `HOST` and `PORT` (server bind address and port)
 
@@ -397,6 +399,31 @@ countdowns use a monotonic estimate from fresh dashboard/usage server timestamps
 subject to network delay and server clock error. Measurement age stays separate.
 
 Local usage is collected in the background for one date at a time. The parsed result is separated into Codex, OpenCode, Hermes, and Antigravity groups using its provider/source fields; those groups are independently toggleable in the Providers dialog. Antigravity usage appears when the installed `ccusage` release supports that source. The dashboard reads normalized records from `USAGE_DATA_DIR` immediately and never waits for a `ccusage` process. Each host/date directory also keeps the exact current document in `raw.json` plus timestamped raw backups when a later complete result omits a previously present tool. The dashboard does not read provider-local databases directly. Codex/ChatGPT quota is fetched directly from `https://chatgpt.com/backend-api/wham/usage` using the Codex OAuth credentials in `~/.codex/auth.json`; an expired access token is refreshed automatically when the endpoint returns `401`. OpenCode Go supports rolling, weekly, and monthly windows when its dashboard returns them.
+
+### Grok (X Subscription) usage pool
+
+Enable Grok in Manage providers. It defaults to disabled. The card shows the weekly
+usage pool that The X Subscription shares between Grok and Cursor: the percentage
+used, the reset time, and how much of it each product used (for example
+`Cursor 2% · Grok Build 1%`). Cursor usage counts toward this pool, so the card also
+covers Cursor on X Subscription plans.
+
+Credentials come from the Grok CLI's own login, `~/.grok/auth.json` or
+`GROK_AUTH_PATH`, on the host running the dashboard. Sign in there with `grok login`.
+If the file holds more than one login, the one that expires last is used. The
+dashboard reads the file again for each fetch and never changes it or refreshes
+tokens. The CLI renews its short-lived access token while it runs. When the
+token in the file has expired, the card asks you to run `grok` on that host. Tokens,
+the login's email address, and private cache fingerprints never go to the browser or logs.
+
+Usage comes from the undocumented
+`https://cli-chat-proxy.grok.com/v1/billing?format=credits` endpoint, which the
+Grok CLI itself uses for plan usage. It is not a published API and may change.
+The response also reports a prepaid balance, but its unit is not documented and has
+not been verified with a non-zero balance, so the card does not show it. Logins
+that are not on The X Subscription have no shared pool and show an error instead
+of a zero. Grok uses the default `QUOTA_CACHE_TTL_SECONDS` cache and the same
+`Retry-After`, 429 backoff, and stale-data rules as Claude.
 
 ## Remote usage
 

@@ -14,6 +14,7 @@ export const ICON_SOURCES = {
   antigravity: "https://thesvg.org/icons/google-antigravity/default.svg",
   gemini: "https://thesvg.org/icons/google-gemini/default.svg",
   opencode: "https://thesvg.org/icons/opencode/default.svg",
+  grok: "https://cdn.jsdelivr.net/gh/selfhst/icons@main/svg/grok-light.svg",
 } as const;
 export type IconId = keyof typeof ICON_SOURCES;
 export function isIconSlug(value: unknown): value is string {

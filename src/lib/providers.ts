@@ -2,8 +2,10 @@ import { readFile, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fetchClaude, resolveClaudeCredentials } from "./claude.js";
+import { fetchGrok, resolveGrokCredentials } from "./grok.js";
 import { fetchOpenRouter, resolveOpenRouterKeys, selectOpenRouterKeys, filterInactiveOpenRouterKeys } from "./openrouter.js";
 export { fetchClaude, resolveClaudeCredentials, parseClaudeQuota, parseClaudeResetCredits, parseRetryAfter } from "./claude.js";
+export { fetchGrok, resolveGrokCredentials, parseGrokQuota } from "./grok.js";
 
 import { type ProviderId, clampPercent, formatMoney, numberOrNull, usageWindow, type ProviderResult, type QuotaWindow, type RateLimitResetCredit } from "./core.js";
 
@@ -268,10 +270,11 @@ export function parseCodexQuota(payload: unknown): QuotaWindow[] {
   return windows;
 }
 
-export const PROVIDER_FETCHERS: Record<ProviderId, () => Promise<ProviderResult>> = { claude: fetchClaude, codex: fetchCodex, openrouter: fetchOpenRouter, "opencode-go": fetchOpenCodeGo, ollama: fetchOllama };
+export const PROVIDER_FETCHERS: Record<ProviderId, () => Promise<ProviderResult>> = { claude: fetchClaude, codex: fetchCodex, openrouter: fetchOpenRouter, "opencode-go": fetchOpenCodeGo, ollama: fetchOllama, grok: () => fetchGrok() };
 
 export async function isProviderConfigured(id: ProviderId): Promise<boolean> {
   if (id === "claude") return Boolean((await resolveClaudeCredentials()).accessToken);
+  if (id === "grok") return Boolean((await resolveGrokCredentials()).accessToken);
   if (id === "openrouter") {
     try {
       const all = await resolveOpenRouterKeys();
