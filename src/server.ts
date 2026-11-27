@@ -262,7 +262,8 @@ async function configuredStatus(id: ProviderId, enabled: boolean): Promise<boole
   // A credential error fails locally without contacting the provider.
   const failure = credentials.error ? id === "claude" ? await fetchClaude(credentials) : await fetchGrok(credentials) : undefined;
   quotaCache.observe(id, credentials.identity, failure);
-  return Boolean(credentials.accessToken);
+  // An expired Grok login is still a detected login; its card carries the renewal error.
+  return id === "grok" ? credentials.configured : Boolean(credentials.accessToken);
 }
 
 function dateList(from: string, to: string): string[] {

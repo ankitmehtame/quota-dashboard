@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createQuotaCache } from "./quota-cache.js";
-import { fetchGrok, parseGrokQuota, resolveGrokCredentials } from "./providers.js";
+import { fetchGrok, isProviderConfigured, parseGrokQuota, resolveGrokCredentials } from "./providers.js";
 
 const now = Date.parse("2026-11-27T12:00:00Z");
 // Shape of a live https://cli-chat-proxy.grok.com/v1/billing?format=credits response, with fake values.
@@ -55,6 +55,22 @@ test("Grok periods without valid dates or a known type stay unknown instead of g
   assert.equal(backwards[0].resetAt, null);
   assert.equal(backwards[0].windowSeconds, null);
   assert.equal(backwards[0].valueLabel, null);
+});
+
+test("Grok product names are trimmed and never read inherited object properties", () => {
+  const [window] = parseGrokQuota({ config: { creditUsagePercent: 4, productUsage: [{ product: "toString", usagePercent: 1 }, { product: " GrokBuild ", usagePercent: 2 }, { product: "__proto__", usagePercent: 1 }] } });
+  assert.equal(window.valueLabel, "toString 1% · Grok Build 2% · __proto__ 1%");
+});
+
+test("Grok rejects impossible calendar dates and offsets instead of rolling them over", () => {
+  for (const [start, end] of [["2026-02-31T00:00:00Z", "2026-03-07T00:00:00Z"], ["2026-11-27T24:00:00Z", "2026-12-04T00:00:00Z"],
+    ["2026-11-27T00:00:00+24:00", "2026-12-04T00:00:00Z"], ["2026-13-01T00:00:00Z", "2026-12-04T00:00:00Z"], ["2026-11-27T00:00:60Z", "2026-12-04T00:00:00Z"]]) {
+    const [window] = parseGrokQuota({ config: { creditUsagePercent: 5, currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY", start, end } } });
+    assert.equal(window.resetAt, null, start);
+    assert.equal(window.windowStart, null, start);
+  }
+  const [leap] = parseGrokQuota({ config: { creditUsagePercent: 5, currentPeriod: { type: "USAGE_PERIOD_TYPE_WEEKLY", start: "2028-02-29T00:00:00.123456789+08:00", end: "2028-03-07T00:00:00Z" } } });
+  assert.equal(leap.windowStart, "2028-02-28T16:00:00.123Z");
 });
 
 test("Grok null, absent, and malformed usage never becomes zero", () => {
@@ -134,6 +150,12 @@ test("Grok requests use the CLI billing endpoint and safe structured failures wi
   }
   body = JSON.stringify({ config: { isUnifiedBillingUser: false, monthlyLimit: { val: 0 } } });
   assert.match((await fetchGrok(credentials)).error!, /not on The X Subscription/);
+  // Zero values are serialized for absent data, so a 0% pool must not be shown for a login outside The X Subscription.
+  body = JSON.stringify({ config: { ...billing.config, isUnifiedBillingUser: false, creditUsagePercent: 0 } });
+  const outside = await fetchGrok(credentials);
+  assert.equal(outside.errorKind, "response");
+  assert.deepEqual(outside.windows, []);
+  assert.match(outside.error!, /not on The X Subscription/);
   throwNetwork = true;
   const failed = await fetchGrok(credentials);
   assert.equal(failed.errorKind, "network");
@@ -164,4 +186,20 @@ test("Grok results flow through the quota cache, keeping stale measurements only
   const rejected = await cache.get("grok");
   assert.equal(rejected.errorKind, "authentication");
   assert.deepEqual(rejected.windows, []);
+});
+
+test("an expired Grok login still counts as configured so settings point to renewal, not missing credentials", async (t) => {
+  const root = await home(t);
+  const path = join(root, "auth.json");
+  const original = process.env.GROK_AUTH_PATH;
+  t.after(() => { if (original === undefined) delete process.env.GROK_AUTH_PATH; else process.env.GROK_AUTH_PATH = original; });
+  process.env.GROK_AUTH_PATH = path;
+  assert.equal(await isProviderConfigured("grok"), false);
+  await writeFile(path, JSON.stringify({ "https://auth.x.ai::a": login("FAKE_EXPIRED_TOKEN", "2020-01-01T00:00:00Z") }));
+  assert.equal(await isProviderConfigured("grok"), true);
+  const expired = await resolveGrokCredentials();
+  assert.equal(expired.accessToken, undefined);
+  assert.equal(expired.errorKind, "authentication");
+  await writeFile(path, JSON.stringify({ "https://auth.x.ai::a": login("bad token") }));
+  assert.equal(await isProviderConfigured("grok"), false);
 });

@@ -12,7 +12,14 @@ export const GROK_BILLING_ENDPOINT = "https://cli-chat-proxy.grok.com/v1/billing
 export type GrokCredentials = { configured: boolean; identity: string; accessToken?: string; error?: string; errorKind?: ProviderResult["errorKind"] };
 
 function timestamp(value: unknown): number {
-  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) return NaN;
+  if (typeof value !== "string") return NaN;
+  const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(?:Z|[+-](\d{2}):(\d{2}))$/.exec(value);
+  if (!match) return NaN;
+  const [, year, month, day, hour, minute, second, offsetHour = "0", offsetMinute = "0"] = match;
+  // Date.parse rolls impossible dates such as Feb 31 into the next month, so check the calendar first.
+  const days = new Date(Date.UTC(Number(year), Number(month), 0)).getUTCDate();
+  if (Number(month) < 1 || Number(month) > 12 || Number(day) < 1 || Number(day) > days || Number(hour) > 23 || Number(minute) > 59
+    || Number(second) > 59 || Number(offsetHour) > 23 || Number(offsetMinute) > 59) return NaN;
   // Date.parse handles at most millisecond precision; Grok writes nanoseconds.
   return Date.parse(value.replace(/(\.\d{3})\d+/, "$1"));
 }
@@ -70,8 +77,9 @@ export function parseGrokQuota(payload: unknown): QuotaWindow[] {
   const valid = Number.isFinite(start) && Number.isFinite(end) && end > start;
   const products = Array.isArray(config.productUsage) ? config.productUsage.flatMap((raw) => {
     const product = object(raw);
-    if (typeof product.product !== "string" || !product.product.trim() || typeof product.usagePercent !== "number" || !Number.isFinite(product.usagePercent)) return [];
-    return [`${productNames[product.product] ?? product.product} ${percentLabel(product.usagePercent)}`];
+    const id = typeof product.product === "string" ? product.product.trim() : "";
+    if (!id || typeof product.usagePercent !== "number" || !Number.isFinite(product.usagePercent)) return [];
+    return [`${Object.hasOwn(productNames, id) ? productNames[id] : id} ${percentLabel(product.usagePercent)}`];
   }) : [];
   return [usageWindow({
     name,
@@ -113,11 +121,10 @@ export async function fetchGrok(credentials?: GrokCredentials): Promise<Provider
     return error instanceof SyntaxError ? fail("response", "Grok usage response was not valid JSON", cooldown)
       : fail("network", "Grok usage response could not be received", cooldown);
   }
+  // Zero values are serialized for absent data, so a login outside The X Subscription can still report creditUsagePercent: 0.
+  if (object(object(payload).config).isUnifiedBillingUser === false) return fail("response", "This Grok login is not on The X Subscription, so it has no shared usage pool", cooldown);
   const windows = parseGrokQuota(payload);
-  if (!windows.length) {
-    const unified = object(object(payload).config).isUnifiedBillingUser;
-    return fail("response", unified === false ? "This Grok login is not on The X Subscription, so it has no shared usage pool" : "Grok usage response did not include a usage percentage", cooldown);
-  }
+  if (!windows.length) return fail("response", "Grok usage response did not include a usage percentage", cooldown);
   return { configured: true, status: "ok", error: null, windows, fetchedAt: new Date().toISOString(),
     ...(cooldown !== undefined && cooldown > Date.now() ? { cooldownUntil: cooldown } : {}) };
 }

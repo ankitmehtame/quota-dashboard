@@ -1324,7 +1324,7 @@ async function loadSettings(): Promise<void> {
   const quotaSettings = providerOrder.map((id, index) => { const provider = data.providers[id]; return `<div class="setting-row" data-provider-row="${id}"><div class="setting-copy"><div class="provider-name">${sourceIcon(id)}${provider.name}</div><div class="provider-sub">${provider.description}${provider.configured ? " · configured" : " · credentials not detected"}</div></div><div class="order-actions"><button class="order-button" type="button" data-order-direction="up" data-provider="${id}" aria-label="Move ${provider.name} up" ${index === 0 ? "disabled" : ""}>↑</button><button class="order-button" type="button" data-order-direction="down" data-provider="${id}" aria-label="Move ${provider.name} down" ${index === providerOrder.length - 1 ? "disabled" : ""}>↓</button><input class="switch" type="checkbox" data-kind="provider" data-provider="${id}" ${provider.enabled ? "checked" : ""} aria-label="Enable ${provider.name}" /></div></div>`; }).join("");
   const usageNames = usageSourceName;
   const usageIds = Object.keys(data.usageSources || {}).sort((left, right) => {
-    const knownOrder = ["codex", "opencode", "hermes", "antigravity", "claude"];
+    const knownOrder = ["codex", "opencode", "hermes", "antigravity", "claude", "grok"];
     const leftIndex = knownOrder.indexOf(left);
     const rightIndex = knownOrder.indexOf(right);
     if (leftIndex >= 0 || rightIndex >= 0) return (leftIndex < 0 ? Number.MAX_SAFE_INTEGER : leftIndex) - (rightIndex < 0 ? Number.MAX_SAFE_INTEGER : rightIndex);
