@@ -844,8 +844,10 @@ async function importCursorUsage(request: import("node:http").IncomingMessage, r
     if (error instanceof UnifiedUsageCsvError) return json(response, 400, { error: error.message });
     throw error;
   }
-  const counts = await cursorUsageStore.upsert(parsed.events, hostId);
-  dashboardCache.clear();
+  let counts: Awaited<ReturnType<typeof cursorUsageStore.upsert>>;
+  // Clear even when the import fails part way: some month files may already have changed.
+  try { counts = await cursorUsageStore.upsert(parsed.events, hostId); }
+  finally { dashboardCache.clear(); }
   const imported = parsed.events.map((event) => ({ ...event, hostId }));
   const unpriced = new Map<string, number>();
   let pricingError: string | null = null;

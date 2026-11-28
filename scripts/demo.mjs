@@ -111,6 +111,7 @@ const server = createServer(async (request, response) => {
       if (path === '/api/v1/providers') return json({ providerOrder, providers, usageSources });
       if (path === '/api/v1/icons/refresh') return json({ icons: {} });
       if (path === '/api/v1/usage/cold') return json({ error: 'Demo only. No historical collection is started.' }, 409);
+      if (path === '/api/v1/usage/import') return json({ error: 'Demo only. No usage is imported.' }, 409);
       if (path === '/api/v1/usage/refresh') {
         refreshReadyAt = Date.now() + 4_000;
         return json({ accepted: true });

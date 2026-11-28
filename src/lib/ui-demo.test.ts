@@ -36,5 +36,8 @@ test("isolated UI demo serves the application, sample ranges, and in-memory sett
   const settings = await (await fetch(`${origin}/api/v1/providers`)).json() as { providers: Record<string, { enabled: boolean }> };
   assert.equal(settings.providers.claude.enabled, false);
   assert.equal((await fetch(`${origin}/api/v1/usage/cold`, { method: "POST" })).status, 409);
+  const imported = await fetch(`${origin}/api/v1/usage/import`, { method: "POST", headers: { "content-type": "text/csv" }, body: "x" });
+  assert.equal(imported.status, 409);
+  assert.match(((await imported.json()) as { error: string }).error, /^Demo only/);
   assert.equal((await fetch(`${origin}/api/v1/not-an-endpoint`)).status, 404);
 });
